@@ -4,7 +4,6 @@ project(raft-kv LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# 手动库路径
 set(INSTALL_PREFIX /usr/local)
 set(INCLUDE_DIR ${INSTALL_PREFIX}/include)
 set(LIBRARY_DIR ${INSTALL_PREFIX}/lib)
@@ -18,6 +17,7 @@ find_library(ROCKSDB_LIB rocksdb PATHS ${LIBRARY_DIR})
 
 find_path(GFLAGS_INCLUDE_DIR gflags/gflags.h PATHS ${INCLUDE_DIR})
 find_library(GFLAGS_LIB gflags PATHS ${LIBRARY_DIR})
+
 find_path(GLOG_INCLUDE_DIR glog/logging.h PATHS ${INCLUDE_DIR})
 find_library(GLOG_LIB glog PATHS ${LIBRARY_DIR})
 

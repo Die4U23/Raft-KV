@@ -12,7 +12,6 @@ DEFINE_string(db_path, "/tmp/kv_db", "RocksDB data path");
 
 static std::unique_ptr<RocksDBStore> g_store;
 
-// RESP 辅助函数
 static std::string respBulkNull() { return "$-1\r\n"; }
 static std::string respError(const std::string& err) { return "-ERR " + err + "\r\n"; }
 static std::string respBulkString(const std::string& data) {
@@ -36,29 +35,20 @@ void onMessage(const muduo::net::TcpConnectionPtr& conn,
         if (op == "PING") {
             conn->send("+PONG\r\n");
         } else if (op == "SET") {
-            if (parts.size() != 3) {
-                conn->send(respError("wrong number of arguments for 'SET'"));
-                continue;
-            }
+            if (parts.size() != 3) { conn->send(respError("wrong number of arguments")); continue; }
             g_store->Put(parts[1], parts[2]);
             conn->send("+OK\r\n");
         } else if (op == "GET") {
-            if (parts.size() != 2) {
-                conn->send(respError("wrong number of arguments for 'GET'"));
-                continue;
-            }
+            if (parts.size() != 2) { conn->send(respError("wrong number of arguments")); continue; }
             std::string value;
             if (g_store->Get(parts[1], &value)) conn->send(respBulkString(value));
             else conn->send(respBulkNull());
         } else if (op == "DEL") {
-            if (parts.size() != 2) {
-                conn->send(respError("wrong number of arguments for 'DEL'"));
-                continue;
-            }
+            if (parts.size() != 2) { conn->send(respError("wrong number of arguments")); continue; }
             g_store->Delete(parts[1]);
             conn->send(":1\r\n");
         } else {
-            conn->send(respError("unknown command '" + parts[0] + "'"));
+            conn->send(respError("unknown command"));
         }
     }
 }
