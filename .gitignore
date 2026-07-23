@@ -1,0 +1,33 @@
+# 编译产物
+build/
+*.o
+*.so
+*.a
+*.exe
+*.out
+
+# CMake 生成文件
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+!CMakeLists.txt
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+*~
+
+# Docker 构建缓存
+docker/build-cache/
+
+# 第三方源码解压目录（只保留源码）
+third_party/*/
+!third_party/*.zip
+
+# 日志文件
+*.log
+
+# 临时文件
+tmp/
