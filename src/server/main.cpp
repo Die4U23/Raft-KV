@@ -6,73 +6,65 @@
 #include <gflags/gflags.h>
 #include "common/resp_parser.h"
 #include "storage/rocksdb_store.h"
-#include <memory>
 
 DEFINE_int32(port, 8080, "TCP client port");
-DEFINE_string(db_path, "/tmp/raft_kv_db", "RocksDB data path");
+DEFINE_string(db_path, "/tmp/kv_db", "RocksDB data path");
 
 static std::unique_ptr<RocksDBStore> g_store;
 
-// RESP 响应辅助函数
-std::string respBulkNull() { return "$-1\r\n"; }
-std::string respError(const std::string& err) { return "-ERR " + err + "\r\n"; }
-std::string respBulkString(const std::string& data) {
+// RESP 辅助函数
+static std::string respBulkNull() { return "$-1\r\n"; }
+static std::string respError(const std::string& err) { return "-ERR " + err + "\r\n"; }
+static std::string respBulkString(const std::string& data) {
     return "$" + std::to_string(data.size()) + "\r\n" + data + "\r\n";
 }
-std::string respInteger(int64_t n) { return ":" + std::to_string(n) + "\r\n"; }
+static std::string respInteger(int64_t n) { return ":" + std::to_string(n) + "\r\n"; }
 
 void onConnection(const muduo::net::TcpConnectionPtr& conn) {
     LOG_INFO << "New connection: " << conn->peerAddress().toIpPort();
 }
 
 void onMessage(const muduo::net::TcpConnectionPtr& conn,
-               muduo::net::Buffer* buf,
-               muduo::Timestamp time) {
+               muduo::net::Buffer* buf, muduo::Timestamp) {
     std::string msg = buf->retrieveAllAsString();
     auto commands = RespParser::Parse(msg);
-    for (const auto& cmd : commands) {
-        if (cmd.empty()) continue;
-        std::string op = cmd[0];
+    for (const auto& parts : commands) {
+        if (parts.empty()) continue;
+        std::string op = parts[0];
         for (auto& c : op) c = toupper(c);
 
-        if (op == "SET") {
-            if (cmd.size() != 3) {
+        if (op == "PING") {
+            conn->send("+PONG\r\n");
+        } else if (op == "SET") {
+            if (parts.size() != 3) {
                 conn->send(respError("wrong number of arguments for 'SET'"));
                 continue;
             }
-            g_store->Put(cmd[1], cmd[2]);
+            g_store->Put(parts[1], parts[2]);
             conn->send("+OK\r\n");
-        }
-        else if (op == "GET") {
-            if (cmd.size() != 2) {
+        } else if (op == "GET") {
+            if (parts.size() != 2) {
                 conn->send(respError("wrong number of arguments for 'GET'"));
                 continue;
             }
             std::string value;
-            if (g_store->Get(cmd[1], &value)) {
-                conn->send(respBulkString(value));
-            } else {
-                conn->send(respBulkNull());
-            }
-        }
-        else if (op == "DEL") {
-            if (cmd.size() != 2) {
+            if (g_store->Get(parts[1], &value)) conn->send(respBulkString(value));
+            else conn->send(respBulkNull());
+        } else if (op == "DEL") {
+            if (parts.size() != 2) {
                 conn->send(respError("wrong number of arguments for 'DEL'"));
                 continue;
             }
-            g_store->Delete(cmd[1]);
+            g_store->Delete(parts[1]);
             conn->send(":1\r\n");
-        }
-        else if (op == "PING") {
-            conn->send("+PONG\r\n");
-        }
-        else {
-            conn->send(respError("unknown command '" + cmd[0] + "'"));
+        } else {
+            conn->send(respError("unknown command '" + parts[0] + "'"));
         }
     }
 }
 
 int main(int argc, char* argv[]) {
+    gflags::SetUsageMessage("Raft-KV server (single-node, RocksDB-backed)");
     gflags::ParseCommandLineFlags(&argc, &argv, true);
 
     g_store.reset(new RocksDBStore(FLAGS_db_path));
@@ -85,9 +77,7 @@ int main(int argc, char* argv[]) {
     server.setConnectionCallback(onConnection);
     server.setMessageCallback(onMessage);
     server.start();
-
     LOG_INFO << "Raft-KV server listening on port " << FLAGS_port;
     loop.loop();
-
     return 0;
 }

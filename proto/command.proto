@@ -1,17 +1,14 @@
 syntax = "proto3";
 package raft_kv;
 
-// 命令类型
 enum CommandType {
-  NOP = 0;
-  SET = 1;
-  DEL = 2;
-  GET = 3;        // 读命令，不会提交到 Raft，仅用于定义
+    CMD_NOP = 0;
+    CMD_SET = 1;
+    CMD_DEL = 2;
 }
 
-// Raft 日志条目
 message Command {
-  CommandType type = 1;
-  bytes key = 2;
-  bytes value = 3;
+    CommandType type = 1;
+    bytes key = 2;
+    bytes value = 3;
 }
