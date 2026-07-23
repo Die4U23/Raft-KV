@@ -4,17 +4,20 @@
 #include <muduo/net/TcpConnection.h>
 #include <muduo/base/Logging.h>
 #include <gflags/gflags.h>
-#include <unordered_map>
+#include <rocksdb/db.h>
+#include <rocksdb/options.h>
 #include <string>
 #include <sstream>
 #include <vector>
+#include <memory>
 
 DEFINE_int32(port, 8080, "TCP port for client connections");
+DEFINE_string(db_path, "/tmp/raft_kv_db", "Path to RocksDB data directory");
 
-// 简单的内存存储
-std::unordered_map<std::string, std::string> store;
+// 全局 RocksDB 实例
+rocksdb::DB* db = nullptr;
 
-// 分割字符串（按空白字符）
+// 分割字符串
 std::vector<std::string> split(const std::string& s) {
     std::vector<std::string> tokens;
     std::istringstream iss(s);
@@ -33,7 +36,6 @@ void onMessage(const muduo::net::TcpConnectionPtr& conn,
                muduo::net::Buffer* buf,
                muduo::Timestamp time) {
     std::string msg = buf->retrieveAllAsString();
-    // 去掉可能存在的换行符
     while (!msg.empty() && (msg.back() == '\n' || msg.back() == '\r')) {
         msg.pop_back();
     }
@@ -47,29 +49,35 @@ void onMessage(const muduo::net::TcpConnectionPtr& conn,
     }
 
     std::string cmd = tokens[0];
-    // 统一转大写，忽略大小写
     for (char& c : cmd) c = toupper(c);
+
+    rocksdb::Status s;
+    std::string value;
 
     if (cmd == "SET") {
         if (tokens.size() != 3) {
             conn->send("-ERR wrong number of arguments for 'SET'\r\n");
             return;
         }
-        store[tokens[1]] = tokens[2];
-        conn->send("+OK\r\n");
+        s = db->Put(rocksdb::WriteOptions(), tokens[1], tokens[2]);
+        if (s.ok()) {
+            conn->send("+OK\r\n");
+        } else {
+            conn->send("-ERR " + s.ToString() + "\r\n");
+        }
     }
     else if (cmd == "GET") {
         if (tokens.size() != 2) {
             conn->send("-ERR wrong number of arguments for 'GET'\r\n");
             return;
         }
-        auto it = store.find(tokens[1]);
-        if (it != store.end()) {
-            // 返回长度和内容（类似 Redis Bulk String）
-            std::string val = it->second;
-            conn->send("$" + std::to_string(val.size()) + "\r\n" + val + "\r\n");
+        s = db->Get(rocksdb::ReadOptions(), tokens[1], &value);
+        if (s.ok()) {
+            conn->send("$" + std::to_string(value.size()) + "\r\n" + value + "\r\n");
+        } else if (s.IsNotFound()) {
+            conn->send("$-1\r\n");
         } else {
-            conn->send("$-1\r\n"); // nil
+            conn->send("-ERR " + s.ToString() + "\r\n");
         }
     }
     else if (cmd == "DEL") {
@@ -77,8 +85,12 @@ void onMessage(const muduo::net::TcpConnectionPtr& conn,
             conn->send("-ERR wrong number of arguments for 'DEL'\r\n");
             return;
         }
-        int removed = store.erase(tokens[1]);
-        conn->send(":" + std::to_string(removed) + "\r\n"); // 整数回复
+        s = db->Delete(rocksdb::WriteOptions(), tokens[1]);
+        if (s.ok()) {
+            conn->send(":1\r\n");
+        } else {
+            conn->send(":0\r\n");
+        }
     }
     else if (cmd == "PING") {
         conn->send("+PONG\r\n");
@@ -91,6 +103,16 @@ void onMessage(const muduo::net::TcpConnectionPtr& conn,
 int main(int argc, char* argv[]) {
     gflags::ParseCommandLineFlags(&argc, &argv, true);
 
+    // 初始化 RocksDB
+    rocksdb::Options options;
+    options.create_if_missing = true;
+    rocksdb::Status status = rocksdb::DB::Open(options, FLAGS_db_path, &db);
+    if (!status.ok()) {
+        LOG_ERROR << "Failed to open RocksDB: " << status.ToString();
+        return 1;
+    }
+    LOG_INFO << "RocksDB opened at " << FLAGS_db_path;
+
     muduo::net::EventLoop loop;
     muduo::net::InetAddress listenAddr(FLAGS_port);
     muduo::net::TcpServer server(&loop, listenAddr, "RaftKV");
@@ -101,5 +123,8 @@ int main(int argc, char* argv[]) {
 
     LOG_INFO << "Raft-KV server listening on port " << FLAGS_port;
     loop.loop();
+
+    // 程序退出时清理（实际上 loop 会一直运行，但为了完美）
+    delete db;
     return 0;
 }
