@@ -4,6 +4,13 @@ project(raft-kv LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# ----- protobuf 生成（Raft 消息 + 业务命令）-----
+find_package(Protobuf REQUIRED)
+set(PROTO_DIR ${CMAKE_SOURCE_DIR}/proto)
+file(GLOB_RECURSE PROTO_FILES ${PROTO_DIR}/*.proto)
+PROTOBUF_GENERATE_CPP(PROTO_SRCS PROTO_HDRS ${PROTO_FILES})
+
+# ----- 手动库查找 -----
 set(INSTALL_PREFIX /usr/local)
 set(INCLUDE_DIR ${INSTALL_PREFIX}/include)
 set(LIBRARY_DIR ${INSTALL_PREFIX}/lib)
@@ -26,16 +33,21 @@ find_package(Boost COMPONENTS system thread REQUIRED)
 find_library(PTHREAD_LIB pthread)
 find_library(DL_LIB dl)
 
-file(GLOB_RECURSE SRCS src/*.cpp src/*.h)
+# ----- 收集所有源文件（包括新增的 raftcore 目录）-----
+file(GLOB_RECURSE SRCS src/*.cpp src/*.h src/*.cc)
+list(APPEND SRCS ${PROTO_SRCS})
 
+# ----- 可执行文件 -----
 add_executable(raft_kv_server ${SRCS})
 
 target_include_directories(raft_kv_server PRIVATE
     ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_BINARY_DIR}          # 让生成的 pb.h 能被找到
     ${MUDUO_INCLUDE_DIR}
     ${ROCKSDB_INCLUDE_DIR}
     ${GFLAGS_INCLUDE_DIR}
     ${GLOG_INCLUDE_DIR}
+    ${PROTOBUF_INCLUDE_DIRS}
 )
 
 target_link_libraries(raft_kv_server
@@ -48,4 +60,5 @@ target_link_libraries(raft_kv_server
     ${Boost_LIBRARIES}
     ${PTHREAD_LIB}
     ${DL_LIB}
+    ${PROTOBUF_LIBRARIES}
 )

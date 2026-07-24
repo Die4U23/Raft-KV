@@ -1,5 +1,6 @@
 # 编译产物
 build/
+build2/
 *.o
 *.so
 *.a
@@ -28,6 +29,9 @@ third_party/*/
 
 # 日志文件
 *.log
+
+# 备份文件
+*.bak
 
 # 临时文件
 tmp/

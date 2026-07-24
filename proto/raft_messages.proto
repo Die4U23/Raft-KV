@@ -1,0 +1,46 @@
+syntax = "proto3";
+package raftcore;
+
+message RequestVote {
+    int32 term = 1;
+    int32 candidate_id = 2;
+    int64 last_log_index = 3;
+    int64 last_log_term  = 4;
+}
+
+message RequestVoteResponse {
+    int32 term = 1;
+    bool vote_granted = 2;
+}
+
+message AppendEntries {
+    int32 term = 1;
+    int32 leader_id = 2;
+    int64 prev_log_index = 3;
+    int64 prev_log_term  = 4;
+    repeated LogEntry entries = 5;
+    int64 leader_commit = 6;
+}
+
+message AppendEntriesResponse {
+    int32 term = 1;
+    bool success = 2;
+    int64 last_log_index = 3;
+}
+
+message LogEntry {
+    int64 index = 1;
+    int32 term  = 2;
+    bytes command = 3;
+}
+
+// Multiplex wrapper — all Raft RPCs share one TCP channel per peer pair.
+message RaftMessage {
+    int32 sender_id = 1;
+    oneof payload {
+        RequestVote request_vote = 2;
+        RequestVoteResponse request_vote_response = 3;
+        AppendEntries append_entries = 4;
+        AppendEntriesResponse append_entries_response = 5;
+    }
+}
