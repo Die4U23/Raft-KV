@@ -265,6 +265,3 @@ raft-kv/
 - [ ] 监控指标导出（Prometheus）
 - [ ] 单元测试（gtest）
 
-## License
-
-MIT
