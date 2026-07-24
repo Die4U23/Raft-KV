@@ -27,16 +27,19 @@ void PeerManager::SetMessageHandler(MessageHandler handler) {
 
 void PeerManager::Start() {
     _server.start();
-    LOG(INFO) << "PeerManager: listening for peers on port "
-              << _server.ipPort();
+    LOG(INFO) << "PeerManager[" << _self_id
+              << "]: listening for peers on 0.0.0.0:" << _server.ipPort();
 
-    // 对 id 大于自己的节点发起连接
+    // 首次连接：向所有 id > self_id 的节点发起连接
     for (const auto& peer : _all_peers) {
         if (peer.id == _self_id) continue;
         if (peer.id > _self_id) {
             ConnectToPeer(peer);
         }
     }
+
+    // 定时重连：每 2 秒检查一次未连接的 peer
+    _loop->runEvery(kReconnectIntervalSec, [this]() { ReconnectTimer(); });
 }
 
 // ================================================================
@@ -46,12 +49,12 @@ void PeerManager::Start() {
 void PeerManager::OnServerConnection(const muduo::net::TcpConnectionPtr& conn) {
     if (conn->connected()) {
         // 接受所有连接，对端身份在收到第一条消息时通过 sender_id 识别
-        LOG(INFO) << "Peer connected (inbound): " << conn->peerAddress().toIpPort();
     } else {
         // 连接断开：清理 _connections 中的对应条目
         for (auto it = _connections.begin(); it != _connections.end(); ) {
             if (it->second == conn) {
-                LOG(INFO) << "Peer " << it->first << " disconnected (inbound)";
+                LOG(INFO) << "PeerManager[" << _self_id
+                          << "]: peer " << it->first << " disconnected";
                 it = _connections.erase(it);
             } else {
                 ++it;
@@ -84,32 +87,33 @@ void PeerManager::ConnectToPeer(const PeerInfo& peer) {
             OnClientMessage(conn, buf, ts, peer_id);
         });
 
-    client->enableRetry();  // muduo 自动重连
+    // 不启用 muduo 自动重连（会用 POLLHUP / ERROR 刷屏），
+    // 用我们自己的 ReconnectTimer 安静地重试
     client->connect();
 
     auto pc = std::make_unique<PeerClient>();
     pc->client = std::move(client);
     _clients[peer_id] = std::move(pc);
-
-    LOG(INFO) << "Connecting to peer " << peer_id << " at "
-              << peer.host << ":" << peer.raft_port;
 }
 
 void PeerManager::OnClientConnection(const muduo::net::TcpConnectionPtr& conn,
                                       int peer_id) {
     if (conn->connected()) {
-        LOG(INFO) << "Connected to peer " << peer_id << " (outbound)";
+        LOG(INFO) << "PeerManager[" << _self_id
+                  << "]: connected to peer " << peer_id;
         _connections[peer_id] = conn;
         auto it = _clients.find(peer_id);
         if (it != _clients.end()) {
             it->second->conn = conn;
+            it->second->connected = true;
+            it->second->reconnect_count = 0;
         }
     } else {
-        LOG(WARNING) << "Connection to peer " << peer_id << " lost (outbound)";
         _connections.erase(peer_id);
         auto it = _clients.find(peer_id);
         if (it != _clients.end()) {
             it->second->conn.reset();
+            it->second->connected = false;
         }
     }
 }
@@ -118,6 +122,21 @@ void PeerManager::OnClientMessage(const muduo::net::TcpConnectionPtr& conn,
                                    muduo::net::Buffer* buf, muduo::Timestamp,
                                    int /*peer_id_expected*/) {
     ParseAndDispatch(conn, buf);
+}
+
+void PeerManager::ReconnectTimer() {
+    for (auto& kv : _clients) {
+        int peer_id = kv.first;
+        auto& pc = kv.second;
+        if (pc->connected) continue;  // 已连接，跳过
+
+        pc->reconnect_count++;
+        // 只打 INFO，不打 WARN/ERROR，因为对端未启动是正常场景
+        LOG(INFO) << "PeerManager[" << _self_id
+                  << "]: reconnecting to peer " << peer_id
+                  << " (attempt " << pc->reconnect_count << ")";
+        pc->client->connect();
+    }
 }
 
 // ================================================================
@@ -149,7 +168,6 @@ void PeerManager::Broadcast(RaftMsgType type, const std::string& payload) {
 void PeerManager::ParseAndDispatch(const muduo::net::TcpConnectionPtr& conn,
                                     muduo::net::Buffer* buf) {
     while (buf->readableBytes() >= 4) {
-        // Peek 4-byte payload_len header (big-endian)
         uint32_t payload_len =
             (static_cast<uint8_t>(buf->peek()[0]) << 24) |
             (static_cast<uint8_t>(buf->peek()[1]) << 16) |
@@ -182,7 +200,6 @@ void PeerManager::ParseAndDispatch(const muduo::net::TcpConnectionPtr& conn,
         // 通过 sender_id 注册/更新对端连接映射
         RegisterPeerConnection(actual_sender, conn);
 
-        // 分发到上层
         if (_handler) {
             _handler(actual_sender, msg.type, msg.payload);
         }
@@ -191,16 +208,14 @@ void PeerManager::ParseAndDispatch(const muduo::net::TcpConnectionPtr& conn,
 
 void PeerManager::RegisterPeerConnection(
     int peer_id, const muduo::net::TcpConnectionPtr& conn) {
-    // 检查是否已有这个 peer 的连接
     auto it = _connections.find(peer_id);
     if (it != _connections.end() && it->second != conn) {
-        // 对端重连了（新连接），更新映射
-        LOG(INFO) << "Peer " << peer_id << " reconnected, updating connection";
+        LOG(INFO) << "PeerManager[" << _self_id
+                  << "]: peer " << peer_id << " reconnected";
         it->second = conn;
     } else if (it == _connections.end()) {
-        LOG(INFO) << "Peer " << peer_id
-                  << " identified via frame (inbound connection)";
+        LOG(INFO) << "PeerManager[" << _self_id
+                  << "]: identified peer " << peer_id << " (inbound)";
         _connections[peer_id] = conn;
     }
-    // else: 同一连接，无需更新
 }

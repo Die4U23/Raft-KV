@@ -5,12 +5,10 @@
 #include <muduo/net/TcpConnection.h>
 #include <muduo/net/InetAddress.h>
 #include <muduo/net/Buffer.h>
-#include <muduo/base/Logging.h>
 #include <glog/logging.h>
 #include <functional>
 #include <map>
 #include <memory>
-#include <set>
 #include <string>
 #include <vector>
 
@@ -29,9 +27,12 @@ struct PeerInfo {
 //   - 每个节点启动一个 TcpServer 监听在 raft_port 上
 //   - 对 node_id 大于自己的节点主动发起 TcpClient 连接
 //
+// 重连策略:
+//   - 不使用 muduo 内置的 enableRetry()（会产生 POLLHUP WARN/ERROR 日志刷屏）
+//   - 而是自己每 2 秒检查一次未连接的 peer 并重试，只打 INFO 日志
+//
 // 对端识别:
-//   - 不通过 IP/Port 识别（因为客户端端口是临时的）
-//   - 而是通过帧头中的 sender_id 字段识别对端身份
+//   - 通过帧头中的 sender_id 字段识别对端身份
 //
 // 所有操作都在 muduo EventLoop 线程中进行，无需加锁
 class PeerManager {
@@ -73,6 +74,9 @@ private:
                          muduo::net::Buffer* buf, muduo::Timestamp,
                          int peer_id);
 
+    // 定时重连：检查并重连所有断开的 peer
+    void ReconnectTimer();
+
     // 帧解析（入站消息处理）
     void ParseAndDispatch(const muduo::net::TcpConnectionPtr& conn,
                           muduo::net::Buffer* buf);
@@ -91,6 +95,8 @@ private:
     struct PeerClient {
         std::unique_ptr<muduo::net::TcpClient> client;
         muduo::net::TcpConnectionPtr conn;
+        bool connected = false;
+        int  reconnect_count = 0;
     };
     std::map<int, std::unique_ptr<PeerClient>> _clients;
 
@@ -98,4 +104,6 @@ private:
     std::map<int, muduo::net::TcpConnectionPtr> _connections;
 
     MessageHandler _handler;
+
+    static constexpr double kReconnectIntervalSec = 2.0;
 };

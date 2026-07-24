@@ -239,6 +239,10 @@ int main(int argc, char* argv[]) {
 
     google::InitGoogleLogging(argv[0]);
 
+    // 关闭 muduo 自身日志（否则连接重试会刷 POLLHUP WARN/ERROR）
+    // 我们的代码用 glog，不受影响
+    muduo::Logger::setLogLevel(muduo::Logger::FATAL);
+
     // 解析 peer 列表
     auto peers = ParsePeers(FLAGS_peers);
     LOG(INFO) << "Configured " << peers.size() << " peers";
