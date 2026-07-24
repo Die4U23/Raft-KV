@@ -12,8 +12,8 @@
 #include <string>
 #include <vector>
 
-#include "common/namespace_manager.h"
 #include "common/resp_parser.h"
+#include "namespace/namespace_manager.h"
 #include "raft/kv_state_machine.h"
 #include "raft/peer_manager.h"
 #include "raft/raft_node.h"
