@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "common/namespace_manager.h"
 #include "common/resp_parser.h"
 #include "raft/kv_state_machine.h"
 #include "raft/peer_manager.h"
@@ -30,10 +31,11 @@ DEFINE_string(peers, "0:127.0.0.1:9080,1:127.0.0.1:9081,2:127.0.0.1:9082",
 DEFINE_bool(leader_only_reads, false, "Only serve reads from leader");
 
 // ---- 全局组件 ----
-static std::unique_ptr<KVStateMachine> g_sm;
-static std::unique_ptr<PeerManager>     g_peer_mgr;
-static std::unique_ptr<RaftNode>        g_raft_node;
-static muduo::net::EventLoop*           g_loop = nullptr;
+static std::unique_ptr<KVStateMachine>   g_sm;
+static std::unique_ptr<PeerManager>       g_peer_mgr;
+static std::unique_ptr<RaftNode>          g_raft_node;
+static NamespaceManager                   g_ns_mgr;
+static muduo::net::EventLoop*             g_loop = nullptr;
 
 // ---- RESP 格式化辅助函数 ----
 static std::string respBulkNull() { return "$-1\r\n"; }
@@ -117,6 +119,7 @@ static void OnClientConnection(const muduo::net::TcpConnectionPtr& conn) {
         LOG(INFO) << "Client connected: " << conn->peerAddress().toIpPort();
     } else {
         LOG(INFO) << "Client disconnected: " << conn->peerAddress().toIpPort();
+        g_ns_mgr.Remove(conn->name());
     }
 }
 
@@ -135,19 +138,34 @@ static void OnClientMessage(const muduo::net::TcpConnectionPtr& conn,
         if (op == "PING") {
             conn->send("+PONG\r\n");
 
+        } else if (op == "SELECT") {
+            // 切换命名空间（本地操作，不经过 Raft）
+            if (parts.size() != 2) {
+                conn->send(respError("wrong number of arguments for SELECT"));
+                continue;
+            }
+            const std::string& ns = parts[1];
+            if (!NamespaceManager::IsValidName(ns)) {
+                conn->send(respError("invalid namespace name: " + ns));
+                continue;
+            }
+            g_ns_mgr.SetNs(conn->name(), ns);
+            conn->send("+OK\r\n");
+
         } else if (op == "GET") {
             if (parts.size() != 2) {
                 conn->send(respError("wrong number of arguments for GET"));
                 continue;
             }
-            // Leader-only 读检查
             if (FLAGS_leader_only_reads && !g_raft_node->IsLeader()) {
                 int leader = g_raft_node->GetLeaderId();
                 conn->send(respError("MOVED " + std::to_string(leader)));
                 continue;
             }
+            // 加上 namespace 前缀读
+            std::string ns_key = g_ns_mgr.MakeKey(conn->name(), parts[1]);
             std::string value;
-            if (g_sm->Get(parts[1], &value)) {
+            if (g_sm->Get(ns_key, &value)) {
                 conn->send(respBulkString(value));
             } else {
                 conn->send(respBulkNull());
@@ -158,17 +176,19 @@ static void OnClientMessage(const muduo::net::TcpConnectionPtr& conn,
                 conn->send(respError("wrong number of arguments for SET"));
                 continue;
             }
-            std::string cmd = SerializeCommand(parts);
+            // 加上 namespace 前缀写入 Raft 日志
+            std::vector<std::string> ns_parts = parts;
+            ns_parts[1] = g_ns_mgr.MakeKey(conn->name(), parts[1]);
+            std::string cmd = SerializeCommand(ns_parts);
             int64_t index = g_raft_node->Propose(cmd,
                 [conn](bool success, const std::string& result) {
                     if (success) {
-                        conn->send(result);  // result 已是 RESP 格式
+                        conn->send(result);
                     } else {
                         conn->send(respError(result));
                     }
                 });
             if (index < 0) {
-                // 不是 Leader
                 int leader = g_raft_node->GetLeaderId();
                 conn->send(respError("MOVED " + std::to_string(leader)));
             }
@@ -178,7 +198,10 @@ static void OnClientMessage(const muduo::net::TcpConnectionPtr& conn,
                 conn->send(respError("wrong number of arguments for DEL"));
                 continue;
             }
-            std::string cmd = SerializeCommand(parts);
+            // 加上 namespace 前缀写入 Raft 日志
+            std::vector<std::string> ns_parts = parts;
+            ns_parts[1] = g_ns_mgr.MakeKey(conn->name(), parts[1]);
+            std::string cmd = SerializeCommand(ns_parts);
             int64_t index = g_raft_node->Propose(cmd,
                 [conn](bool success, const std::string& result) {
                     if (success) {
@@ -193,7 +216,6 @@ static void OnClientMessage(const muduo::net::TcpConnectionPtr& conn,
             }
 
         } else if (op == "INFO") {
-            // 简单的集群信息
             std::string info;
             info += "node_id:" + std::to_string(g_raft_node->GetNodeId()) + "\r\n";
             info += "state:" + std::string(g_raft_node->IsLeader() ? "leader" :
@@ -201,6 +223,7 @@ static void OnClientMessage(const muduo::net::TcpConnectionPtr& conn,
             info += "leader_id:" + std::to_string(g_raft_node->GetLeaderId()) + "\r\n";
             info += "term:" + std::to_string(g_raft_node->GetCurrentTerm()) + "\r\n";
             info += "commit_index:" + std::to_string(g_raft_node->GetCommitIndex()) + "\r\n";
+            info += "namespace:" + g_ns_mgr.GetNs(conn->name()) + "\r\n";
             conn->send(respBulkString(info));
 
         } else {
