@@ -3,6 +3,16 @@ project(raft-kv LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+find_package(Threads REQUIRED)
+
+option(RAFTKV_BUILD_SERVER "Build Linux server with Muduo/RocksDB/Protobuf" ON)
+include(CTest)
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()
+if(NOT RAFTKV_BUILD_SERVER)
+    return()
+endif()
 
 # ----- protobuf 生成（Raft 消息 + 业务命令）-----
 find_package(Protobuf REQUIRED)
@@ -30,7 +40,6 @@ find_library(GLOG_LIB glog PATHS ${LIBRARY_DIR})
 
 find_package(OpenSSL REQUIRED)
 find_package(Boost COMPONENTS system thread REQUIRED)
-find_library(PTHREAD_LIB pthread)
 find_library(DL_LIB dl)
 
 # ----- 收集所有源文件（包括新增的 raftcore 目录）-----
@@ -58,7 +67,7 @@ target_link_libraries(raft_kv_server
     ${GLOG_LIB}
     ${OPENSSL_LIBRARIES}
     ${Boost_LIBRARIES}
-    ${PTHREAD_LIB}
+    Threads::Threads
     ${DL_LIB}
     ${PROTOBUF_LIBRARIES}
 )

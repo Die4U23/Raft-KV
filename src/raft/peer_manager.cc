@@ -11,6 +11,7 @@ PeerManager::PeerManager(muduo::net::EventLoop* loop,
               muduo::net::InetAddress(static_cast<uint16_t>(listen_port)),
               "RaftPeerServer")
 {
+    ValidatePeers(self_id, all_peers);
     _server.setConnectionCallback(
         [this](const auto& conn) { OnServerConnection(conn); });
     _server.setMessageCallback(
@@ -38,8 +39,6 @@ void PeerManager::Start() {
         }
     }
 
-    // 定时重连：每 2 秒检查一次未连接的 peer
-    _loop->runEvery(kReconnectIntervalSec, [this]() { ReconnectTimer(); });
 }
 
 // ================================================================
@@ -50,6 +49,7 @@ void PeerManager::OnServerConnection(const muduo::net::TcpConnectionPtr& conn) {
     if (conn->connected()) {
         // 接受所有连接，对端身份在收到第一条消息时通过 sender_id 识别
     } else {
+        _connection_peers.erase(conn->name());
         // 连接断开：清理 _connections 中的对应条目
         for (auto it = _connections.begin(); it != _connections.end(); ) {
             if (it->second == conn) {
@@ -75,7 +75,8 @@ void PeerManager::OnServerMessage(const muduo::net::TcpConnectionPtr& conn,
 void PeerManager::ConnectToPeer(const PeerInfo& peer) {
     auto addr = muduo::net::InetAddress(peer.host,
                                          static_cast<uint16_t>(peer.raft_port));
-    auto client = std::make_unique<muduo::net::TcpClient>(_loop, addr, "RaftPeerClient");
+    auto client = std::make_unique<muduo::net::TcpClient>(
+        _loop, addr, "RaftPeerClient-" + std::to_string(peer.id));
 
     int peer_id = peer.id;
     client->setConnectionCallback(
@@ -87,13 +88,10 @@ void PeerManager::ConnectToPeer(const PeerInfo& peer) {
             OnClientMessage(conn, buf, ts, peer_id);
         });
 
-    // 不启用 muduo 自动重连（会用 POLLHUP / ERROR 刷屏），
-    // 用我们自己的 ReconnectTimer 安静地重试
-    client->connect();
-
-    auto pc = std::make_unique<PeerClient>();
-    pc->client = std::move(client);
-    _clients[peer_id] = std::move(pc);
+    // Connector owns retry timers and the transition out of kConnected.
+    client->enableRetry();
+    _clients[peer_id] = std::move(client);
+    _clients.at(peer_id)->connect();
 }
 
 void PeerManager::OnClientConnection(const muduo::net::TcpConnectionPtr& conn,
@@ -102,19 +100,12 @@ void PeerManager::OnClientConnection(const muduo::net::TcpConnectionPtr& conn,
         LOG(INFO) << "PeerManager[" << _self_id
                   << "]: connected to peer " << peer_id;
         _connections[peer_id] = conn;
-        auto it = _clients.find(peer_id);
-        if (it != _clients.end()) {
-            it->second->conn = conn;
-            it->second->connected = true;
-            it->second->reconnect_count = 0;
-        }
+        _connection_peers[conn->name()] = peer_id;
     } else {
-        _connections.erase(peer_id);
-        auto it = _clients.find(peer_id);
-        if (it != _clients.end()) {
-            it->second->conn.reset();
-            it->second->connected = false;
-        }
+        _connection_peers.erase(conn->name());
+        const auto current = _connections.find(peer_id);
+        if (current != _connections.end() && current->second == conn)
+            _connections.erase(current);
     }
 }
 
@@ -122,21 +113,6 @@ void PeerManager::OnClientMessage(const muduo::net::TcpConnectionPtr& conn,
                                    muduo::net::Buffer* buf, muduo::Timestamp,
                                    int /*peer_id_expected*/) {
     ParseAndDispatch(conn, buf);
-}
-
-void PeerManager::ReconnectTimer() {
-    for (auto& kv : _clients) {
-        int peer_id = kv.first;
-        auto& pc = kv.second;
-        if (pc->connected) continue;  // 已连接，跳过
-
-        pc->reconnect_count++;
-        // 只打 INFO，不打 WARN/ERROR，因为对端未启动是正常场景
-        LOG(INFO) << "PeerManager[" << _self_id
-                  << "]: reconnecting to peer " << peer_id
-                  << " (attempt " << pc->reconnect_count << ")";
-        pc->client->connect();
-    }
 }
 
 // ================================================================
@@ -150,6 +126,12 @@ void PeerManager::Send(int peer_id, RaftMsgType type,
         return;  // 静默丢弃（心跳会重试）
     }
 
+    // A paused follower must not accumulate an unlimited number of RPC retries.
+    // Defer whole frames; the Raft retry timer will try again after TCP drains.
+    constexpr size_t max_queued = 4 * 1024 * 1024;
+    const size_t queued = it->second->outputBuffer()->readableBytes();
+    if (queued > max_queued || payload.size() > max_queued - RaftCodec::kHeaderSize ||
+        payload.size() + RaftCodec::kHeaderSize > max_queued - queued) return;
     std::string frame = RaftCodec::Encode(type, _self_id, payload);
     it->second->send(frame);
 }
@@ -168,54 +150,38 @@ void PeerManager::Broadcast(RaftMsgType type, const std::string& payload) {
 void PeerManager::ParseAndDispatch(const muduo::net::TcpConnectionPtr& conn,
                                     muduo::net::Buffer* buf) {
     while (buf->readableBytes() >= 4) {
-        uint32_t payload_len =
-            (static_cast<uint8_t>(buf->peek()[0]) << 24) |
-            (static_cast<uint8_t>(buf->peek()[1]) << 16) |
-            (static_cast<uint8_t>(buf->peek()[2]) << 8)  |
-            static_cast<uint8_t>(buf->peek()[3]);
-
-        if (payload_len > RaftCodec::kMaxFrameSize) {
-            LOG(ERROR) << "Frame too large (" << payload_len
-                       << "), closing connection";
-            conn->shutdown();
+        DecodedRaftMsg message;
+        size_t consumed = 0;
+        try {
+            if (!RaftCodec::TryDecode(buf->peek(), buf->readableBytes(),
+                                      &message, &consumed)) return;
+        } catch (const std::invalid_argument& error) {
+            LOG(ERROR) << error.what();
+            conn->forceClose();
             return;
         }
-
-        size_t total = 4 + static_cast<size_t>(payload_len);
-        if (buf->readableBytes() < total) {
-            return;  // 等待更多数据
+        if (!RegisterPeerConnection(message.sender_id, conn)) {
+            conn->forceClose();
+            return;
         }
-
-        std::string frame = buf->retrieveAsString(total);
-
-        DecodedRaftMsg msg;
-        size_t consumed = 0;
-        if (!RaftCodec::TryDecode(frame.data(), frame.size(), &msg, &consumed)) {
-            LOG(ERROR) << "Failed to decode frame, skipping";
-            continue;
-        }
-
-        int actual_sender = msg.sender_id;
-
-        // 通过 sender_id 注册/更新对端连接映射
-        RegisterPeerConnection(actual_sender, conn);
-
-        if (_handler) {
-            _handler(actual_sender, msg.type, msg.payload);
-        }
+        buf->retrieve(consumed);
+        // Storage/consensus exceptions must reach the process boundary.
+        if (_handler) _handler(message.sender_id, message.type, message.payload);
     }
 }
 
-void PeerManager::RegisterPeerConnection(
+bool PeerManager::RegisterPeerConnection(
     int peer_id, const muduo::net::TcpConnectionPtr& conn) {
-    auto it = _connections.find(peer_id);
-    if (it != _connections.end() && it->second != conn) {
-        LOG(INFO) << "PeerManager[" << _self_id
-                  << "]: peer " << peer_id << " reconnected";
-        it->second = conn;
-    } else if (it == _connections.end()) {
-        LOG(INFO) << "PeerManager[" << _self_id
-                  << "]: identified peer " << peer_id << " (inbound)";
-        _connections[peer_id] = conn;
-    }
+    bool known = false;
+    for (const auto& peer : _all_peers)
+        if (peer.id == peer_id && peer_id != _self_id) known = true;
+    if (!known) return false;
+    const auto bound = _connection_peers.find(conn->name());
+    if (bound != _connection_peers.end() && bound->second != peer_id) return false;
+    // Only smaller IDs initiate incoming connections. Outgoing ones are bound
+    // to their configured peer when the connection is established.
+    if (bound == _connection_peers.end() && peer_id > _self_id) return false;
+    _connection_peers[conn->name()] = peer_id;
+    _connections[peer_id] = conn;
+    return true;
 }

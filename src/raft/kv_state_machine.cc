@@ -1,63 +1,57 @@
 #include "raft/kv_state_machine.h"
-#include <glog/logging.h>
+#include "common/resp_parser.h"
+#include <cctype>
+#include <limits>
 #include <stdexcept>
+#include <utility>
 
-// 简单的内联 RESP 解析（避免引入 resp_parser.h 的静态成员重复定义问题）
-// 仅解析单个 RESP 数组命令（格式: *N\r\n$L\r\n...）
-static bool ParseRespCommand(const std::string& raw,
-                             std::vector<std::string>* parts) {
-    parts->clear();
-    if (raw.empty() || raw[0] != '*') return false;
-
-    size_t pos = 1;
-    // 读取数组长度
-    size_t crlf = raw.find("\r\n", pos);
-    if (crlf == std::string::npos) return false;
-    int count = std::stoi(raw.substr(pos, crlf - pos));
-    pos = crlf + 2;
-
-    for (int i = 0; i < count; ++i) {
-        if (pos >= raw.size() || raw[pos] != '$') return false;
-        pos++;  // skip '$'
-        crlf = raw.find("\r\n", pos);
-        if (crlf == std::string::npos) return false;
-        int len = std::stoi(raw.substr(pos, crlf - pos));
-        pos = crlf + 2;
-        if (pos + len + 2 > raw.size()) return false;
-        parts->push_back(raw.substr(pos, len));
-        pos += len + 2;  // skip data + \r\n
-    }
-    return true;
-}
-
-KVStateMachine::KVStateMachine(const std::string& db_path) {
-    _store.reset(new RocksDBStore(db_path));
-}
-
+KVStateMachine::KVStateMachine(const std::string& path)
+    : _store(std::make_unique<RocksDBStore>(path)) {}
 KVStateMachine::~KVStateMachine() = default;
 
-std::string KVStateMachine::Apply(const std::string& command_bytes) {
-    std::vector<std::string> parts;
-    if (!ParseRespCommand(command_bytes, &parts) || parts.empty()) {
-        return "-ERR empty command\r\n";
-    }
-
-    std::string op = parts[0];
-    for (auto& c : op) c = toupper(c);
-
-    if (op == "SET") {
-        if (parts.size() != 3) return "-ERR wrong number of arguments for SET\r\n";
-        _store->Put(parts[1], parts[2]);
-        return "+OK\r\n";
-    } else if (op == "DEL") {
-        if (parts.size() != 2) return "-ERR wrong number of arguments for DEL\r\n";
-        _store->Delete(parts[1]);
-        return ":1\r\n";
-    } else {
-        return "-ERR unknown command in state machine\r\n";
-    }
+std::string KVStateMachine::Apply(int64_t index, const std::string& command) {
+    return ApplyBatch(index, {command})[0];
 }
-
+std::vector<std::string> KVStateMachine::ApplyBatch(
+    int64_t first_index, const std::vector<std::string>& commands) {
+    using Mutation = RocksDBStore::Mutation;
+    std::vector<Mutation> mutations;
+    mutations.reserve(commands.size());
+    int64_t index = first_index;
+    for (const auto& command : commands) {
+        if (!mutations.empty()) {
+            if (index == std::numeric_limits<int64_t>::max())
+                throw std::runtime_error("state machine index overflow");
+            ++index;
+        }
+        Mutation mutation{index, Mutation::Kind::Noop, {}, {}};
+        if (!command.empty()) {
+            auto parsed = RespParser::TryParseOne(command);
+            if (parsed.state != RespParser::State::Complete || parsed.consumed != command.size())
+                throw std::runtime_error("invalid command in committed Raft log");
+            auto& parts = parsed.args;
+            std::string op = parts[0];
+            for (char& c : op) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+            if (op == "SET" && parts.size() == 3) {
+                mutation.kind = Mutation::Kind::Put;
+                mutation.value = std::move(parts[2]);
+            } else if (op == "DEL" && parts.size() == 2) {
+                mutation.kind = Mutation::Kind::Delete;
+            } else {
+                throw std::runtime_error("unsupported command in committed Raft log");
+            }
+            mutation.key = std::move(parts[1]);
+        }
+        mutations.push_back(std::move(mutation));
+    }
+    const auto existed = _store->ApplyBatch(mutations);
+    std::vector<std::string> replies;
+    replies.reserve(mutations.size());
+    for (size_t i = 0; i < mutations.size(); ++i)
+        replies.push_back(mutations[i].kind == Mutation::Kind::Delete
+                              ? (existed[i] ? ":1\r\n" : ":0\r\n") : "+OK\r\n");
+    return replies;
+}
 bool KVStateMachine::Get(const std::string& key, std::string* value) const {
     return _store->Get(key, value);
 }

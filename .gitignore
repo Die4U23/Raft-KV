@@ -1,6 +1,7 @@
 # 编译产物
 build/
 build2/
+build-*/
 *.o
 *.so
 *.a
@@ -35,3 +36,5 @@ third_party/*/
 
 # 临时文件
 tmp/
+__pycache__/
+*.pyc

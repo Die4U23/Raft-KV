@@ -3,7 +3,8 @@
 bool NamespaceManager::IsValidName(const std::string& name) {
     if (name.empty() || name.size() > 63) return false;
     for (char c : name) {
-        if (!isalnum(c) && c != '_' && c != '-') return false;
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') || c == '_' || c == '-')) return false;
     }
     return true;
 }

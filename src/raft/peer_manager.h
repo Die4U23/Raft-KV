@@ -13,13 +13,7 @@
 #include <vector>
 
 #include "raft/raft_codec.h"
-
-// 节点网络信息
-struct PeerInfo {
-    int id;
-    std::string host;
-    int raft_port;
-};
+#include "raft/peers.h"
 
 // PeerManager: 管理与其他 Raft 节点之间的 TCP 连接
 //
@@ -28,8 +22,8 @@ struct PeerInfo {
 //   - 对 node_id 大于自己的节点主动发起 TcpClient 连接
 //
 // 重连策略:
-//   - 不使用 muduo 内置的 enableRetry()（会产生 POLLHUP WARN/ERROR 日志刷屏）
-//   - 而是自己每 2 秒检查一次未连接的 peer 并重试，只打 INFO 日志
+//   - 使用 muduo enableRetry()，由 Connector 管理连接状态和退避。
+//   - 不额外定时调用 connect()，避免与正在进行的连接/重试冲突。
 //
 // 对端识别:
 //   - 通过帧头中的 sender_id 字段识别对端身份
@@ -74,15 +68,12 @@ private:
                          muduo::net::Buffer* buf, muduo::Timestamp,
                          int peer_id);
 
-    // 定时重连：检查并重连所有断开的 peer
-    void ReconnectTimer();
-
     // 帧解析（入站消息处理）
     void ParseAndDispatch(const muduo::net::TcpConnectionPtr& conn,
                           muduo::net::Buffer* buf);
 
     // 注册/更新 peer 连接
-    void RegisterPeerConnection(int peer_id,
+    bool RegisterPeerConnection(int peer_id,
                                 const muduo::net::TcpConnectionPtr& conn);
 
     muduo::net::EventLoop* _loop;
@@ -92,18 +83,12 @@ private:
     muduo::net::TcpServer _server;
 
     // 仅对 id > _self_id 的 peer 创建
-    struct PeerClient {
-        std::unique_ptr<muduo::net::TcpClient> client;
-        muduo::net::TcpConnectionPtr conn;
-        bool connected = false;
-        int  reconnect_count = 0;
-    };
-    std::map<int, std::unique_ptr<PeerClient>> _clients;
+    std::map<int, std::unique_ptr<muduo::net::TcpClient>> _clients;
 
     // peer_id → TcpConnectionPtr（所有已建立的连接）
     std::map<int, muduo::net::TcpConnectionPtr> _connections;
+    std::map<std::string, int> _connection_peers;
 
     MessageHandler _handler;
 
-    static constexpr double kReconnectIntervalSec = 2.0;
 };

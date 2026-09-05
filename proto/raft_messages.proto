@@ -20,12 +20,14 @@ message AppendEntries {
     int64 prev_log_term  = 4;
     repeated LogEntry entries = 5;
     int64 leader_commit = 6;
+    uint64 rpc_id = 7; // correlates retransmissions and responses within a term
 }
 
 message AppendEntriesResponse {
     int32 term = 1;
     bool success = 2;
     int64 last_log_index = 3;
+    uint64 rpc_id = 4; // echo AppendEntries.rpc_id; success index is matched prefix
 }
 
 message LogEntry {
