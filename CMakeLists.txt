@@ -21,7 +21,7 @@ file(GLOB_RECURSE PROTO_FILES ${PROTO_DIR}/*.proto)
 PROTOBUF_GENERATE_CPP(PROTO_SRCS PROTO_HDRS ${PROTO_FILES})
 
 # ----- 手动库查找 -----
-set(INSTALL_PREFIX /usr/local)
+set(INSTALL_PREFIX /usr/local CACHE PATH "Additional dependency installation prefix")
 set(INCLUDE_DIR ${INSTALL_PREFIX}/include)
 set(LIBRARY_DIR ${INSTALL_PREFIX}/lib)
 
@@ -39,7 +39,8 @@ find_path(GLOG_INCLUDE_DIR glog/logging.h PATHS ${INCLUDE_DIR})
 find_library(GLOG_LIB glog PATHS ${LIBRARY_DIR})
 
 find_package(OpenSSL REQUIRED)
-find_package(Boost COMPONENTS system thread REQUIRED)
+# Boost.System is header-only since 1.69; recent Boost has no system library.
+find_package(Boost 1.69 COMPONENTS thread REQUIRED)
 find_library(DL_LIB dl)
 
 # ----- 收集所有源文件（包括新增的 raftcore 目录）-----

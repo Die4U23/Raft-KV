@@ -6,7 +6,9 @@
 
 面向 C++ 后端 / 基础架构实习的改进顺序、验收标准和面试准备见 [实习项目升级路线](docs/internship-roadmap.md)。路线中的待办不代表已经实现的能力。
 
-并发处理支持满批立即调度、状态机异步应用、队列限额、慢连接保护，以及 INFO 阶段耗时与批量大小统计。默认 `--async_apply=true` 将已提交 KV 批次交给串行工作线程，Raft 日志仍同步落盘；详见 [并发处理说明](docs/concurrency.md) 与 [压测说明](docs/benchmark.md)。真实吞吐和尾延迟尚未测量。
+并发处理支持满批立即调度、状态机异步应用、队列限额、慢连接保护，以及 INFO 阶段耗时与批量大小统计。默认 `--async_apply=true` 将已提交 KV 批次交给串行工作线程，Raft 日志仍同步落盘；详见 [并发处理说明](docs/concurrency.md) 与 [压测说明](docs/benchmark.md)。
+
+用户 Ubuntu 双核 VM 的三节点冒烟原始报告确认 10 项检查通过；32 连接、pipeline=1、128 字节 value、读写各半的四轮对照共完成 40 万次请求，错误为 0。四轮性能原始证据、冒烟报告与事后构建快照均已归档核验。同步合并吞吐约 3657 次/秒，异步约 3825 次/秒；三节点与客户端同机，结果不代表独立服务端容量或稳定优化收益。指标及限制见 [性能基线报告](docs/benchmarks/ubuntu-2cpu-abba.md)，编译配置与修补见 [构建和冒烟核验](docs/benchmarks/ubuntu-build-and-smoke.md)。
 
 ## 架构
 
@@ -64,6 +66,7 @@
 
 - C++17 (GCC 10+)
 - CMake ≥ 3.16
+- Boost ≥ 1.69（thread 组件）
 - [muduo](https://github.com/chenshuo/muduo) — 网络库
 - [RocksDB](https://github.com/facebook/rocksdb) — 持久化存储
 - [Protobuf](https://github.com/protocolbuffers/protobuf) — RPC 消息序列化
@@ -71,6 +74,16 @@
 - [glog](https://github.com/google/glog) — 日志
 
 ## 编译
+
+Ubuntu 推荐使用[构建与验证流程](docs/linux-build.md)：先安装系统依赖，再执行以下命令。脚本自动准备并修补仓库自带 Muduo，使用独立目录并记录构建和测试身份：
+
+```bash
+python3 scripts/build_linux.py --jobs 2 --smoke
+```
+
+该路径的服务产物为 `build-linux-repro/server/raft_kv_server`。自动准备逻辑与可移植测试已在 Windows 验证，新流程的完整 Linux 构建仍需验证；此前已归档的 VM 实测属于手工流程。
+
+依赖已经安装好时，也可使用原有手工构建：
 
 ```bash
 mkdir -p build && cd build
@@ -80,7 +93,7 @@ make -j$(nproc)
 
 产物为 `build/raft_kv_server`。
 
-如果依赖库安装在非标准路径，请修改 `CMakeLists.txt` 中的 `INSTALL_PREFIX`。
+如果依赖库安装在非标准路径，可在首次配置时传入 `-DINSTALL_PREFIX=/path/to/deps`；已有 CMake 查找缓存需要单独核对。自动流程显式指定自己的 Muduo 路径。
 
 ## 启动集群
 
@@ -237,7 +250,12 @@ raft-kv/
 - [x] RESP 半包保留、输入上限与同连接命令顺序控制
 - [ ] ReadIndex / 线性一致读
 - [ ] 客户端请求去重与请求超时
-- [ ] 真实集群故障测试与可复现性能基线
+- [x] 用户 Ubuntu VM 三进程冒烟测试与四轮性能摘要（见性能基线报告）
+- [x] 四轮性能原始材料归档及可重复的数据核验
+- [x] 冒烟原始报告与事后构建快照归档核验
+- [x] 固化 Ubuntu 构建修补与新构建/测试身份记录流程（本地准备测试已通过）
+- [ ] 自动流程的干净 Linux 构建及真实三节点验证
+- [ ] 真实网络分区与磁盘故障测试
 - [ ] gRPC 或 HTTP API
 - [ ] 监控指标导出（Prometheus）
 - [x] 可移植协议回归测试

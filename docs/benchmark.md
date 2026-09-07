@@ -7,7 +7,7 @@ python3 tests/load_benchmark.py --self-test
 python3 tests/load_benchmark.py --host 127.0.0.1 --port 8080 --connections 32 --requests 10000 --pipeline 1 --value-size 128 --write-ratio 0.5 --timeout 5 --namespace bench --output result.json
 ```
 
-`--self-test` 校验 RESP 解析、编码、分位数、采样及模拟多连接请求计数，不连接真实服务端。**当前真实 Linux 构建、Muduo 调度、TCP、fsync 和 Raft 性能测量均为 UNRUN（未运行），没有可报告的 Raft 吞吐或尾延迟数字。**
+`--self-test` 校验 RESP 解析、编码、分位数、采样及模拟多连接请求计数，不连接真实服务端。用户已回传 Ubuntu 三节点冒烟测试 PASS 和四轮同步/异步性能结果，见 [双核 VM 性能基线](benchmarks/ubuntu-2cpu-abba.md)。四轮性能原始材料、冒烟原始报告与事后构建快照均已归档核验，测试时二进制身份仍不能追溯证明；该证据不证明掉电安全或完整 Raft 正确性，也不是 Windows 本地重跑结果。
 
 ## 测量范围
 
@@ -62,8 +62,8 @@ python3 tests/load_benchmark.py --host 127.0.0.1 --port 8080 --connections 64 --
 
 在测量前、中、后，以相同频率向所有节点发送 `INFO`，采集其中的 `async_apply / apply_inflight / apply_lag / commit_index / last_applied / term / state / leader_id`，并记录采样开销。`apply_lag` 是已提交但 owner 尚未确认完成应用的日志条数，`apply_inflight=1` 包含完成通知仍排队的阶段。结合日志或单独的诊断采集记录心跳处理延迟、选举和 Leader 切换，比较任期变化是否增多；这些 INFO 字段本身不是心跳延迟测量工具，现有压测客户端也不会自动持续采样它们。
 
-Follower 在异步模式下可以在 Raft 日志同步持久化后、KV 应用结束前回复复制成功；客户端写成功仍需等待 KV 同步持久化和 owner 完成通知。应同时观察有效吞吐、`apply_lag`、心跳及任期变化，确认积压与服务行为，不能仅用复制确认速度代表客户端写入完成速度。上述实验尚未执行，文档不提供性能估算或提升倍数。
+Follower 在异步模式下可以在 Raft 日志同步持久化后、KV 应用结束前回复复制成功；客户端写成功仍需等待 KV 同步持久化和 owner 完成通知。应同时观察有效吞吐、`apply_lag`、心跳及任期变化，确认积压与服务行为，不能仅用复制确认速度代表客户端写入完成速度。已归档的四轮用户回传摘要包含负载指标、CPU 与前后 INFO 阶段差分；完整实验矩阵、运行中持续 INFO/心跳采样及稳定收益验证尚未完成。
 
 同时保存测量区间起止的阶段计数器。各前缀的准确边界见 [阶段指标说明](concurrency.md)：`write_queue_wait` 到组批即结束，后续可能被拒绝；`write_completed` 到服务端成功回调结束，即使客户端已断连仍计数；`local_read` 包括未命中的正常读取。日志写和 KV 应用以批为样本，`replication_data_ack` 以成功数据 RPC 为样本，包含缓冲和重试且排除空心跳；`apply_dispatch` 是 worker 完成到 owner 收到通知的等待，同步模式为 0。它们都不能替代客户端端到端延迟，也不能把各阶段均值相加。
 
-这些服务端计数器使用固定内存，自进程启动累计，重启归零，不保留分位数；`_avg_us` 和 `_avg_entries` 是向下取整的累计均值。在确认进程未重启且 `Δcount > 0` 时，用 `Δtotal_us / Δcount` 得到测量区间均值，用 `Δentries / Δcount` 得到区间平均批大小。`_bytes` 只累计命令字节，no-op 计一条且占 0 命令字节；累计最大值不能差分成区间最大值。结合客户端错误率解读成功阶段样本，另记录 `flush_immediate_scheduled / flush_delayed_scheduled / flush_promotions` 的增量；这些是调度动作次数，不是成功写数或落盘次数。
+这些服务端计数器使用固定内存，自进程启动累计，重启归零，不保留分位数；`_avg_us` 和 `_avg_entries` 是向下取整的累计均值。在确认进程未重启且 `Δcount > 0` 时，用 `Δtotal_us / Δcount` 得到测量区间均值，用 `Δentries / Δcount` 得到区间平均批大小。同步模式也会记录 `apply_dispatch` 样本，只是每个样本的耗时为 0。`_bytes` 只累计命令字节，no-op 计一条且占 0 命令字节；累计最大值不能差分成区间最大值。结合客户端错误率解读成功阶段样本，另记录 `flush_immediate_scheduled / flush_delayed_scheduled / flush_promotions` 的增量；这些是调度动作次数，不是成功写数或落盘次数。

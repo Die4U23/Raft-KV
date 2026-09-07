@@ -1,0 +1,235 @@
+{
+  "schema_version": 1,
+  "provenance": {
+    "type": "user_terminal_transcript_verified_against_raw_archive",
+    "transcribed_on": "2026-09-07",
+    "raw_artifacts_in_repository": true,
+    "vm_commit_sha": null,
+    "server_binary_sha256": null,
+    "note": "Transcript values verified against archived ABBA files. Original smoke report and post-test build records are also archived and checked; the test-time binary identity remains unproven. No live server rerun.",
+    "verified_on": "2026-09-07",
+    "archive": "evidence/abba-evidence-1szk2s.tar.gz",
+    "archive_sha256": "ffd6ee7ea83db1e4b8a771be5c399e1e9be782ae9eccc4d2b9abd6c9a2e04088",
+    "verification_report": "evidence/verification.json",
+    "post_test_build_snapshot": {
+      "archive": "evidence/build-evidence-jQOIcr.tar.gz",
+      "archive_sha256": "c0e5217b5e0e2bc6aede875ff2c4759b1b023b65a6f1a7a11b7c361570601f3b",
+      "collected_at": "2026-09-07T16:50:52+08:00",
+      "current_git_head": "64f60a783bb9de0bfd3bf5b5068bbb7d79fe3ee0",
+      "recorded_current_binary_sha256": "46fe526f13ba6c931e16338bd853c6fc4af4237fa5c28e3325360d0f7e3aa607",
+      "verification_report": "evidence/build-verification.json",
+      "original_smoke_report_verified": true,
+      "proves_test_time_build_identity": false
+    }
+  },
+  "configuration": {
+    "os": "Ubuntu 26.04 LTS",
+    "logical_cpus": 2,
+    "memory_gib_approx": 7.2,
+    "deployment": "Three server processes and Python client in one VMware VM over loopback",
+    "connections": 32,
+    "pipeline": 1,
+    "value_size": 128,
+    "write_ratio": 0.5,
+    "warmup_requests_per_run": 10000,
+    "measured_requests_per_run": 100000,
+    "timeout_seconds": 5,
+    "namespace": "bench",
+    "storage_sync": true,
+    "storage_sync_basis": "Source implementation and instructed configuration; not proof of power-loss durability"
+  },
+  "runs": [
+    {
+      "order": 1,
+      "async_apply": true,
+      "leader_id": 1,
+      "vm_report_directory": "/home/a/projects/raft-kv/build-ubuntu-server/bench-aligned-u8ubq5kq",
+      "status": "COMPLETED",
+      "success": 100000,
+      "errors": 0,
+      "elapsed_seconds": 26.19446299399715,
+      "goodput_ops_per_second": 3817.6006899975955,
+      "batch_latency_ms": {
+        "p50": 8.346553004230373,
+        "p95": 15.023645004112042,
+        "p99": 18.38560001458972
+      },
+      "cpu": {
+        "samples": 26,
+        "user_percent_mean": 45.08,
+        "system_percent_mean": 49,
+        "idle_percent_mean": 4.73,
+        "iowait_percent_mean": 1.46,
+        "runnable_mean": 3.69,
+        "samples_idle_below_10_percent": 26,
+        "samples_with_swap_io": 0
+      },
+      "leader_stage_delta": {
+        "leader_log_write": {
+          "count": 6505,
+          "mean_us": 897.3
+        },
+        "replication_data_ack": {
+          "count": 12944,
+          "mean_us": 2371.4
+        },
+        "kv_apply": {
+          "count": 6469,
+          "mean_us": 1048
+        },
+        "apply_dispatch": {
+          "count": 6469,
+          "mean_us": 781.3
+        },
+        "write_completed": {
+          "count": 50032,
+          "mean_us": 7094.9
+        }
+      }
+    },
+    {
+      "order": 2,
+      "async_apply": false,
+      "leader_id": 2,
+      "vm_report_directory": "/home/a/projects/raft-kv/build-ubuntu-server/bench-sync-aligned-799e4974",
+      "status": "COMPLETED",
+      "success": 100000,
+      "errors": 0,
+      "elapsed_seconds": 25.422401980002178,
+      "goodput_ops_per_second": 3933.5386199408777,
+      "batch_latency_ms": {
+        "p50": 7.876432006014511,
+        "p95": 14.694484992651269,
+        "p99": 20.61339599997154
+      },
+      "cpu": {
+        "samples": 25,
+        "user_percent_mean": 45.72,
+        "system_percent_mean": 46.68,
+        "idle_percent_mean": 4.88,
+        "iowait_percent_mean": 3.08,
+        "runnable_mean": 3.08,
+        "samples_idle_below_10_percent": 22,
+        "samples_with_swap_io": 0
+      },
+      "leader_stage_delta": {
+        "leader_log_write": {
+          "count": 5882,
+          "mean_us": 921.3
+        },
+        "replication_data_ack": {
+          "count": 11202,
+          "mean_us": 3210.4
+        },
+        "kv_apply": {
+          "count": 5761,
+          "mean_us": 820.3
+        },
+        "apply_dispatch": {
+          "count": 5761,
+          "mean_us": 0
+        },
+        "write_completed": {
+          "count": 50032,
+          "mean_us": 6925.2
+        }
+      }
+    },
+    {
+      "order": 3,
+      "async_apply": false,
+      "leader_id": 1,
+      "vm_report_directory": "/home/a/projects/raft-kv/build-ubuntu-server/bench-sync-aligned-297fwzvz",
+      "status": "COMPLETED",
+      "success": 100000,
+      "errors": 0,
+      "elapsed_seconds": 29.27428207801131,
+      "goodput_ops_per_second": 3415.9676310256177,
+      "batch_latency_ms": {
+        "p50": 8.853780993376859,
+        "p95": 18.265259949112078,
+        "p99": 25.669756002462236
+      },
+      "cpu": {
+        "samples": 29,
+        "user_percent_mean": 45.66,
+        "system_percent_mean": 46.28,
+        "idle_percent_mean": 5.34,
+        "iowait_percent_mean": 3.17,
+        "runnable_mean": 3.41,
+        "samples_idle_below_10_percent": 28,
+        "samples_with_swap_io": 0
+      },
+      "leader_stage_delta": {
+        "leader_log_write": {
+          "count": 5894,
+          "mean_us": 1117.4
+        },
+        "replication_data_ack": {
+          "count": 11037,
+          "mean_us": 3848.4
+        },
+        "kv_apply": {
+          "count": 5714,
+          "mean_us": 1001.3
+        },
+        "apply_dispatch": {
+          "count": 5714,
+          "mean_us": 0
+        },
+        "write_completed": {
+          "count": 50032,
+          "mean_us": 8270.7
+        }
+      }
+    },
+    {
+      "order": 4,
+      "async_apply": true,
+      "leader_id": 1,
+      "vm_report_directory": "/home/a/projects/raft-kv/build-ubuntu-server/bench-async-aligned-ew_qbx_z",
+      "status": "COMPLETED",
+      "success": 100000,
+      "errors": 0,
+      "elapsed_seconds": 26.099124268992455,
+      "goodput_ops_per_second": 3831.546184053648,
+      "batch_latency_ms": {
+        "p50": 8.050581003772095,
+        "p95": 17.192731051909515,
+        "p99": 26.894894998986224
+      },
+      "cpu": {
+        "samples": 26,
+        "user_percent_mean": 44.81,
+        "system_percent_mean": 48.27,
+        "idle_percent_mean": 5.65,
+        "iowait_percent_mean": 1.46,
+        "runnable_mean": 4.19,
+        "samples_idle_below_10_percent": 26,
+        "samples_with_swap_io": 0
+      },
+      "leader_stage_delta": {
+        "leader_log_write": {
+          "count": 5887,
+          "mean_us": 1007.4
+        },
+        "replication_data_ack": {
+          "count": 11705,
+          "mean_us": 2716.3
+        },
+        "kv_apply": {
+          "count": 5851,
+          "mean_us": 1127.4
+        },
+        "apply_dispatch": {
+          "count": 5851,
+          "mean_us": 925.7
+        },
+        "write_completed": {
+          "count": 50032,
+          "mean_us": 7951
+        }
+      }
+    }
+  ]
+}

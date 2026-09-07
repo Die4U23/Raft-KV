@@ -67,4 +67,6 @@ docker run --rm -v "$PWD":/workspace -w /workspace raft-kv-dev sh -c 'cmake -S .
 
 Docker 镜像构建依赖 `third_party/` 中的压缩包及网络；其耗时不计入 smoke test 期限。上述命令使用 Linux shell 语法。该脚本是有限场景的集成验收，不等于线性一致性、网络分区、磁盘故障或完整 Raft 正确性证明。
 
-**当前交付状态：真实 Linux 构建、Muduo 调度、TCP 集群、fsync 和性能测试均为 UNRUN（未运行）。** 本次环境没有可运行的 Linux 服务端；可移植 C++ 测试、本地 Python 语法检查与客户端自测须和真实三节点结果分别记录。同步/异步应用的公平 Linux 对照流程见 [压测说明](../docs/benchmark.md)，目前没有 QPS 或延迟提升结论。
+**当前证据状态：Ubuntu 三节点冒烟原始报告确认 10 项检查 PASS，四轮同步/异步负载共 40 万次正式请求、0 错误，两批原始材料与事后构建快照均已归档核验。** 详见 [性能基线与证据边界](../docs/benchmarks/ubuntu-2cpu-abba.md)及 [构建与冒烟核验](../docs/benchmarks/ubuntu-build-and-smoke.md)。测试时二进制身份不能由事后快照独立证明；该结果不代表掉电、磁盘故障、网络分区或完整并发行为已验证。Windows 可移植测试、本地客户端自测与用户提供的真实 Linux 结果分别记录；对照流程见 [压测说明](../docs/benchmark.md)，尚无稳定性能提升结论。
+
+新增自动流程见 [Ubuntu 构建与验证](../docs/linux-build.md)。`python tests/build_workflow_tests.py` 在本地检查固定 Muduo 归档的自动修补、重复运行、编辑保护、身份记录与失败状态；不需要安装 Linux 依赖。自动流程默认构建后执行 CTest，带 `--smoke` 时再执行真实三节点测试。此前手工 VM 测试通过不等于这个新流程已通过 Linux 验收。

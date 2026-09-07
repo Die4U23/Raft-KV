@@ -1,0 +1,376 @@
+{
+  "status": "PASS",
+  "verification_scope": "Archived files versus transcript; not a live server rerun",
+  "archive_sha256": "ffd6ee7ea83db1e4b8a771be5c399e1e9be782ae9eccc4d2b9abd6c9a2e04088",
+  "archive_bytes": 53940,
+  "file_count": 44,
+  "file_manifest": [
+    {
+      "path": "bench-aligned-u8ubq5kq/benchmark.log",
+      "bytes": 3359,
+      "sha256": "aef844c2c5bc1c6fd40238d912db449a725247c1b3db013985f103229f8d97ae"
+    },
+    {
+      "path": "bench-aligned-u8ubq5kq/info-after.json",
+      "bytes": 6696,
+      "sha256": "5fed71963980273ca456fc411112c3a88c9b7181b48942291dc9e4344ae2c0c5"
+    },
+    {
+      "path": "bench-aligned-u8ubq5kq/info-before.json",
+      "bytes": 6645,
+      "sha256": "4fb4ae25d3a7c3752792154240dc5c7a37d4e3e6101677e64e99fb740ad1ff5e"
+    },
+    {
+      "path": "bench-aligned-u8ubq5kq/node-0.log",
+      "bytes": 4424,
+      "sha256": "475e862fa857cf823d3e724e433ba2d07cbcd9754cd55be51d3eacdb90237fd8"
+    },
+    {
+      "path": "bench-aligned-u8ubq5kq/node-1.log",
+      "bytes": 61767,
+      "sha256": "bf160308792d5ffc5b4afe409feeaab9e9fbc342cae0723b7d6972a5212a954f"
+    },
+    {
+      "path": "bench-aligned-u8ubq5kq/node-2.log",
+      "bytes": 4422,
+      "sha256": "91e72db5d4b243688e71bc2e5e98b1325334536d8cc244d284a5bf87999a7a9a"
+    },
+    {
+      "path": "bench-aligned-u8ubq5kq/result.json",
+      "bytes": 3359,
+      "sha256": "aef844c2c5bc1c6fd40238d912db449a725247c1b3db013985f103229f8d97ae"
+    },
+    {
+      "path": "bench-aligned-u8ubq5kq/threads.log",
+      "bytes": 49058,
+      "sha256": "d6aadd488cc866842dd2b18f2be240c01695ed37b3b4e2631b2abff2a953b0d0"
+    },
+    {
+      "path": "bench-aligned-u8ubq5kq/vmstat.log",
+      "bytes": 3905,
+      "sha256": "fd792916d379a77398334742f48f7fdbb5422cc1aca41e09e2347be12b4abaca"
+    },
+    {
+      "path": "bench-aligned-u8ubq5kq/warmup.json",
+      "bytes": 3252,
+      "sha256": "4439a891f1cfa67ddda0c787750c85bff50be7f0073c8c243e3f3bb21bd66ac8"
+    },
+    {
+      "path": "bench-aligned-u8ubq5kq/warmup.log",
+      "bytes": 3252,
+      "sha256": "4439a891f1cfa67ddda0c787750c85bff50be7f0073c8c243e3f3bb21bd66ac8"
+    },
+    {
+      "path": "bench-async-aligned-ew_qbx_z/benchmark.log",
+      "bytes": 3356,
+      "sha256": "4b80b16d9f81691138e02e7119cc0ddd6dbe21653ce7a403cc3a732e15ef479c"
+    },
+    {
+      "path": "bench-async-aligned-ew_qbx_z/info-after.json",
+      "bytes": 6690,
+      "sha256": "22e3d318e8e73d2935e27a0d99fc48727e1dc0057ccc5cee524e029238b5bbba"
+    },
+    {
+      "path": "bench-async-aligned-ew_qbx_z/info-before.json",
+      "bytes": 6632,
+      "sha256": "437f5d27a9f1f5200bf70c49201c29bfab0288874de32a11cd5f2b9238b8bc3e"
+    },
+    {
+      "path": "bench-async-aligned-ew_qbx_z/node-0.log",
+      "bytes": 294,
+      "sha256": "e963596e438b5a5f3fc8f1ee0936e94f422a6dda6fdbf7f62b2eef71f850076e"
+    },
+    {
+      "path": "bench-async-aligned-ew_qbx_z/node-1.log",
+      "bytes": 65829,
+      "sha256": "705cc807da56f7cc86f47d2780ecd61f4bfc05580bc9d1ed48505669c7581f4d"
+    },
+    {
+      "path": "bench-async-aligned-ew_qbx_z/node-2.log",
+      "bytes": 203,
+      "sha256": "8ddf3ab65fbc3fafce69a4577f29955d29a9264038189782a46ba28b4830e260"
+    },
+    {
+      "path": "bench-async-aligned-ew_qbx_z/result.json",
+      "bytes": 3356,
+      "sha256": "4b80b16d9f81691138e02e7119cc0ddd6dbe21653ce7a403cc3a732e15ef479c"
+    },
+    {
+      "path": "bench-async-aligned-ew_qbx_z/threads.log",
+      "bytes": 47241,
+      "sha256": "cbef96c2138557e40d47c77f03536f2065eb11fe8947d5cf7cdbcc745efb12ec"
+    },
+    {
+      "path": "bench-async-aligned-ew_qbx_z/vmstat.log",
+      "bytes": 3896,
+      "sha256": "19f5a2dc4292843f63421b1638225e9519dc6459b19888e21439657eadb9cd7e"
+    },
+    {
+      "path": "bench-async-aligned-ew_qbx_z/warmup.json",
+      "bytes": 3249,
+      "sha256": "b6706725fb8c912af5ed939f6afcdc9a38acb9b7045b3c98b63b146b69dc9429"
+    },
+    {
+      "path": "bench-async-aligned-ew_qbx_z/warmup.log",
+      "bytes": 3249,
+      "sha256": "b6706725fb8c912af5ed939f6afcdc9a38acb9b7045b3c98b63b146b69dc9429"
+    },
+    {
+      "path": "bench-sync-aligned-297fwzvz/benchmark.log",
+      "bytes": 3346,
+      "sha256": "05eb335cd5a49c3aaf287cbef5f207670d2a2b6c93aba2f2c9b33b118c6642fd"
+    },
+    {
+      "path": "bench-sync-aligned-297fwzvz/info-after.json",
+      "bytes": 6653,
+      "sha256": "9673c163ae702f49143505c6d94ef37f1deabfb5b78c1cb44004894834c702f5"
+    },
+    {
+      "path": "bench-sync-aligned-297fwzvz/info-before.json",
+      "bytes": 6599,
+      "sha256": "ab0b67b9cb9071ceb7766e96e93f9be2cd43f9302e2c60bb6fd8eb4c6f7724f9"
+    },
+    {
+      "path": "bench-sync-aligned-297fwzvz/node-0.log",
+      "bytes": 294,
+      "sha256": "2df8f1ff9f15c8c4a1524fe9132d04d08f1cda189516f83ee974c0aef13f9d19"
+    },
+    {
+      "path": "bench-sync-aligned-297fwzvz/node-1.log",
+      "bytes": 65829,
+      "sha256": "37b8de9df832fa66e57e93b07fef27d90b9bcf08a1c812955265a832d6850927"
+    },
+    {
+      "path": "bench-sync-aligned-297fwzvz/node-2.log",
+      "bytes": 203,
+      "sha256": "3658137da58450cae044b7d45181f5a178eecbe79c638500bd31d476d49dad09"
+    },
+    {
+      "path": "bench-sync-aligned-297fwzvz/result.json",
+      "bytes": 3346,
+      "sha256": "05eb335cd5a49c3aaf287cbef5f207670d2a2b6c93aba2f2c9b33b118c6642fd"
+    },
+    {
+      "path": "bench-sync-aligned-297fwzvz/threads.log",
+      "bytes": 46769,
+      "sha256": "9158a8cc321f0511e1eddbf3876e89541db727140462b754096b609690481342"
+    },
+    {
+      "path": "bench-sync-aligned-297fwzvz/vmstat.log",
+      "bytes": 4305,
+      "sha256": "f9ad7174fce134966e383df2e5f485b47c2655e8852802f901f40c2d49b818a8"
+    },
+    {
+      "path": "bench-sync-aligned-297fwzvz/warmup.json",
+      "bytes": 3239,
+      "sha256": "1439deb026e99a83300c2121a21ef0da6702ce8d43329449f9e49c1f6aadef33"
+    },
+    {
+      "path": "bench-sync-aligned-297fwzvz/warmup.log",
+      "bytes": 3239,
+      "sha256": "1439deb026e99a83300c2121a21ef0da6702ce8d43329449f9e49c1f6aadef33"
+    },
+    {
+      "path": "bench-sync-aligned-799e4974/benchmark.log",
+      "bytes": 3345,
+      "sha256": "cd6279bc3624fdae419fc029b9891a31fcdecc1f65dbb61fd2bdfea9c19b557a"
+    },
+    {
+      "path": "bench-sync-aligned-799e4974/info-after.json",
+      "bytes": 6646,
+      "sha256": "b1248031f2d8474716705e45b57c47ba52ec7185b7c0a0efeeaf4080ca0de6b7"
+    },
+    {
+      "path": "bench-sync-aligned-799e4974/info-before.json",
+      "bytes": 6597,
+      "sha256": "068943d479fff9c4c8bcf628987fe684811fca464842bd17ceaeedff7fd54a88"
+    },
+    {
+      "path": "bench-sync-aligned-799e4974/node-0.log",
+      "bytes": 294,
+      "sha256": "91b1deee72529ecb17424dd2f2e2192d48fabee910f6d90fabac1c1556e2bbbc"
+    },
+    {
+      "path": "bench-sync-aligned-799e4974/node-1.log",
+      "bytes": 293,
+      "sha256": "0f5deb9ba76054ea82813c8de4f13e4b9a98588b031496a7bfccdecc25197e85"
+    },
+    {
+      "path": "bench-sync-aligned-799e4974/node-2.log",
+      "bytes": 74020,
+      "sha256": "6eaad979d90bab3942f1c9dec6345a0ec8b4a2a20b781184da06f7f82aa1eddb"
+    },
+    {
+      "path": "bench-sync-aligned-799e4974/result.json",
+      "bytes": 3345,
+      "sha256": "cd6279bc3624fdae419fc029b9891a31fcdecc1f65dbb61fd2bdfea9c19b557a"
+    },
+    {
+      "path": "bench-sync-aligned-799e4974/threads.log",
+      "bytes": 40533,
+      "sha256": "aaa30aea856a461182d56900d47c2c827600e9823b9404bd06904fd53eac1460"
+    },
+    {
+      "path": "bench-sync-aligned-799e4974/vmstat.log",
+      "bytes": 3760,
+      "sha256": "93a63239134cc94f87fbc8c6ebb4abc802bdf9b3ff59560fa03cd264d409ea13"
+    },
+    {
+      "path": "bench-sync-aligned-799e4974/warmup.json",
+      "bytes": 3240,
+      "sha256": "ea82e93e8bae0fca6dd2d4c9b42df648d70c5aa9cce2b42846b96c1ae3e95bf2"
+    },
+    {
+      "path": "bench-sync-aligned-799e4974/warmup.log",
+      "bytes": 3240,
+      "sha256": "ea82e93e8bae0fca6dd2d4c9b42df648d70c5aa9cce2b42846b96c1ae3e95bf2"
+    }
+  ],
+  "runs": [
+    {
+      "order": 1,
+      "directory": "bench-aligned-u8ubq5kq",
+      "run_id": "96b5660c00804ae4abe259b9a3f0583c",
+      "status": "PASS",
+      "endpoint_state": [
+        {
+          "node_id": 0,
+          "term_before": 2,
+          "term_after": 2,
+          "commit_index_after": 55066,
+          "last_applied_after": 55066,
+          "replication_retries_before": 6,
+          "replication_retry_delta": 0
+        },
+        {
+          "node_id": 1,
+          "term_before": 2,
+          "term_after": 2,
+          "commit_index_after": 55066,
+          "last_applied_after": 55066,
+          "replication_retries_before": 0,
+          "replication_retry_delta": 0
+        },
+        {
+          "node_id": 2,
+          "term_before": 2,
+          "term_after": 2,
+          "commit_index_after": 55066,
+          "last_applied_after": 55066,
+          "replication_retries_before": 0,
+          "replication_retry_delta": 0
+        }
+      ]
+    },
+    {
+      "order": 2,
+      "directory": "bench-sync-aligned-799e4974",
+      "run_id": "554c336d69bc42c98b2abd64a964234b",
+      "status": "PASS",
+      "endpoint_state": [
+        {
+          "node_id": 0,
+          "term_before": 2,
+          "term_after": 2,
+          "commit_index_after": 55065,
+          "last_applied_after": 55065,
+          "replication_retries_before": 0,
+          "replication_retry_delta": 0
+        },
+        {
+          "node_id": 1,
+          "term_before": 2,
+          "term_after": 2,
+          "commit_index_after": 55065,
+          "last_applied_after": 55065,
+          "replication_retries_before": 0,
+          "replication_retry_delta": 0
+        },
+        {
+          "node_id": 2,
+          "term_before": 2,
+          "term_after": 2,
+          "commit_index_after": 55065,
+          "last_applied_after": 55065,
+          "replication_retries_before": 0,
+          "replication_retry_delta": 0
+        }
+      ]
+    },
+    {
+      "order": 3,
+      "directory": "bench-sync-aligned-297fwzvz",
+      "run_id": "d5e6014d52324c079ce72776514a5e24",
+      "status": "PASS",
+      "endpoint_state": [
+        {
+          "node_id": 0,
+          "term_before": 2,
+          "term_after": 2,
+          "commit_index_after": 55065,
+          "last_applied_after": 55065,
+          "replication_retries_before": 0,
+          "replication_retry_delta": 0
+        },
+        {
+          "node_id": 1,
+          "term_before": 2,
+          "term_after": 2,
+          "commit_index_after": 55065,
+          "last_applied_after": 55065,
+          "replication_retries_before": 0,
+          "replication_retry_delta": 0
+        },
+        {
+          "node_id": 2,
+          "term_before": 2,
+          "term_after": 2,
+          "commit_index_after": 55065,
+          "last_applied_after": 55065,
+          "replication_retries_before": 0,
+          "replication_retry_delta": 0
+        }
+      ]
+    },
+    {
+      "order": 4,
+      "directory": "bench-async-aligned-ew_qbx_z",
+      "run_id": "d99a8d06612a46149c707ac7efc0cbcd",
+      "status": "PASS",
+      "endpoint_state": [
+        {
+          "node_id": 0,
+          "term_before": 2,
+          "term_after": 2,
+          "commit_index_after": 55065,
+          "last_applied_after": 55065,
+          "replication_retries_before": 0,
+          "replication_retry_delta": 0
+        },
+        {
+          "node_id": 1,
+          "term_before": 2,
+          "term_after": 2,
+          "commit_index_after": 55065,
+          "last_applied_after": 55065,
+          "replication_retries_before": 3,
+          "replication_retry_delta": 0
+        },
+        {
+          "node_id": 2,
+          "term_before": 2,
+          "term_after": 2,
+          "commit_index_after": 55065,
+          "last_applied_after": 55065,
+          "replication_retries_before": 0,
+          "replication_retry_delta": 0
+        }
+      ]
+    }
+  ],
+  "combined_goodput_ops_per_second": {
+    "sync": 3656.5287904449933,
+    "async": 3824.5607247056946
+  },
+  "async_difference_percent": 4.595394809957232
+}

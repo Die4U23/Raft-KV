@@ -1,0 +1,199 @@
+{
+  "status": "PASS",
+  "scope": "Original smoke report consistency and post-test build records; no live rerun",
+  "archive_sha256": "c0e5217b5e0e2bc6aede875ff2c4759b1b023b65a6f1a7a11b7c361570601f3b",
+  "archive_bytes": 13465,
+  "file_count": 25,
+  "file_manifest": [
+    {
+      "path": "build-evidence-jQOIcr/build/CMakeCache.txt",
+      "bytes": 20667,
+      "sha256": "2421d3df664a3ab747962c6e4c9c4948bdd95bdf5a552f435eb449f2f99c7056"
+    },
+    {
+      "path": "build-evidence-jQOIcr/build/cmake-version.txt",
+      "bytes": 90,
+      "sha256": "a24e1ae7f8f715ef1f0121cd749052d73c6a4315dba5bb885c584553d826eb79"
+    },
+    {
+      "path": "build-evidence-jQOIcr/build/collected-at.txt",
+      "bytes": 26,
+      "sha256": "bf52b22b2ba479df985d6f059bbdce8516056086d7166eadf52612248910213f"
+    },
+    {
+      "path": "build-evidence-jQOIcr/build/compiler-version.txt",
+      "bytes": 239,
+      "sha256": "e3bac80fa6d4e3a292f39091c2f4f2e33986cc7c91cbcb034c0de3cd27560881"
+    },
+    {
+      "path": "build-evidence-jQOIcr/build/cpu.txt",
+      "bytes": 3273,
+      "sha256": "2f7bcc20d0d4d7f1ce5660c87836ccb8b7b1ea254e87a59c4f4188500727f64c"
+    },
+    {
+      "path": "build-evidence-jQOIcr/build/flags.make",
+      "bytes": 524,
+      "sha256": "920cf025592a2b86fae8a11ed53dc8c27bda7bd9e5bb3f6c6708657048bf93a7"
+    },
+    {
+      "path": "build-evidence-jQOIcr/build/git-head.txt",
+      "bytes": 41,
+      "sha256": "2e5e660b26b2b58055fcf9851aaf8dda4e218eba0a8ef65f85490ca8b147df60"
+    },
+    {
+      "path": "build-evidence-jQOIcr/build/git-status.txt",
+      "bytes": 68,
+      "sha256": "d4ba4ed4ebc1229e84492d56f8433ed335551c96edf1561a1654b4a48940199b"
+    },
+    {
+      "path": "build-evidence-jQOIcr/build/kernel.txt",
+      "bytes": 126,
+      "sha256": "61fd25571816f03bee4eeb02df6b6cbc968b3c3d7ac84f0d9ac8328a1c13c5d1"
+    },
+    {
+      "path": "build-evidence-jQOIcr/build/link.txt",
+      "bytes": 1228,
+      "sha256": "01dfcc74ee4db9f8e69c3ce52afa0b7ee51bb3bb4ff7e9664b214d5a1d1a6e3d"
+    },
+    {
+      "path": "build-evidence-jQOIcr/build/muduo-HttpResponse.cc",
+      "bytes": 1074,
+      "sha256": "b62d9c1b57d13b7e380bbad1db320b68fe8915779b29bbeb5f60e54831f44b92"
+    },
+    {
+      "path": "build-evidence-jQOIcr/build/os-release.txt",
+      "bytes": 406,
+      "sha256": "de1a366db70de1ae4b6612a1696f9c1f37948028fab733508a3d5cf49836faac"
+    },
+    {
+      "path": "build-evidence-jQOIcr/build/packages-query.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "build-evidence-jQOIcr/build/packages.txt",
+      "bytes": 2545,
+      "sha256": "2ffd5fb30edbe37ac3c5dfa9d9a930385062529ffe6c36341db2b656a4670363"
+    },
+    {
+      "path": "build-evidence-jQOIcr/build/project-CMakeLists.txt",
+      "bytes": 2154,
+      "sha256": "bb4b986b855cbdd7a89036f953a876c0e7b58fb9d250064cbe2476fd793fbbf8"
+    },
+    {
+      "path": "build-evidence-jQOIcr/build/protobuf-version.txt",
+      "bytes": 18,
+      "sha256": "5d8e8ea015f9d39d174f30332765f0edeb50e00689dc792907c56d56ea637d22"
+    },
+    {
+      "path": "build-evidence-jQOIcr/build/provenance.txt",
+      "bytes": 138,
+      "sha256": "6b7f405980473b1782b72fdb1d87c1907e103c7bab4f120ed0149c3fac0951ec"
+    },
+    {
+      "path": "build-evidence-jQOIcr/build/python-version.txt",
+      "bytes": 14,
+      "sha256": "63990b3ee50c49ab28d70e29c0f967f0c71330e39243ffeb4d3a8d5878c8a978"
+    },
+    {
+      "path": "build-evidence-jQOIcr/build/server-sha256.txt",
+      "bytes": 126,
+      "sha256": "9a6a69c7c99a01a82b72e9e8b878136bb5ede59eed73f2c2d3db0a5cff288c72"
+    },
+    {
+      "path": "build-evidence-jQOIcr/build/server-stat.txt",
+      "bytes": 425,
+      "sha256": "e84a669a750b162bd06a8a458ace46f856573e0875bb746af2269b82a6dc4563"
+    },
+    {
+      "path": "build-evidence-jQOIcr/build/tracked-code-changes.patch",
+      "bytes": 486,
+      "sha256": "c5e1fec7dfb82af0c0c1bfa3f8f45f9eae7cf11cab8e0a9a47dddbb70ff3dd5b"
+    },
+    {
+      "path": "build-evidence-jQOIcr/smoke/node-0.log",
+      "bytes": 12944,
+      "sha256": "a6fbd36458f7f6ebd4b6fe238d23d752a9f6579ea9e361c05bd12bd790b4501d"
+    },
+    {
+      "path": "build-evidence-jQOIcr/smoke/node-1.log",
+      "bytes": 4512,
+      "sha256": "e5d5b5538278951767f7bb4e13e2d91a04ff34aadfd0fe0ff1751b8211d3ebd7"
+    },
+    {
+      "path": "build-evidence-jQOIcr/smoke/node-2.log",
+      "bytes": 4510,
+      "sha256": "d75c666fab92f572f66ad54de596a41293eeff68d6b4882256f137aba2d6474e"
+    },
+    {
+      "path": "build-evidence-jQOIcr/smoke/report.json",
+      "bytes": 10655,
+      "sha256": "82ecd1e216e16748a9c1441540598ca5b6274fc3af37fba6e197ecc4cdbe6c87"
+    }
+  ],
+  "smoke": {
+    "status": "PASS",
+    "step_count": 10,
+    "initial_leader": 0,
+    "final_leader": 2,
+    "final_term": 3,
+    "final_commit_and_applied_index": 42,
+    "elapsed_seconds": 1.589,
+    "elapsed_semantics": "Entire smoke test, not failover duration",
+    "expected_exit_codes": {
+      "0": [
+        -9,
+        -15
+      ],
+      "1": [
+        -15
+      ],
+      "2": [
+        -15
+      ]
+    }
+  },
+  "build": {
+    "collected_at": "2026-09-07T16:50:52+08:00",
+    "current_git_head": "64f60a783bb9de0bfd3bf5b5068bbb7d79fe3ee0",
+    "current_git_status": [
+      " M CMakeLists.txt",
+      "?? CMakeLists.txt.before-boost190-20260905-215703"
+    ],
+    "recorded_current_binary_sha256": "46fe526f13ba6c931e16338bd853c6fc4af4237fa5c28e3325360d0f7e3aa607",
+    "binary_in_archive": false,
+    "test_time_binary_identity_proven": false,
+    "build_type": "RelWithDebInfo",
+    "cxx_flags": "-O2 -g -DNDEBUG -std=gnu++17",
+    "compiler": "c++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0",
+    "cmake": "cmake version 4.2.3",
+    "protoc": "libprotoc 3.21.12",
+    "installed_packages": {
+      "libboost-atomic1.90-dev:amd64": "1.90.0-6ubuntu1",
+      "libboost-atomic1.90.0:amd64": "1.90.0-6ubuntu1",
+      "libboost-chrono1.90-dev:amd64": "1.90.0-6ubuntu1",
+      "libboost-chrono1.90.0:amd64": "1.90.0-6ubuntu1",
+      "libboost-container1.90-dev:amd64": "1.90.0-6ubuntu1",
+      "libboost-container1.90.0:amd64": "1.90.0-6ubuntu1",
+      "libboost-date-time1.90-dev:amd64": "1.90.0-6ubuntu1",
+      "libboost-date-time1.90.0:amd64": "1.90.0-6ubuntu1",
+      "libboost-exception1.90-dev:amd64": "1.90.0-6ubuntu1",
+      "libboost-serialization1.90-dev:amd64": "1.90.0-6ubuntu1",
+      "libboost-serialization1.90.0:amd64": "1.90.0-6ubuntu1",
+      "libboost-thread-dev:amd64": "1.90.0.1ubuntu3",
+      "libboost-thread1.90-dev:amd64": "1.90.0-6ubuntu1",
+      "libboost-thread1.90.0:amd64": "1.90.0-6ubuntu1",
+      "libboost1.90-dev:amd64": "1.90.0-6ubuntu1",
+      "libgflags-dev": "2.2.2-3",
+      "libgflags2.2": "2.2.2-3",
+      "libgoogle-glog-dev": "0.6.0-3",
+      "libgoogle-glog0v6t64": "0.6.0-3",
+      "libprotobuf-dev:amd64": "3.21.12-15ubuntu1",
+      "libprotobuf-lite32t64:amd64": "3.21.12-15ubuntu1",
+      "libprotobuf32t64:amd64": "3.21.12-15ubuntu1",
+      "librocksdb-dev": "9.11.2-1",
+      "librocksdb9.11": "9.11.2-1",
+      "protobuf-compiler": "3.21.12-15ubuntu1"
+    }
+  }
+}
