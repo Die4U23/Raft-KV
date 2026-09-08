@@ -1,0 +1,150 @@
+{
+  "status": "PASS",
+  "scope": "Archived incremental Linux workflow validation; not a clean rebuild or a local live rerun",
+  "archive_sha256": "20841bcfbf9bb69d471728c7e3964bb9122cd84f6d2a365e13388770bc00627a",
+  "archive_bytes": 38922,
+  "file_count": 25,
+  "file_manifest": [
+    {
+      "path": "run-gnt4rq_1/build-report.json",
+      "bytes": 59073,
+      "sha256": "95dde5d4ff5f7bb4f6331607bf1dbebc6ec902950aa2580a19dfe59003401f58"
+    },
+    {
+      "path": "run-gnt4rq_1/c++-version.log",
+      "bytes": 239,
+      "sha256": "e3bac80fa6d4e3a292f39091c2f4f2e33986cc7c91cbcb034c0de3cd27560881"
+    },
+    {
+      "path": "run-gnt4rq_1/cluster/run-yg5iv6kc/node-0.log",
+      "bytes": 4510,
+      "sha256": "3d908f71ece2bca871f941bde85f6f3a6e9436e4027049aca6b719f28f27e619"
+    },
+    {
+      "path": "run-gnt4rq_1/cluster/run-yg5iv6kc/node-1.log",
+      "bytes": 12759,
+      "sha256": "b72d6009a911abb0d80dc2c77ff5bacf0f1887f1e8d1c407e56bd1f9fb82a4a2"
+    },
+    {
+      "path": "run-gnt4rq_1/cluster/run-yg5iv6kc/node-2.log",
+      "bytes": 4507,
+      "sha256": "f539a4cd06a9b44c3ff3fe77768451c5ca1be1f5aa36403cf44ebfd9ed67ed5d"
+    },
+    {
+      "path": "run-gnt4rq_1/cluster/run-yg5iv6kc/report.json",
+      "bytes": 10701,
+      "sha256": "5393ebcaf2f5eead8f6868861fb1a2cb72be1fcdf6cb6cc5698da47973ee2591"
+    },
+    {
+      "path": "run-gnt4rq_1/cmake-version.log",
+      "bytes": 90,
+      "sha256": "a24e1ae7f8f715ef1f0121cd749052d73c6a4315dba5bb885c584553d826eb79"
+    },
+    {
+      "path": "run-gnt4rq_1/ctest-version.log",
+      "bytes": 90,
+      "sha256": "71126d4e2999082dcc4016e3957143bd9d416d0e127e1869a0cb65bcb4a1e31a"
+    },
+    {
+      "path": "run-gnt4rq_1/ctest.log",
+      "bytes": 639,
+      "sha256": "e01a97d7053b9d3b30f379c883287e5c5e37178d20a7e3061706e44e428c05b9"
+    },
+    {
+      "path": "run-gnt4rq_1/flags.make",
+      "bytes": 595,
+      "sha256": "6ad56e6303499f73d35d4ecc13644dc2f222a4ef206c3d8a51db6b3076389305"
+    },
+    {
+      "path": "run-gnt4rq_1/git-head.log",
+      "bytes": 41,
+      "sha256": "790584fd1d508981c704975df217522ad05d966be782291814a0d203fd0137bb"
+    },
+    {
+      "path": "run-gnt4rq_1/git-status.log",
+      "bytes": 50,
+      "sha256": "d6a2bae4bb3ee631a5ad4dd2d73a7956236eb2e9e604c9068c05e60bb11b7720"
+    },
+    {
+      "path": "run-gnt4rq_1/link.txt",
+      "bytes": 1318,
+      "sha256": "737089c41becd7484de27297a7345f1f20d4bc45e67f6abbd99a71e2f1862fdf"
+    },
+    {
+      "path": "run-gnt4rq_1/muduo-CMakeCache.txt",
+      "bytes": 18887,
+      "sha256": "de2b96b20d062853ca965d8c2e37a5fba9d6c63d5cc2c6ccc0af52aac64f4959"
+    },
+    {
+      "path": "run-gnt4rq_1/muduo-build.log",
+      "bytes": 126,
+      "sha256": "6c65ae128686f3611f675ca8bcf00771d26f01d36ee180410da9f14c31f7f4ee"
+    },
+    {
+      "path": "run-gnt4rq_1/muduo-configure.log",
+      "bytes": 1178,
+      "sha256": "e793a2e4266cec0211070c893d8e78bc7d4c20af9e84ee4bd28ac4eb341c1a0f"
+    },
+    {
+      "path": "run-gnt4rq_1/muduo-install.log",
+      "bytes": 5046,
+      "sha256": "19bb1776b11f6dcc8a8de116849737da8542a4a5565ba527d12e8ea4fd106ea2"
+    },
+    {
+      "path": "run-gnt4rq_1/os-release.txt",
+      "bytes": 406,
+      "sha256": "de1a366db70de1ae4b6612a1696f9c1f37948028fab733508a3d5cf49836faac"
+    },
+    {
+      "path": "run-gnt4rq_1/packages.log",
+      "bytes": 2545,
+      "sha256": "2ffd5fb30edbe37ac3c5dfa9d9a930385062529ffe6c36341db2b656a4670363"
+    },
+    {
+      "path": "run-gnt4rq_1/protoc-version.log",
+      "bytes": 18,
+      "sha256": "5d8e8ea015f9d39d174f30332765f0edeb50e00689dc792907c56d56ea637d22"
+    },
+    {
+      "path": "run-gnt4rq_1/server-CMakeCache.txt",
+      "bytes": 20902,
+      "sha256": "61cc5885c6e1314c62c70609431a243e9bddd9b22938f3cbcec4b5ffedf3b776"
+    },
+    {
+      "path": "run-gnt4rq_1/server-build.log",
+      "bytes": 220,
+      "sha256": "8a6eb71475d886009e7dc0f5a659c3795927840febda8b89bbfb435acf309fd7"
+    },
+    {
+      "path": "run-gnt4rq_1/server-configure.log",
+      "bytes": 465,
+      "sha256": "27d86dd330e1d9bbb4903bff4209d05945b53f66abf13395c55bd3c77ff73873"
+    },
+    {
+      "path": "run-gnt4rq_1/smoke.log",
+      "bytes": 784,
+      "sha256": "fc0d307bd62ff560c45855630a8ae7e97078947ee313d381624fa7de8a5fcd9d"
+    },
+    {
+      "path": "run-gnt4rq_1/tracked-code-changes.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "source_commit": "35a348d951b43470d1dd6491a7d6522a5a83af96",
+  "matched_tracked_source_files": 48,
+  "matched_prepared_muduo_files": 418,
+  "extra_source_hashes_not_verified_from_content": {
+    "src/server/main.cpp.bak": "f9b1cd7195eccdf2dabcfba4da69391735563f2edbbeb8c8f450df21b21cf159"
+  },
+  "binary_sha256_recorded_at_test_time": "c51f226ba0f04ef690c55e9071d2317db5db91f556ba31ee9bcf3402d33ccd09",
+  "binary_in_archive": false,
+  "ctest_passed": 5,
+  "smoke_steps_passed": 10,
+  "smoke_final_term": 4,
+  "smoke_final_commit_and_applied_index": 42,
+  "platform": "Linux-7.0.0-31-generic-x86_64-with-glibc2.43",
+  "started_at": "2026-09-08T06:38:51.627732+00:00",
+  "finished_at": "2026-09-08T06:38:55.061428+00:00",
+  "clean_build_proven": false
+}

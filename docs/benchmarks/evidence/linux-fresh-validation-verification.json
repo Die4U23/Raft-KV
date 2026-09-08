@@ -1,0 +1,153 @@
+{
+  "status": "PASS",
+  "scope": "Archived fresh-directory Linux build and tests; not a clean OS or a local live rerun",
+  "archive_sha256": "60f0772a8a149e71ffb99d18e63046b3141bea80678c95580e9e33faaf6951ff",
+  "archive_bytes": 39873,
+  "file_count": 25,
+  "file_manifest": [
+    {
+      "path": "run-a3q01rgw/build-report.json",
+      "bytes": 59185,
+      "sha256": "58a2de6ef95801ebc4dfab90eac0acdb14845814240bf3b81de766f31e2c4561"
+    },
+    {
+      "path": "run-a3q01rgw/c++-version.log",
+      "bytes": 239,
+      "sha256": "e3bac80fa6d4e3a292f39091c2f4f2e33986cc7c91cbcb034c0de3cd27560881"
+    },
+    {
+      "path": "run-a3q01rgw/cluster/run-7s79tl9i/node-0.log",
+      "bytes": 4509,
+      "sha256": "87c9978be37ef2be10eaaf31f203eada4ca25e0bb46c8b33564e0a19724c8d83"
+    },
+    {
+      "path": "run-a3q01rgw/cluster/run-7s79tl9i/node-1.log",
+      "bytes": 4509,
+      "sha256": "0c4ccabc825d05a25d7b9a303045fb54effff30a4928da784db8b400b5dd870e"
+    },
+    {
+      "path": "run-a3q01rgw/cluster/run-7s79tl9i/node-2.log",
+      "bytes": 12669,
+      "sha256": "b387eb3124b5782efe9d849b51e201a3a4898de3d49e0e3b262050c32953049d"
+    },
+    {
+      "path": "run-a3q01rgw/cluster/run-7s79tl9i/report.json",
+      "bytes": 10757,
+      "sha256": "ce5d431a0fa8a3912a29e07b3c486b909c4a58b186eff2760f66ea9592c25a22"
+    },
+    {
+      "path": "run-a3q01rgw/cmake-version.log",
+      "bytes": 90,
+      "sha256": "a24e1ae7f8f715ef1f0121cd749052d73c6a4315dba5bb885c584553d826eb79"
+    },
+    {
+      "path": "run-a3q01rgw/ctest-version.log",
+      "bytes": 90,
+      "sha256": "71126d4e2999082dcc4016e3957143bd9d416d0e127e1869a0cb65bcb4a1e31a"
+    },
+    {
+      "path": "run-a3q01rgw/ctest.log",
+      "bytes": 646,
+      "sha256": "6aa3b789c65dbde1d486260b3550f9c16bbdd55bfbbd21b9949e3155997debb2"
+    },
+    {
+      "path": "run-a3q01rgw/flags.make",
+      "bytes": 609,
+      "sha256": "66073cd28a01fba3c0b9da7df4d2c4e7548f891c28df88d5186cb416becdf6e0"
+    },
+    {
+      "path": "run-a3q01rgw/git-head.log",
+      "bytes": 41,
+      "sha256": "790584fd1d508981c704975df217522ad05d966be782291814a0d203fd0137bb"
+    },
+    {
+      "path": "run-a3q01rgw/git-status.log",
+      "bytes": 50,
+      "sha256": "d6a2bae4bb3ee631a5ad4dd2d73a7956236eb2e9e604c9068c05e60bb11b7720"
+    },
+    {
+      "path": "run-a3q01rgw/link.txt",
+      "bytes": 1332,
+      "sha256": "f77d02e3a4b997c022f6df5a892b390ff2bbd9056807495cf748e082248662f6"
+    },
+    {
+      "path": "run-a3q01rgw/muduo-CMakeCache.txt",
+      "bytes": 18936,
+      "sha256": "08e667a11ca097e407745edfdb48d8c3ee59a43f9925f21d4d13cf61781dd311"
+    },
+    {
+      "path": "run-a3q01rgw/muduo-build.log",
+      "bytes": 3694,
+      "sha256": "0e7af9705b5bc4091218f944f7fb0c0efc401a6b434eb536733efec813649d5c"
+    },
+    {
+      "path": "run-a3q01rgw/muduo-configure.log",
+      "bytes": 1921,
+      "sha256": "14827d9ef2b9c24eee9efa7bde7eaa1202ebed48a4894917b2f3532e41cd80bf"
+    },
+    {
+      "path": "run-a3q01rgw/muduo-install.log",
+      "bytes": 5389,
+      "sha256": "eb88d8e47e7b33eefb2072a676127f06927d2ed67a25aee47aae00d6c6579a35"
+    },
+    {
+      "path": "run-a3q01rgw/os-release.txt",
+      "bytes": 406,
+      "sha256": "de1a366db70de1ae4b6612a1696f9c1f37948028fab733508a3d5cf49836faac"
+    },
+    {
+      "path": "run-a3q01rgw/packages.log",
+      "bytes": 2545,
+      "sha256": "2ffd5fb30edbe37ac3c5dfa9d9a930385062529ffe6c36341db2b656a4670363"
+    },
+    {
+      "path": "run-a3q01rgw/protoc-version.log",
+      "bytes": 18,
+      "sha256": "5d8e8ea015f9d39d174f30332765f0edeb50e00689dc792907c56d56ea637d22"
+    },
+    {
+      "path": "run-a3q01rgw/server-CMakeCache.txt",
+      "bytes": 20951,
+      "sha256": "b4dc838f07e4fb9c0b5ba301db9b128346bfce28fcb980ac160533da7fe3ab15"
+    },
+    {
+      "path": "run-a3q01rgw/server-build.log",
+      "bytes": 2685,
+      "sha256": "d507a3e0035a7d54fea84745faf2b4bdd9387f77080bf9ebae6e814578aef5c2"
+    },
+    {
+      "path": "run-a3q01rgw/server-configure.log",
+      "bytes": 1183,
+      "sha256": "e821beb1a3e2dd6d6b3c802d4da3bdd3ee599b4c382ee69487204ce15c843d01"
+    },
+    {
+      "path": "run-a3q01rgw/smoke.log",
+      "bytes": 798,
+      "sha256": "15b3c17ea94b07fa737b8a53344c11f61f9d63f9507d4994ca6a5e46f782b4f2"
+    },
+    {
+      "path": "run-a3q01rgw/tracked-code-changes.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "source_commit": "35a348d951b43470d1dd6491a7d6522a5a83af96",
+  "matched_tracked_source_files": 48,
+  "matched_prepared_muduo_files": 418,
+  "extra_source_hashes_not_verified_from_content": {
+    "src/server/main.cpp.bak": "f9b1cd7195eccdf2dabcfba4da69391735563f2edbbeb8c8f450df21b21cf159"
+  },
+  "binary_sha256_recorded_at_test_time": "bf3c71a718ca7d19c700bb4063bd19e38e895aafa182e6210355ef05c5a51be6",
+  "binary_in_archive": false,
+  "ctest_passed": 5,
+  "smoke_steps_passed": 10,
+  "smoke_final_term": 3,
+  "smoke_final_commit_and_applied_index": 42,
+  "platform": "Linux-7.0.0-31-generic-x86_64-with-glibc2.43",
+  "started_at": "2026-09-08T15:26:40.549259+00:00",
+  "finished_at": "2026-09-08T15:27:39.557046+00:00",
+  "fresh_directory_build_verified": true,
+  "clean_os_reproduction_proven": false,
+  "muduo_compilation_units": 41,
+  "server_and_test_compilation_units": 23
+}

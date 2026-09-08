@@ -1,6 +1,6 @@
 # Ubuntu 构建与验证流程
 
-此流程固化了用户 Ubuntu 26.04 VM 上已验证的 Boost/Muduo 兼容修改，并在新构建和测试时记录源码、依赖及服务二进制指纹。自动流程本次已完成 Windows 上的准备逻辑测试和可移植 C++ 回归；新流程的完整 Linux 构建、真实冒烟及 Docker 镜像构建仍待在 Linux 执行。此前的[真实测试证据](benchmarks/ubuntu-2cpu-abba.md)属于手工流程，不替代本次自动流程验收。
+此流程固化了用户 Ubuntu 26.04 VM 上已验证的 Boost/Muduo 兼容修改，并在构建和测试时记录源码、依赖及服务二进制指纹。Windows 上的准备逻辑测试和可移植 C++ 回归已完成；2026-09-08 回传的 [Linux 自动流程原始证据](benchmarks/linux-workflow-validation.md)也已核验，已有构建目录上的增量流程、CTest 5/5 和真实冒烟 10 项通过。后续[空目录全量编译和测试](benchmarks/linux-fresh-validation.md)也已核验通过；干净系统复现及 Docker 镜像构建仍待验证。此前的[性能测试证据](benchmarks/ubuntu-2cpu-abba.md)属于独立的手工流程。
 
 ## 改动与依赖范围
 
@@ -92,4 +92,4 @@ ctest --test-dir build-portable --output-on-failure
 
 准备/编排测试使用真实归档，检查补丁结果与已归档 VM 文件一致、重复运行不改写、保留本地编辑、拒绝错误归档，以及工具失败时记录 FAILED 而不误标测试成功。故障编排测试中的工具失败为主动模拟，不是实际 Linux 构建失败。
 
-这些检查不能替代 Linux 动态库链接、Muduo 调度或真实 RocksDB 的集成验证；新流程的完整验收需回传第 3 步生成的报告。
+这些本地检查不能替代 Linux 链接、Muduo 调度或真实 RocksDB 的集成验证。第 3 步已有增量及空目录全量构建的用户回传报告完成核验，两轮均通过 CTest 和真实冒烟，详见[全量构建证据与边界](benchmarks/linux-fresh-validation.md)。系统依赖仍来自现有 VM，干净系统复现尚待完成。

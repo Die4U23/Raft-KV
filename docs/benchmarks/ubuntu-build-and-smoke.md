@@ -64,7 +64,7 @@
 1. 归档的项目 CMakeLists.txt 与 Git 提交 `64f60a7` 中该文件相比，仅将 `find_package(Boost COMPONENTS system thread REQUIRED)` 改为 `find_package(Boost COMPONENTS thread REQUIRED)`，与归档补丁一致。源码目录未出现在采集时的 Git 修改清单中。
 2. 归档的 Muduo HttpResponse.cc 与仓库 `third_party/muduo.zip` 中对应文件相比，仅将 `char buf[32]` 改为 `char buf[64]`，将 Content-Length 的 `%zd` 改为 `%zu`。
 
-以上描述的是归档快照中的修补。后续工程改动已将其纳入 [Ubuntu 自动构建流程](../linux-build.md)：项目 CMake 要求 Boost >= 1.69 并仅查找 thread，准备脚本对固定的原始 Muduo zip 自动应用两处修补，原始 zip 不变；新构建/测试即时记录身份。准备逻辑与可移植测试已在本地检查，自动流程的完整 Linux 验收仍待执行，不追溯改变本报告中的旧测试身份限制。
+以上描述的是归档快照中的修补。后续工程改动已将其纳入 [Ubuntu 自动构建流程](../linux-build.md)：项目 CMake 要求 Boost >= 1.69 并仅查找 thread，准备脚本对固定的原始 Muduo zip 自动应用两处修补，原始 zip 不变；新构建/测试即时记录身份。准备逻辑与可移植测试已在本地检查，2026-09-08 的[自动 Linux 增量验收](linux-workflow-validation.md)原始材料也已核验通过。后续[空目录全量构建](linux-fresh-validation.md)也已核验通过；干净系统复现仍待验证。新记录不追溯改变本报告中的旧测试身份限制。
 
 ## 重新核验归档数据
 

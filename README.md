@@ -81,7 +81,7 @@ Ubuntu 推荐使用[构建与验证流程](docs/linux-build.md)：先安装系�
 python3 scripts/build_linux.py --jobs 2 --smoke
 ```
 
-该路径的服务产物为 `build-linux-repro/server/raft_kv_server`。自动准备逻辑与可移植测试已在 Windows 验证，新流程的完整 Linux 构建仍需验证；此前已归档的 VM 实测属于手工流程。
+该路径的服务产物为 `build-linux-repro/server/raft_kv_server`。用户回传的 [Linux 自动流程证据](docs/benchmarks/linux-workflow-validation.md)已核验：已有构建目录上的增量流程、CTest 5/5 和真实三节点冒烟 10 项均通过，源码与测试时二进制指纹已记录。后续[空目录全量构建](docs/benchmarks/linux-fresh-validation.md)及两类测试也已核验通过；干净系统复现仍待验证。
 
 依赖已经安装好时，也可使用原有手工构建：
 
@@ -254,7 +254,9 @@ raft-kv/
 - [x] 四轮性能原始材料归档及可重复的数据核验
 - [x] 冒烟原始报告与事后构建快照归档核验
 - [x] 固化 Ubuntu 构建修补与新构建/测试身份记录流程（本地准备测试已通过）
-- [ ] 自动流程的干净 Linux 构建及真实三节点验证
+- [x] 自动流程的 Linux 增量构建检查、CTest 与真实三节点验证（原始证据已核验）
+- [x] 自动流程的空目录全量构建、CTest 与真实三节点验证（原始证据已核验）
+- [ ] 干净 Linux 环境的依赖安装与构建复现
 - [ ] 真实网络分区与磁盘故障测试
 - [ ] gRPC 或 HTTP API
 - [ ] 监控指标导出（Prometheus）

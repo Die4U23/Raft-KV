@@ -1,4 +1,4 @@
-# 本地优化状态（实现记录 2026-09-04，用户测试证据更新 2026-09-07）
+# 本地优化状态（实现记录 2026-09-04，用户测试证据更新 2026-09-08）
 
 优化基线：`raft-cluster-namespace` 的 `bc853d5fe8d0ffddbadbe736ccfe5100c7610b8c`，最初在 `fix/raft-correctness` 分支整理。本文记录实现和测试范围，提交与发布状态以仓库历史为准。
 
@@ -41,11 +41,13 @@ ctest --test-dir build-portable --output-on-failure
 
 此前 Windows 本地完整服务配置停在缺少 Protobuf 头文件及库，未发现可用 WSL 或 Docker；这是历史本机限制，不代表用户 Ubuntu 测试未执行。本次文档更新没有在 Windows 重跑真实 Linux 服务，也没有重新执行上文的可移植测试。
 
-真实环境验收命令见 [tests/README.md](tests/README.md)。已新增 [Ubuntu 自动构建流程](docs/linux-build.md)：查找 Boost >= 1.69 的 thread 组件，校验固定 Muduo zip 并自动应用已核对的 HttpResponse 修补，私有安装 Muduo，在构建/冒烟时记录源码与二进制指纹。Docker 的 Muduo 步骤复用准备脚本。准备逻辑和失败处理已做本地测试，可移植 CTest 5/5 再次通过；新流程的完整 Linux 构建及 Docker 构建仍为 UNRUN。
+真实环境验收命令见 [tests/README.md](tests/README.md)。已新增 [Ubuntu 自动构建流程](docs/linux-build.md)：查找 Boost >= 1.69 的 thread 组件，校验固定 Muduo zip 并自动应用已核对的 HttpResponse 修补，私有安装 Muduo，在构建/冒烟时记录源码与二进制指纹。Docker 的 Muduo 步骤复用准备脚本。准备逻辑和失败处理已做本地测试，可移植 CTest 5/5 再次通过；用户回传的[自动 Linux 增量验收](docs/benchmarks/linux-workflow-validation.md)也已核验，CTest 5/5、真实冒烟 10 项通过，48 个已跟踪输入匹配提交 35a348d。后续[空目录全量构建](docs/benchmarks/linux-fresh-validation.md)及两类测试也已核验通过；干净系统复现和 Docker 构建仍待验证。
 
-剩余验证包括新流程的干净 Linux 构建及真实冒烟、真实存储故障、网络分区、运行中持续 INFO/心跳采样、长时间负载，以及写入期间停机和异常传播的专项检查；已有手工流程冒烟覆盖不能替代这些场景。
+剩余验证包括新流程的干净 Linux 环境复现、真实存储故障、网络分区、运行中持续 INFO/心跳采样、长时间负载，以及写入期间停机和异常传播的专项检查；已有手工及自动全量构建流程的冒烟覆盖不能替代这些场景。
 
 ## 使用限制
+
+网络分区测试已补充 `tests/cluster_partition.py` 与有向 TCP 转发器：覆盖隔离旧 Leader、多数派继续写入、三节点互相隔离和两次恢复。仅切断测试自身的 Raft 连接，持续读取 INFO；超时请求保留“结果未知”语义。本地回环网络及判定器辅助测试 7 项通过，真实 Linux 分区结果仍为 UNRUN；见[执行与证据说明](docs/partition-test.md)。
 
 - 新状态机要求持久化 lastApplied 标记；旧的非空 KV 数据库没有该标记时会拒绝启动。保留原数据，验证时使用全新的、配套的 KV 与 Raft 日志目录。目前没有自动迁移方案。
 - AppendEntries 增加 rpc_id 校验，测试集群所有节点须使用同一版本重新构建。

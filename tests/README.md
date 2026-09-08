@@ -30,6 +30,8 @@ python3 tests/cluster_smoke.py --self-test
 
 ## Linux 真实三节点 smoke test
 
+另有独立的[网络分区与失去多数派测试](../docs/partition-test.md)，通过测试专用 TCP 转发器切断 Raft 通信，不修改系统防火墙。本地辅助测试已通过，真实 Linux 分区验收仍待执行，不能由下述冒烟结果替代。
+
 需要 Linux、Python 3.8+，以及能运行的 `raft_kv_server` 和相应动态库。先按项目说明安装 Muduo、RocksDB、Protobuf 等依赖，再从项目根目录运行：
 
 ```sh
@@ -69,4 +71,4 @@ Docker 镜像构建依赖 `third_party/` 中的压缩包及网络；其耗时不
 
 **当前证据状态：Ubuntu 三节点冒烟原始报告确认 10 项检查 PASS，四轮同步/异步负载共 40 万次正式请求、0 错误，两批原始材料与事后构建快照均已归档核验。** 详见 [性能基线与证据边界](../docs/benchmarks/ubuntu-2cpu-abba.md)及 [构建与冒烟核验](../docs/benchmarks/ubuntu-build-and-smoke.md)。测试时二进制身份不能由事后快照独立证明；该结果不代表掉电、磁盘故障、网络分区或完整并发行为已验证。Windows 可移植测试、本地客户端自测与用户提供的真实 Linux 结果分别记录；对照流程见 [压测说明](../docs/benchmark.md)，尚无稳定性能提升结论。
 
-新增自动流程见 [Ubuntu 构建与验证](../docs/linux-build.md)。`python tests/build_workflow_tests.py` 在本地检查固定 Muduo 归档的自动修补、重复运行、编辑保护、身份记录与失败状态；不需要安装 Linux 依赖。自动流程默认构建后执行 CTest，带 `--smoke` 时再执行真实三节点测试。此前手工 VM 测试通过不等于这个新流程已通过 Linux 验收。
+新增自动流程见 [Ubuntu 构建与验证](../docs/linux-build.md)。`python tests/build_workflow_tests.py` 在本地检查固定 Muduo 归档的自动修补、重复运行、编辑保护、身份记录与失败状态；不需要安装 Linux 依赖。自动流程默认构建后执行 CTest，带 `--smoke` 时再执行真实三节点测试。[2026-09-08 原始证据](../docs/benchmarks/linux-workflow-validation.md)确认新流程在用户 VM 的已有构建目录上通过，包含 CTest 5/5、真实三节点冒烟 10 项及测试时身份记录；后续[空目录全量构建](../docs/benchmarks/linux-fresh-validation.md)也已核验通过，含重新编译、链接及上述两类测试。干净系统依赖安装复现仍待验证。
