@@ -1,0 +1,88 @@
+{
+  "status": "PASS",
+  "scope": "Archived bounded TCP partition safety and recovery; not a local live rerun",
+  "archive_sha256": "92dc46eab0c3268c844847b9c072ece3990d354240614dde25007b2363d9196e",
+  "archive_bytes": 316186,
+  "file_count": 7,
+  "file_manifest": [
+    {
+      "path": "run-g5hsd49h/git-head.log",
+      "bytes": 41,
+      "sha256": "7a4fbbd24d771c41af9dfa995fd7995a6591b733ee08f0d90504e9a957671b72"
+    },
+    {
+      "path": "run-g5hsd49h/git-status.log",
+      "bytes": 50,
+      "sha256": "d6a2bae4bb3ee631a5ad4dd2d73a7956236eb2e9e604c9068c05e60bb11b7720"
+    },
+    {
+      "path": "run-g5hsd49h/node-0.log",
+      "bytes": 4513579,
+      "sha256": "02a96f8281f772a07dbf987dc785cb0a99c3dd4f7a26fe4ca3fc12d5052d8718"
+    },
+    {
+      "path": "run-g5hsd49h/node-1.log",
+      "bytes": 947295,
+      "sha256": "afcbca1e8c33b07e6f553b9722996ba300c3d2cadd66b4e602abc58bb4c848d4"
+    },
+    {
+      "path": "run-g5hsd49h/node-2.log",
+      "bytes": 37451,
+      "sha256": "a80aac8f2795055f292099709f83ace8b00c07460871f1f4d0738a4e5d912b1e"
+    },
+    {
+      "path": "run-g5hsd49h/referenced-build-report.json",
+      "bytes": 59185,
+      "sha256": "58a2de6ef95801ebc4dfab90eac0acdb14845814240bf3b81de766f31e2c4561"
+    },
+    {
+      "path": "run-g5hsd49h/report.json",
+      "bytes": 664344,
+      "sha256": "b6b4728e7885f4f131a3b634e99b82ec344c7f01231036d1f358e01da456ae5a"
+    }
+  ],
+  "test_commit": "9cfcfd6e836b18ea2b15ce96cd6fdf0ac3567680",
+  "compiled_input_count": 26,
+  "matched_test_helpers": 3,
+  "binary_sha256": "bf3c71a718ca7d19c700bb4063bd19e38e895aafa182e6210355ef05c5a51be6",
+  "binary_in_archive": false,
+  "steps_passed": 5,
+  "snapshot_count": 81,
+  "phases": {
+    "minority_partition": {
+      "samples": 39,
+      "partition_seconds": 4.321859,
+      "sample_span_seconds": 3.993656
+    },
+    "no_quorum": {
+      "samples": 38,
+      "partition_seconds": 4.032143,
+      "sample_span_seconds": 3.912083
+    }
+  },
+  "probes": {
+    "sent": 4,
+    "acknowledged": 0,
+    "rejected": 2,
+    "unknown": 2
+  },
+  "final_leader": 0,
+  "final_term": 20,
+  "final_commit_and_applied_index": 7,
+  "uncertain_after_recovery": {
+    "first_heal": {
+      "minority-probe": "absent"
+    },
+    "final_heal": {
+      "minority-probe": "absent",
+      "no-quorum-0": "absent",
+      "no-quorum-1": "absent",
+      "no-quorum-2": "absent"
+    }
+  },
+  "nodes_restarted": 0,
+  "refused_proxy_connections": 24731,
+  "node_log_bytes": 5498325,
+  "elapsed_seconds": 9.593,
+  "observation_limit": "Two short symmetric TCP partitions; no CPU/soak assessment"
+}
