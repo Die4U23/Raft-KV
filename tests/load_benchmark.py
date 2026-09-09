@@ -120,7 +120,7 @@ class Samples:
                 self.values[index] = value
 
 
-async def benchmark(args):
+async def benchmark(args, measurement_observer=None):
     reader, writer = await asyncio.wait_for(asyncio.open_connection(args.host, args.port), args.timeout)
     try:
         info = await one(reader, writer, encode("INFO"), args.timeout)
@@ -195,15 +195,19 @@ async def benchmark(args):
         return counts
 
     counts, offset, jobs = Counter(), 0, []
-    for index in range(workers):
-        count = args.requests // workers + (index < args.requests % workers)
-        jobs.append(worker(index, offset, count))
-        offset += count
-    started = time.perf_counter()
     try:
+        if measurement_observer:
+            measurement_observer('start')
+        for index in range(workers):
+            count = args.requests // workers + (index < args.requests % workers)
+            jobs.append(worker(index, offset, count))
+            offset += count
+        started = time.perf_counter()
         for result in await asyncio.gather(*jobs):
             counts.update(result)
         elapsed = time.perf_counter() - started
+        if measurement_observer:
+            measurement_observer('end')
     finally:
         await asyncio.gather(*(close(writer) for _, writer in active))
     errors = {key: counts[key] for key in ("moved", "overload", "other", "timeout", "connection")}

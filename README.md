@@ -1,5 +1,7 @@
 # raft-kv
 
+正在进行的下一步：[正常读写性能诊断](docs/optimizations/performance-diagnostic.md)。工具已准备，Linux 采样待执行；本轮用于定位限制，不预设性能提升。
+
 基于 Raft 共识协议的固定成员 KV 存储学习项目，使用 C++17、Muduo、Protobuf 和 RocksDB。默认配置为三个节点。
 
 当前本地优化的实现范围和验证结果见 [LOCAL_REVIEW_STATUS.md](LOCAL_REVIEW_STATUS.md)，测试方法见 [tests/README.md](tests/README.md)。完整 Linux 服务的验证状态以该记录为准。

@@ -1,5 +1,7 @@
 # 测试
 
+正常性能诊断见[执行说明](../docs/optimizations/performance-diagnostic.md)：现有二进制无需重编译，新增工具记录正式负载的进程 CPU 和 INFO 差分；真实 Linux 采样待执行。
+
 ## 可移植协议与核心测试
 
 不构建 Linux 服务端时，可运行六个独立的 C++ 测试目标：
