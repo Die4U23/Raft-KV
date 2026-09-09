@@ -31,7 +31,7 @@ python3 tests/cluster_smoke.py --self-test
 
 ## Linux 真实三节点 smoke test
 
-当前重连优化另增加真实 `peer_manager_transport_tests`，仅在服务依赖可用的构建中启用。新版 Linux 构建、该测试与集群回归尚未执行；见[优化验收说明](../docs/optimizations/peer-reconnect-backoff.md)。下述归档结果属于优化前版本。
+当前重连优化另增加真实 `peer_manager_transport_tests`，仅在服务依赖可用的构建中启用。新版 Linux 构建、CTest 7/7（含该测试）、冒烟 10 项与分区 5 个阶段已完成并[归档核验](../docs/benchmarks/reconnect-validation.md)；见[优化验收说明](../docs/optimizations/peer-reconnect-backoff.md)。下述归档结果属于优化前版本。
 
 第三组[过载与有界持续运行](../docs/overload-soak-test.md)脚本已提供，检查连接准入、写入积压 BUSY、卸载恢复及 60 秒资源窗口。本地辅助检查通过，[真实 Linux 原始证据](../docs/benchmarks/overload-validation.md)已核验，4 个阶段 PASS；本轮三组收尾测试完成。7,897 次重连仍是已知问题，60 秒观察不证明长期稳定性。
 

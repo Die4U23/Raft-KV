@@ -1,0 +1,201 @@
+{
+  "status": "PASS",
+  "archive_sha256": "880ca41e3a77ea98e176e4bc27e1a2ae342ad6399d98319247bcc3ea67a04293",
+  "archive_bytes": 93715,
+  "file_count": 32,
+  "test_commit": "ef17ef73f844a38482818bbf223103f69f13a18d",
+  "file_manifest": [
+    {
+      "path": "reconnect-reports/run-gno7_f3s/git-head.log",
+      "bytes": 41,
+      "sha256": "afc5863a5ee73d200188bd9bb298b9f82cd6aae82d5944015cbe07eb9aa35f32"
+    },
+    {
+      "path": "reconnect-reports/run-gno7_f3s/git-status.log",
+      "bytes": 50,
+      "sha256": "d6a2bae4bb3ee631a5ad4dd2d73a7956236eb2e9e604c9068c05e60bb11b7720"
+    },
+    {
+      "path": "reconnect-reports/run-gno7_f3s/node-0.log",
+      "bytes": 50456,
+      "sha256": "66bd0e0a77cededb4610249b6a19cc754c1ccb5342e011f24e37faf04de3f643"
+    },
+    {
+      "path": "reconnect-reports/run-gno7_f3s/node-1.log",
+      "bytes": 50099,
+      "sha256": "3c9f889dbf86deaadbe2671b248861034844c7142f930cb69e2b60e8554455d2"
+    },
+    {
+      "path": "reconnect-reports/run-gno7_f3s/node-2.log",
+      "bytes": 45555,
+      "sha256": "24e002dacc42e6658e587a785222e4b13da8c4edba7910484b4daadad3984e8c"
+    },
+    {
+      "path": "reconnect-reports/run-gno7_f3s/referenced-build-report.json",
+      "bytes": 60190,
+      "sha256": "8f237c0e630bef84f08219603cffbfcae673584852d75b3f37490e729d26b816"
+    },
+    {
+      "path": "reconnect-reports/run-gno7_f3s/report.json",
+      "bytes": 674102,
+      "sha256": "5089f2b518a1473f27e480bfe6f2235910b9b6a310bdcb141429e23c739bbb61"
+    },
+    {
+      "path": "reports/run-c4arz1uk/build-report.json",
+      "bytes": 60190,
+      "sha256": "8f237c0e630bef84f08219603cffbfcae673584852d75b3f37490e729d26b816"
+    },
+    {
+      "path": "reports/run-c4arz1uk/c++-version.log",
+      "bytes": 239,
+      "sha256": "e3bac80fa6d4e3a292f39091c2f4f2e33986cc7c91cbcb034c0de3cd27560881"
+    },
+    {
+      "path": "reports/run-c4arz1uk/cluster/run-9q8wyky_/node-0.log",
+      "bytes": 12938,
+      "sha256": "292f1820057682dafe799dc32177b192b62632ac392d8a681f6cad189fa98938"
+    },
+    {
+      "path": "reports/run-c4arz1uk/cluster/run-9q8wyky_/node-1.log",
+      "bytes": 4508,
+      "sha256": "8c61129c89044dc533492a84ce21de5204ce418f76de7f5048fe7c24de6232fd"
+    },
+    {
+      "path": "reports/run-c4arz1uk/cluster/run-9q8wyky_/node-2.log",
+      "bytes": 4507,
+      "sha256": "0984e1749d9074d7608abf76cbcc8ce84a1179a5b4c10e2f22e7f63162874663"
+    },
+    {
+      "path": "reports/run-c4arz1uk/cluster/run-9q8wyky_/report.json",
+      "bytes": 10728,
+      "sha256": "bb54dceea677f0e851b01857a56ef938c07eca984236b0170e2d8c81c2dd144b"
+    },
+    {
+      "path": "reports/run-c4arz1uk/cmake-version.log",
+      "bytes": 90,
+      "sha256": "a24e1ae7f8f715ef1f0121cd749052d73c6a4315dba5bb885c584553d826eb79"
+    },
+    {
+      "path": "reports/run-c4arz1uk/ctest-version.log",
+      "bytes": 90,
+      "sha256": "71126d4e2999082dcc4016e3957143bd9d416d0e127e1869a0cb65bcb4a1e31a"
+    },
+    {
+      "path": "reports/run-c4arz1uk/ctest.log",
+      "bytes": 853,
+      "sha256": "7f0ce4dd9106ddcd271f9dea94a2bef107113a69ba7fded2e60ad9c1a5641249"
+    },
+    {
+      "path": "reports/run-c4arz1uk/flags.make",
+      "bytes": 603,
+      "sha256": "22371784cc2abcbf999e4e2c20d3871dce13c73d7e11096774a8f958eb6c53fd"
+    },
+    {
+      "path": "reports/run-c4arz1uk/git-head.log",
+      "bytes": 41,
+      "sha256": "afc5863a5ee73d200188bd9bb298b9f82cd6aae82d5944015cbe07eb9aa35f32"
+    },
+    {
+      "path": "reports/run-c4arz1uk/git-status.log",
+      "bytes": 50,
+      "sha256": "d6a2bae4bb3ee631a5ad4dd2d73a7956236eb2e9e604c9068c05e60bb11b7720"
+    },
+    {
+      "path": "reports/run-c4arz1uk/link.txt",
+      "bytes": 1326,
+      "sha256": "a8838c707211735d141532b3d90f58b8aa171b87341217a21a8b2a5604b41465"
+    },
+    {
+      "path": "reports/run-c4arz1uk/muduo-CMakeCache.txt",
+      "bytes": 18915,
+      "sha256": "764cce28133829d898504bb88af633a6c964ac934c46e0ee0cc49958d11dd86b"
+    },
+    {
+      "path": "reports/run-c4arz1uk/muduo-build.log",
+      "bytes": 3694,
+      "sha256": "911c359d5103a38816e43437879c15ac33762a2e0016b5dfc31703a486e88ac9"
+    },
+    {
+      "path": "reports/run-c4arz1uk/muduo-configure.log",
+      "bytes": 1918,
+      "sha256": "0e60136a00402151644f8405a57a94736bc7327fd7bbe07f8e1e13dd1d5cc638"
+    },
+    {
+      "path": "reports/run-c4arz1uk/muduo-install.log",
+      "bytes": 5242,
+      "sha256": "2fdc4fb6a4bc38c1b1bba43e974be6e69673d7383b72e2bc1a2e5e2b67ee767e"
+    },
+    {
+      "path": "reports/run-c4arz1uk/os-release.txt",
+      "bytes": 406,
+      "sha256": "de1a366db70de1ae4b6612a1696f9c1f37948028fab733508a3d5cf49836faac"
+    },
+    {
+      "path": "reports/run-c4arz1uk/packages.log",
+      "bytes": 2545,
+      "sha256": "2ffd5fb30edbe37ac3c5dfa9d9a930385062529ffe6c36341db2b656a4670363"
+    },
+    {
+      "path": "reports/run-c4arz1uk/protoc-version.log",
+      "bytes": 18,
+      "sha256": "5d8e8ea015f9d39d174f30332765f0edeb50e00689dc792907c56d56ea637d22"
+    },
+    {
+      "path": "reports/run-c4arz1uk/server-CMakeCache.txt",
+      "bytes": 20930,
+      "sha256": "c1be6ae16d3e25e57e31bde41872a6c1cb75fdd82f5c2dd45c693ad02e24a11c"
+    },
+    {
+      "path": "reports/run-c4arz1uk/server-build.log",
+      "bytes": 3175,
+      "sha256": "b3630839a7f76f5eeacbff085c944d3a2d23dd4122ccb9244d6f8446e6831598"
+    },
+    {
+      "path": "reports/run-c4arz1uk/server-configure.log",
+      "bytes": 1180,
+      "sha256": "e969022309d11ee8f30dc7b47c09e6af3597525cb238c131bf45d76e03f3b2ce"
+    },
+    {
+      "path": "reports/run-c4arz1uk/smoke.log",
+      "bytes": 792,
+      "sha256": "b017fcdfb5cdc68e45ff53c803ba5de876d14165855f4ed9526d8f397a8769f5"
+    },
+    {
+      "path": "reports/run-c4arz1uk/tracked-code-changes.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "matched_build_sources": 58,
+  "compiled_inputs": 27,
+  "matched_partition_helpers": 3,
+  "binary_sha256": "1cb823ecb51f1a2759f93347ee5170f173c7db557a53b488776cd706b7d5f41c",
+  "ctest_passed": 7,
+  "smoke_steps": 10,
+  "partition_steps": 5,
+  "observation_windows": {
+    "minority_partition": 4.292829933001485,
+    "no_quorum": 4.086779932000354
+  },
+  "reconnect_before": 24731,
+  "reconnect_after": 11,
+  "reconnect_reduction_percent": 99.95552141037565,
+  "full_log_bytes_before": 5498325,
+  "full_log_bytes_after": 146110,
+  "full_log_reduction_percent": 97.3426452601474,
+  "pre_cleanup_log_bytes": 146022,
+  "final_term": 30,
+  "final_commit_and_applied_index": 9,
+  "uncertain_after_recovery": {
+    "first_heal": {
+      "minority-probe": "absent"
+    },
+    "final_heal": {
+      "minority-probe": "absent",
+      "no-quorum-0": "absent",
+      "no-quorum-1": "absent",
+      "no-quorum-2": "applied"
+    }
+  },
+  "limitation": "One before/after VM comparison with different leaders; not a CPU, QPS or long-term claim"
+}

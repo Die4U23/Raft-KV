@@ -2,9 +2,9 @@
 
 优化基线：`raft-cluster-namespace` 的 `bc853d5fe8d0ffddbadbe736ccfe5100c7610b8c`，最初在 `fix/raft-correctness` 分支整理。本文记录实现和测试范围，提交与发布状态以仓库历史为准。
 
-## 最新改动：重连退避（2026-09-09，待 Linux 验收）
+## 最新改动：重连退避（2026-09-09，Linux 实测已核验）
 
-PeerManager 已增加已建连后断线的 0.5/1/2 秒退避、10 秒稳定重置、旧定时任务及对象生命周期保护；建连失败仍使用 Connector 原有策略。Windows CTest 6/6、分区辅助检查 8/8 通过；新版 Linux 服务构建、真实 Muduo 生命周期、冒烟与分区计数均为 UNRUN。已归档旧版本 PASS 仍作为基线，不能证明新实现的真实效果。原因、取舍和验收见[优化记录](docs/optimizations/peer-reconnect-backoff.md)，逐次改动见[更新日志](CHANGELOG.md)。
+PeerManager 已增加已建连后断线的 0.5/1/2 秒退避、10 秒稳定重置、旧定时任务及对象生命周期保护；建连失败仍使用 Connector 原有策略。Windows CTest 6/6、分区辅助检查 8/8 通过；实现提交 `ef17ef7` 的新版 Linux 构建、CTest 7/7（含真实 Muduo 生命周期）、冒烟 10 项、分区 5 个阶段已[归档核验](docs/benchmarks/reconnect-validation.md)。本次同类分区对比拒绝重连从 24,731 降至 11，完整日志从 5,498,325 降至 146,110 字节；初始 Leader 和选举时序不同，不据此宣称 CPU、QPS 或长期稳定性收益。下文旧版本事实仍保留为历史基线。原因、取舍和验收见[优化记录](docs/optimizations/peer-reconnect-backoff.md)，逐次改动见[更新日志](CHANGELOG.md)。
 
 ## 已验证
 

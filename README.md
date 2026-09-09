@@ -4,7 +4,7 @@
 
 当前本地优化的实现范围和验证结果见 [LOCAL_REVIEW_STATUS.md](LOCAL_REVIEW_STATUS.md)，测试方法见 [tests/README.md](tests/README.md)。完整 Linux 服务的验证状态以该记录为准。
 
-改动历史见[更新日志](CHANGELOG.md)。最新一轮为[断线重连退避优化](docs/optimizations/peer-reconnect-backoff.md)：本地策略检查已通过，新版 Linux 验收待执行；历史基线不代表新版本实测结果。
+改动历史见[更新日志](CHANGELOG.md)。最新一轮为[断线重连退避优化](docs/optimizations/peer-reconnect-backoff.md)：[新版 Linux 实测](docs/benchmarks/reconnect-validation.md)已核验；本次同类分区场景拒绝重连从 24,731 降至 11，原有安全性与恢复检查通过。此结果不是正常业务吞吐提升。
 
 面向 C++ 后端 / 基础架构实习的改进顺序、验收标准和面试准备见 [实习项目升级路线](docs/internship-roadmap.md)。路线中的待办不代表已经实现的能力。
 
