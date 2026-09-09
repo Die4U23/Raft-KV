@@ -1,0 +1,80 @@
+{
+  "status": "PASS",
+  "scope": "Archived bounded continuous-write and process-restart test; not power-loss proof",
+  "archive_sha256": "e29cf7c3e475aca468a83edc7d85779d373a85f6251e15dc4bf1ee216ad4b4ff",
+  "archive_bytes": 81653,
+  "file_count": 7,
+  "file_manifest": [
+    {
+      "path": "run-px5ykvv0/git-head.log",
+      "bytes": 41,
+      "sha256": "d8fb4e3cf2f23eb662d3246c8db9159f4da074c7b945a8a01c1e77d0fbe90f82"
+    },
+    {
+      "path": "run-px5ykvv0/git-status.log",
+      "bytes": 50,
+      "sha256": "d6a2bae4bb3ee631a5ad4dd2d73a7956236eb2e9e604c9068c05e60bb11b7720"
+    },
+    {
+      "path": "run-px5ykvv0/node-0.log",
+      "bytes": 29644,
+      "sha256": "366987b533a74c9c29907dc82e8a1b1c040d0e15a22f113064dee696372b210d"
+    },
+    {
+      "path": "run-px5ykvv0/node-1.log",
+      "bytes": 13024,
+      "sha256": "e06b9702d3d57524dada7aa3c4be0efddccfc67c96d0d5cfefd304eae1faa830"
+    },
+    {
+      "path": "run-px5ykvv0/node-2.log",
+      "bytes": 53982,
+      "sha256": "22c786cbb888c00b9b8a27e3b3d6ca3dc72759269ae7fe3e3aa98a9a85996b73"
+    },
+    {
+      "path": "run-px5ykvv0/referenced-build-report.json",
+      "bytes": 59185,
+      "sha256": "58a2de6ef95801ebc4dfab90eac0acdb14845814240bf3b81de766f31e2c4561"
+    },
+    {
+      "path": "run-px5ykvv0/report.json",
+      "bytes": 764634,
+      "sha256": "1832f1fba7b408df0c4d92dd885d9b415f7b8ff627a501015b1da7a8660d7c4d"
+    }
+  ],
+  "test_commit": "07a612713116b58037567a49bfdb65b2401fc0ce",
+  "compiled_inputs": 26,
+  "matched_test_helpers": 4,
+  "binary_sha256": "bf3c71a718ca7d19c700bb4063bd19e38e895aafa182e6210355ef05c5a51be6",
+  "binary_in_archive": false,
+  "steps_passed": 5,
+  "attempts": 1832,
+  "outcomes": {
+    "acknowledged": 1704,
+    "rejected": 64,
+    "unknown": 8,
+    "not_sent": 56
+  },
+  "phases": {
+    "before_crash": {
+      "acknowledged": 576,
+      "window_seconds": 2.040222
+    },
+    "old_leader_down": {
+      "acknowledged": 576,
+      "window_seconds": 2.18355
+    },
+    "after_leader_restart": {
+      "acknowledged": 552,
+      "window_seconds": 2.024765
+    }
+  },
+  "acknowledged_keys_checked_per_replica_per_recovery": 1704,
+  "recovery_checks": 2,
+  "replicas": 3,
+  "unknown_keys_present_after_recovery": 0,
+  "final_leader": 1,
+  "final_term": 7,
+  "final_commit_and_applied_index": 1709,
+  "elapsed_seconds": 15.265,
+  "limitation": "Report contains client outcome ledger and verification summaries, not raw GET reply transcripts"
+}

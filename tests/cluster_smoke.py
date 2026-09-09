@@ -160,7 +160,7 @@ class Node:
         self.log = None
         self.starts = []
 
-    def start(self, binary, peers):
+    def start(self, binary, peers, extra_args=()):
         if self.process is not None and self.process.poll() is None:
             raise RuntimeError("node is already running")
         command = [str(binary), "--node_id={}".format(self.node_id),
@@ -169,6 +169,7 @@ class Node:
                    "--db_path={}".format(self.data / "kv"),
                    "--raft_log_path={}".format(self.data / "raft-log"),
                    "--peers=" + peers, "--leader_only_reads=false", "--logtostderr=true"]
+        command.extend(extra_args)
         self.log = self.log_path.open("ab", buffering=0)
         self.log.write(("\n--- start {} ---\n".format(time.time())).encode("ascii"))
         try:

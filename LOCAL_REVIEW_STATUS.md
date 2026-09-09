@@ -47,7 +47,9 @@ ctest --test-dir build-portable --output-on-failure
 
 ## 使用限制
 
-第二组 `tests/cluster_write_restart.py` 已提供：写入线程跨越 Leader SIGKILL 和旧节点重启，停止写入后再检查全体节点进程崩溃恢复；逐条核对已确认键并保留未知语义。本地辅助检查 8 项通过，真实 Linux 验收仍为 UNRUN；见[操作说明](docs/write-restart-test.md)。
+第三组 `tests/cluster_overload.py` 与本地辅助检查已提供：以测试配置 max_clients=32 触发准入拒绝，隔离 Leader 后触发写入积压 BUSY，恢复后运行 60 秒固定键读写并记录 RSS/CPU/FD/日志和 INFO。真实 Linux 结果仍为 UNRUN；[阈值和执行说明](docs/overload-soak-test.md)。这次仅扩展 Python 节点启动参数，没有修改 C++ 服务或修复已知重连开销。
+
+第二组 `tests/cluster_write_restart.py` 已完成真实 Linux 原始证据核验：写入线程跨越 Leader SIGKILL 和旧节点重启，停止写入后再检查全体节点进程崩溃恢复。1,832 次唯一键尝试含 1,704 次成功确认、64 次拒绝、8 次未知、56 次未发送；已确认键在两次恢复后的三个副本核验中全部保留。5 个阶段 PASS，见[核验报告](docs/benchmarks/write-restart-validation.md)。本轮收尾仅剩过载与持续运行组。
 
 网络分区测试已补充 `tests/cluster_partition.py` 与有向 TCP 转发器：覆盖隔离旧 Leader、多数派继续写入、三节点互相隔离和两次恢复。本地辅助测试 7 项通过，真实 Linux 原始证据的 5 个阶段、81 份 INFO 快照也已核验通过。4 次探测为 2 次拒绝、2 次结果未知，没有成功确认，恢复后收敛；见[核验报告](docs/benchmarks/partition-validation.md)。转发器累计拒绝连接 24,731 次，节点日志约 5.24 MiB，列入后续重连节流和资源观察范围。
 

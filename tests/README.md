@@ -30,7 +30,9 @@ python3 tests/cluster_smoke.py --self-test
 
 ## Linux 真实三节点 smoke test
 
-第二组[持续写入期间退出与重启](../docs/write-restart-test.md)脚本已提供，逐条记录成功、拒绝、未发送与未知请求，并在旧 Leader 和全体节点重启后核对数据。本地辅助检查通过，真实 Linux 结果仍为 UNRUN。
+第三组[过载与有界持续运行](../docs/overload-soak-test.md)脚本已提供，检查连接准入、写入积压 BUSY、卸载恢复及 60 秒资源窗口。本地辅助检查通过，真实 Linux 结果仍为 UNRUN；重连开销和长期稳定性不能由有限运行的 PASS 推断。
+
+第二组[持续写入期间退出与重启](../docs/write-restart-test.md)逐条记录成功、拒绝、未发送与未知请求，并在旧 Leader 和全体节点重启后核对数据。本地辅助检查通过，真实 Linux 原始证据也已核验：5 个阶段 PASS，1,704 个已确认键全部保留；见[核验报告](../docs/benchmarks/write-restart-validation.md)。
 
 另有独立的[网络分区与失去多数派测试](../docs/partition-test.md)，通过测试专用 TCP 转发器切断 Raft 通信，不修改系统防火墙。本地辅助测试已通过；用户回传的[真实 Linux 分区证据](../docs/benchmarks/partition-validation.md)也已核验，5 个阶段 PASS，覆盖两次短时对称分区及恢复。大量重连和日志输出单独记录为资源方面的待改进项，不能用安全性 PASS 推断资源开销正常。
 

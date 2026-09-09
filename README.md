@@ -258,6 +258,7 @@ raft-kv/
 - [x] 自动流程的空目录全量构建、CTest 与真实三节点验证（原始证据已核验）
 - [ ] 干净 Linux 环境的依赖安装与构建复现
 - [x] 真实三节点短时对称 TCP 分区与失去多数派测试（[原始证据](docs/benchmarks/partition-validation.md)已核验）
+- [x] 持续写入期间 Leader 退出与恢复、停止写入后的全体节点重启（[原始证据](docs/benchmarks/write-restart-validation.md)已核验，1,704 个已确认键保留）
 - [ ] 其他网络故障场景与真实磁盘故障测试
 - [ ] gRPC 或 HTTP API
 - [ ] 监控指标导出（Prometheus）
