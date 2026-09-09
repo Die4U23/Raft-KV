@@ -78,6 +78,16 @@ def assert_frozen(before, current):
         expect(current[field], before[field], 'isolated node {} {}'.format(current['node_id'], field))
 
 
+def check_reconnects(snapshot, limit):
+    counts = [edge['refused'] for edge in snapshot['edges'].values()]
+    if any(count < 0 for count in counts):
+        raise AssertionError('Negative refused-connection counter')
+    total = sum(counts)
+    if limit is not None and total > limit:
+        raise AssertionError('Reconnect refusals {} exceed configured limit {}'.format(total, limit))
+    return dict(refused_connections=total, limit=limit)
+
+
 class PartitionCluster(Cluster):
     def __init__(self, binary, data, artifacts, timeout, window):
         super().__init__(binary, data, artifacts, timeout)
@@ -220,12 +230,16 @@ class PartitionCluster(Cluster):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--max-reconnect-refusals', type=int,
+                        help='Optional failure threshold for total relay refusals across both partitions')
     parser.add_argument('--build-report', required=True, type=Path,
                         help='PASS build-report.json identifying the existing server binary')
     parser.add_argument('--artifacts', type=Path, default=Path('build/cluster-partition'))
     parser.add_argument('--timeout', type=float, default=90)
     parser.add_argument('--observe-seconds', type=float, default=4)
     args = parser.parse_args()
+    if args.max_reconnect_refusals is not None and args.max_reconnect_refusals < 0:
+        parser.error('--max-reconnect-refusals must be nonnegative')
     if sys.platform != 'linux':
         parser.error('Real partition testing requires Linux; run cluster_partition_tests.py for helper tests')
     if not 30 <= args.timeout <= 300 or not 3 <= args.observe_seconds <= 10:
@@ -258,6 +272,12 @@ def main():
         started = time.monotonic()
         try:
             cluster.run()
+            snapshot = cluster.mesh.snapshot()
+            cluster.report['reconnect_check'] = dict(
+                refused_connections=sum(e['refused'] for e in snapshot['edges'].values()),
+                limit=args.max_reconnect_refusals,
+                node_log_bytes={str(n.node_id): n.log_path.stat().st_size for n in cluster.nodes})
+            check_reconnects(snapshot, args.max_reconnect_refusals)
             expect(file_hash(binary), identity['binary']['sha256'], 'binary unchanged during test')
             expect({name: file_hash(ROOT / name) for name in inputs}, inputs, 'compiled inputs unchanged')
             expect({p.name: file_hash(p) for p in helpers}, identity['test_source_hashes'], 'test helpers unchanged')

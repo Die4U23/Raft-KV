@@ -72,3 +72,13 @@ target_link_libraries(raft_kv_server
     ${DL_LIB}
     ${PROTOBUF_LIBRARIES}
 )
+
+if(BUILD_TESTING)
+    add_executable(peer_manager_transport_tests tests/peer_manager_transport_tests.cpp src/raft/peer_manager.cc)
+    target_include_directories(peer_manager_transport_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/src ${MUDUO_INCLUDE_DIR} ${GLOG_INCLUDE_DIR} ${GFLAGS_INCLUDE_DIR})
+    target_link_libraries(peer_manager_transport_tests PRIVATE
+        ${MUDUO_NET_LIB} ${MUDUO_BASE_LIB} ${GLOG_LIB} ${GFLAGS_LIB} Threads::Threads)
+    add_test(NAME peer_manager_transport_tests COMMAND peer_manager_transport_tests)
+    set_tests_properties(peer_manager_transport_tests PROPERTIES TIMEOUT 20)
+endif()

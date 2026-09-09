@@ -2,7 +2,7 @@
 
 ## 可移植协议与核心测试
 
-不构建 Linux 服务端时，可运行五个独立的 C++ 测试目标：
+不构建 Linux 服务端时，可运行六个独立的 C++ 测试目标：
 
 ```sh
 cmake -S . -B build-protocol -DRAFTKV_BUILD_SERVER=OFF -DBUILD_TESTING=ON
@@ -11,6 +11,7 @@ ctest --test-dir build-protocol --output-on-failure
 ```
 
 - `protocol_tests` 使用实际解析器、输入缓冲区、帧编解码器和命名空间实现。
+- `peer_retry_tests` 使用实际重连策略，检查反复断线退避、稳定重置、旧定时任务及 peer 独立状态；不运行 Muduo。
 - `core_tests` 编译实际 RaftNode、RaftLog、KVStateMachine 与 RocksDBStore 源码，通过可控消息队列测试多数派、重复投票、复制、重启、日志冲突、丢失回复与存储失败。
 - `storage_batch_tests` 检查批量同步写调用次数、批内删除语义、整批校验、故障和恢复；核心测试还检查批量复制顺序与条数/字节配额。
 - `async_executor_tests` 使用实际 `SerialApplyExecutor` 与真实 `std::thread`，检查串行任务、owner 线程完成通知、异常传递和停止时 join；没有数据库或真实网络。
@@ -29,6 +30,8 @@ python3 tests/cluster_smoke.py --self-test
 ```
 
 ## Linux 真实三节点 smoke test
+
+当前重连优化另增加真实 `peer_manager_transport_tests`，仅在服务依赖可用的构建中启用。新版 Linux 构建、该测试与集群回归尚未执行；见[优化验收说明](../docs/optimizations/peer-reconnect-backoff.md)。下述归档结果属于优化前版本。
 
 第三组[过载与有界持续运行](../docs/overload-soak-test.md)脚本已提供，检查连接准入、写入积压 BUSY、卸载恢复及 60 秒资源窗口。本地辅助检查通过，[真实 Linux 原始证据](../docs/benchmarks/overload-validation.md)已核验，4 个阶段 PASS；本轮三组收尾测试完成。7,897 次重连仍是已知问题，60 秒观察不证明长期稳定性。
 

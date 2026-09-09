@@ -12,21 +12,27 @@ PeerManager::PeerManager(muduo::net::EventLoop* loop,
               "RaftPeerServer")
 {
     ValidatePeers(self_id, all_peers);
+    std::weak_ptr<int> alive = _lifetime;
     _server.setConnectionCallback(
-        [this](const auto& conn) { OnServerConnection(conn); });
+        [this, alive](const auto& conn) { if (!alive.expired()) OnServerConnection(conn); });
     _server.setMessageCallback(
-        [this](const auto& conn, auto* buf, auto ts) {
-            OnServerMessage(conn, buf, ts);
+        [this, alive](const auto& conn, auto* buf, auto ts) {
+            if (!alive.expired()) OnServerMessage(conn, buf, ts);
         });
 }
 
-PeerManager::~PeerManager() = default;
+PeerManager::~PeerManager() {
+    _lifetime.reset();
+}
 
 void PeerManager::SetMessageHandler(MessageHandler handler) {
     _handler = std::move(handler);
 }
 
 void PeerManager::Start() {
+    _loop->assertInLoopThread();
+    if (_started) return;
+    _started = true;
     _server.start();
     LOG(INFO) << "PeerManager[" << _self_id
               << "]: listening for peers on 0.0.0.0:" << _server.ipPort();
@@ -76,20 +82,24 @@ void PeerManager::ConnectToPeer(const PeerInfo& peer) {
     auto addr = muduo::net::InetAddress(peer.host,
                                          static_cast<uint16_t>(peer.raft_port));
     auto client = std::make_unique<muduo::net::TcpClient>(
-        _loop, addr, "RaftPeerClient-" + std::to_string(peer.id));
+        _loop, addr, "RaftPeerClient-" + std::to_string(peer.id) +
+                    "-" + std::to_string(++_client_generation));
 
     int peer_id = peer.id;
+    std::weak_ptr<int> alive = _lifetime;
     client->setConnectionCallback(
-        [this, peer_id](const auto& conn) {
-            OnClientConnection(conn, peer_id);
+        [this, peer_id, alive](const auto& conn) {
+            if (!alive.expired()) OnClientConnection(conn, peer_id);
         });
     client->setMessageCallback(
-        [this, peer_id](const auto& conn, auto* buf, auto ts) {
-            OnClientMessage(conn, buf, ts, peer_id);
+        [this, peer_id, alive](const auto& conn, auto* buf, auto ts) {
+            if (!alive.expired()) OnClientMessage(conn, buf, ts, peer_id);
         });
 
-    // Connector owns retry timers and the transition out of kConnected.
-    client->enableRetry();
+    // Do not enable TcpClient's immediate restart after a successful connection
+    // closes. Connector still backs off failed connects on this fresh client.
+    // Replace only from a delayed callback, after old removeConnection returned;
+    // calling connect() again on its kConnected Connector would assert in Muduo.
     _clients[peer_id] = std::move(client);
     _clients.at(peer_id)->connect();
 }
@@ -97,6 +107,7 @@ void PeerManager::ConnectToPeer(const PeerInfo& peer) {
 void PeerManager::OnClientConnection(const muduo::net::TcpConnectionPtr& conn,
                                       int peer_id) {
     if (conn->connected()) {
+        _retry[peer_id].Connected(PeerRetryPolicy::Clock::now());
         LOG(INFO) << "PeerManager[" << _self_id
                   << "]: connected to peer " << peer_id;
         _connections[peer_id] = conn;
@@ -104,8 +115,20 @@ void PeerManager::OnClientConnection(const muduo::net::TcpConnectionPtr& conn,
     } else {
         _connection_peers.erase(conn->name());
         const auto current = _connections.find(peer_id);
-        if (current != _connections.end() && current->second == conn)
+        if (current != _connections.end() && current->second == conn) {
             _connections.erase(current);
+            const auto plan = _retry[peer_id].Disconnected(PeerRetryPolicy::Clock::now());
+            if (!plan.token) return;
+            for (const auto& peer : _all_peers) {
+                if (peer.id != peer_id) continue;
+                std::weak_ptr<int> alive = _lifetime;
+                _loop->runAfter(plan.delay_ms / 1000.0, [this, alive, peer, token = plan.token]() {
+                    if (alive.expired()) return;
+                    if (_retry.at(peer.id).Consume(token)) ConnectToPeer(peer);
+                });
+                break;
+            }
+        }
     }
 }
 

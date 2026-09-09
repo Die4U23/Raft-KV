@@ -2,6 +2,10 @@
 
 优化基线：`raft-cluster-namespace` 的 `bc853d5fe8d0ffddbadbe736ccfe5100c7610b8c`，最初在 `fix/raft-correctness` 分支整理。本文记录实现和测试范围，提交与发布状态以仓库历史为准。
 
+## 最新改动：重连退避（2026-09-09，待 Linux 验收）
+
+PeerManager 已增加已建连后断线的 0.5/1/2 秒退避、10 秒稳定重置、旧定时任务及对象生命周期保护；建连失败仍使用 Connector 原有策略。Windows CTest 6/6、分区辅助检查 8/8 通过；新版 Linux 服务构建、真实 Muduo 生命周期、冒烟与分区计数均为 UNRUN。已归档旧版本 PASS 仍作为基线，不能证明新实现的真实效果。原因、取舍和验收见[优化记录](docs/optimizations/peer-reconnect-backoff.md)，逐次改动见[更新日志](CHANGELOG.md)。
+
 ## 已验证
 
 原始 RESP 解析器的半包丢失问题已局部复现。新解析器、Raft 帧编解码器、节点配置校验、命名空间和输入缓冲逻辑在 Windows 上通过独立 C++ 测试，共 274 项检查；包括 10,000 条命令的连续解析、4 MiB 输入上限、半包拼接与拒绝超限输入后的数据完整性。这些测试不覆盖真实 TCP 收发。

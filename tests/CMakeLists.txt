@@ -51,3 +51,11 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(batch_flush_tests PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 add_test(NAME batch_flush_tests COMMAND batch_flush_tests)
+
+# Production backoff policy only; live Muduo lifecycle is checked on Linux.
+add_executable(peer_retry_tests peer_retry_tests.cpp)
+target_include_directories(peer_retry_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(peer_retry_tests PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+add_test(NAME peer_retry_tests COMMAND peer_retry_tests)

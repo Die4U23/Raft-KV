@@ -33,6 +33,17 @@ class EchoServer(socketserver.ThreadingTCPServer):
 
 
 class RelayTests(unittest.TestCase):
+    def test_reconnect_limit_rejects_old_storm_and_invalid_counts(self):
+        snapshot = {'edges': {'0->1': {'refused': 50}, '1->2': {'refused': 50}}}
+        self.assertEqual(cluster_partition.check_reconnects(snapshot, 100)['refused_connections'], 100)
+        snapshot['edges']['0->1']['refused'] = 24731
+        with self.assertRaises(AssertionError):
+            cluster_partition.check_reconnects(snapshot, 100)
+        self.assertGreater(cluster_partition.check_reconnects(snapshot, None)['refused_connections'], 100)
+        snapshot['edges']['0->1']['refused'] = -1
+        with self.assertRaises(AssertionError):
+            cluster_partition.check_reconnects(snapshot, None)
+
     def setUp(self):
         self.server = EchoServer(('127.0.0.1', 0), Echo)
         self.server_thread = threading.Thread(target=self.server.serve_forever, daemon=True)

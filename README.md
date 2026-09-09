@@ -4,6 +4,8 @@
 
 当前本地优化的实现范围和验证结果见 [LOCAL_REVIEW_STATUS.md](LOCAL_REVIEW_STATUS.md)，测试方法见 [tests/README.md](tests/README.md)。完整 Linux 服务的验证状态以该记录为准。
 
+改动历史见[更新日志](CHANGELOG.md)。最新一轮为[断线重连退避优化](docs/optimizations/peer-reconnect-backoff.md)：本地策略检查已通过，新版 Linux 验收待执行；历史基线不代表新版本实测结果。
+
 面向 C++ 后端 / 基础架构实习的改进顺序、验收标准和面试准备见 [实习项目升级路线](docs/internship-roadmap.md)。路线中的待办不代表已经实现的能力。
 
 并发处理支持满批立即调度、状态机异步应用、队列限额、慢连接保护，以及 INFO 阶段耗时与批量大小统计。默认 `--async_apply=true` 将已提交 KV 批次交给串行工作线程，Raft 日志仍同步落盘；详见 [并发处理说明](docs/concurrency.md) 与 [压测说明](docs/benchmark.md)。

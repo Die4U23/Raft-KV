@@ -14,6 +14,7 @@
 
 #include "raft/raft_codec.h"
 #include "raft/peers.h"
+#include "common/peer_retry_policy.h"
 
 // PeerManager: 管理与其他 Raft 节点之间的 TCP 连接
 //
@@ -22,8 +23,9 @@
 //   - 对 node_id 大于自己的节点主动发起 TcpClient 连接
 //
 // 重连策略:
-//   - 使用 muduo enableRetry()，由 Connector 管理连接状态和退避。
-//   - 不额外定时调用 connect()，避免与正在进行的连接/重试冲突。
+//   - 建连失败仍由 Connector 管理；不启用 TcpClient 的断线立即重连。
+//   - 已建立连接断开后，按 0.5/1/2 秒退避创建新的 TcpClient。
+//   - 连续连接满 10 秒后重置退避；同一 peer 最多一个待执行重连。
 //
 // 对端识别:
 //   - 通过帧头中的 sender_id 字段识别对端身份
@@ -84,6 +86,11 @@ private:
 
     // 仅对 id > _self_id 的 peer 创建
     std::map<int, std::unique_ptr<muduo::net::TcpClient>> _clients;
+    std::map<int, PeerRetryPolicy> _retry;
+    uint64_t _client_generation = 0;
+    bool _started = false;
+    // EventLoop callbacks may outlive this object; invalidate before destruction.
+    std::shared_ptr<int> _lifetime = std::make_shared<int>(0);
 
     // peer_id → TcpConnectionPtr（所有已建立的连接）
     std::map<int, muduo::net::TcpConnectionPtr> _connections;
