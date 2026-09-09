@@ -30,7 +30,7 @@ python3 tests/cluster_smoke.py --self-test
 
 ## Linux 真实三节点 smoke test
 
-第三组[过载与有界持续运行](../docs/overload-soak-test.md)脚本已提供，检查连接准入、写入积压 BUSY、卸载恢复及 60 秒资源窗口。本地辅助检查通过，真实 Linux 结果仍为 UNRUN；重连开销和长期稳定性不能由有限运行的 PASS 推断。
+第三组[过载与有界持续运行](../docs/overload-soak-test.md)脚本已提供，检查连接准入、写入积压 BUSY、卸载恢复及 60 秒资源窗口。本地辅助检查通过，[真实 Linux 原始证据](../docs/benchmarks/overload-validation.md)已核验，4 个阶段 PASS；本轮三组收尾测试完成。7,897 次重连仍是已知问题，60 秒观察不证明长期稳定性。
 
 第二组[持续写入期间退出与重启](../docs/write-restart-test.md)逐条记录成功、拒绝、未发送与未知请求，并在旧 Leader 和全体节点重启后核对数据。本地辅助检查通过，真实 Linux 原始证据也已核验：5 个阶段 PASS，1,704 个已确认键全部保留；见[核验报告](../docs/benchmarks/write-restart-validation.md)。
 

@@ -1,0 +1,99 @@
+{
+  "status": "PASS",
+  "scope": "Archived bounded overload and 60-second soak; not long-term or capacity proof",
+  "archive_sha256": "d2b0b7e2ac12439dafb502c96edecfa1253544572c749b02a28ec20735c638c1",
+  "archive_bytes": 141339,
+  "file_count": 7,
+  "file_manifest": [
+    {
+      "path": "run-ypucp0tw/git-head.log",
+      "bytes": 41,
+      "sha256": "82c1f4edca76b7f96c166c0a0b4ca518063cefcdf8e4f89bc7bcc3bc94bb3381"
+    },
+    {
+      "path": "run-ypucp0tw/git-status.log",
+      "bytes": 50,
+      "sha256": "d6a2bae4bb3ee631a5ad4dd2d73a7956236eb2e9e604c9068c05e60bb11b7720"
+    },
+    {
+      "path": "run-ypucp0tw/node-0.log",
+      "bytes": 875180,
+      "sha256": "34efc3157668967ebd8f538b5ed93fc0ab3388608c09bc16a01317cdc1b39f49"
+    },
+    {
+      "path": "run-ypucp0tw/node-1.log",
+      "bytes": 865391,
+      "sha256": "b287b26d77151da3133bbcee97ee990490e74e905907ac1e787e102943929302"
+    },
+    {
+      "path": "run-ypucp0tw/node-2.log",
+      "bytes": 410,
+      "sha256": "e93860e6957d53c8525e28eb679636f67efd1037d4ce3c59e8b3f1ae49358dba"
+    },
+    {
+      "path": "run-ypucp0tw/referenced-build-report.json",
+      "bytes": 59185,
+      "sha256": "58a2de6ef95801ebc4dfab90eac0acdb14845814240bf3b81de766f31e2c4561"
+    },
+    {
+      "path": "run-ypucp0tw/report.json",
+      "bytes": 843372,
+      "sha256": "d57bdccf638fa6e532ba0c96f79218d8be53c7c995d60ded34ae33913f998b7a"
+    }
+  ],
+  "test_commit": "b00e221e555f585fe02073a10e28ca3b571ec4b7",
+  "compiled_inputs": 26,
+  "matched_test_helpers": 4,
+  "binary_sha256": "bf3c71a718ca7d19c700bb4063bd19e38e895aafa182e6210355ef05c5a51be6",
+  "binary_in_archive": false,
+  "steps_passed": 4,
+  "sample_phases": {
+    "baseline": 1,
+    "admission_full": 1,
+    "pending_overload": 15,
+    "warmup": 10,
+    "soak": 60,
+    "recovery": 10
+  },
+  "admission": {
+    "held_clients": 31,
+    "monitor_clients": 1,
+    "excess_closed": 5,
+    "overload_rejections_delta": 5
+  },
+  "pending_outcomes": {
+    "busy": 4,
+    "unknown": 20
+  },
+  "confirmed_set_get_pairs_including_warmup": 2552,
+  "client_errors": 0,
+  "resources": {
+    "0": {
+      "rss_growth_bytes": 815104.0,
+      "fd_growth": 0.0,
+      "peak_rss_bytes": 19533824,
+      "soak_cpu_percent_of_one_core": 3.310902710340546
+    },
+    "1": {
+      "rss_growth_bytes": 403456.0,
+      "fd_growth": 0.0,
+      "peak_rss_bytes": 44933120,
+      "soak_cpu_percent_of_one_core": 3.1757638242041986
+    },
+    "2": {
+      "rss_growth_bytes": 815104.0,
+      "fd_growth": 0.0,
+      "peak_rss_bytes": 19566592,
+      "soak_cpu_percent_of_one_core": 5.473124888522129
+    }
+  },
+  "reconnect_refused_connections": 7897,
+  "warnings": [
+    "High reconnect count during TCP-close partition: 7897; retry/log cost remains an open issue"
+  ],
+  "final_leader": 2,
+  "final_term": 4,
+  "final_commit_and_applied_index": 2555,
+  "elapsed_seconds": 86.037,
+  "limitation": "Key checks are script assertions, not raw reply transcripts; no binary or database bodies"
+}
