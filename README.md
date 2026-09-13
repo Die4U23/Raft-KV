@@ -1,6 +1,6 @@
 # raft-kv
 
-[正常读写诊断已核验](docs/benchmarks/profile-validation.md)：双核 VM 同机三节点与客户端完成 10 万次请求、零错误，约 5146 次/秒。下一步是[客户端读取开销四轮对照](docs/optimizations/client-overhead.md)，工具已准备、Linux 对照待执行；尚不宣称性能提升。
+最新实验：[客户端读取开销四轮对照已核验](docs/benchmarks/client-header-validation.md)，共 40 万次请求零错误。本轮合并读取未观察到收益，继续保留 `classic` 默认；完整数据和未采用的优化同样记录在更新日志中。
 
 基于 Raft 共识协议的固定成员 KV 存储学习项目，使用 C++17、Muduo、Protobuf 和 RocksDB。默认配置为三个节点。
 

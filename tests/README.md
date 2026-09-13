@@ -1,6 +1,6 @@
 # 测试
 
-正常性能诊断的[真实 Linux 证据](../docs/benchmarks/profile-validation.md)已核验。下一步执行[客户端头部读取四轮对照](../docs/optimizations/client-overhead.md)，现有二进制无需重编译；新对照尚未在 Linux 实测。
+正常性能诊断的[真实 Linux 证据](../docs/benchmarks/profile-validation.md)和[客户端头部读取四轮对照](../docs/benchmarks/client-header-validation.md)均已核验。后者 40 万次正式请求零错误，但未观察到优化收益；继续保留 classic 默认，无需重跑本组。
 
 ## 可移植协议与核心测试
 

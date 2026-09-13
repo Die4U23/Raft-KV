@@ -2,9 +2,9 @@
 
 优化基线：`raft-cluster-namespace` 的 `bc853d5fe8d0ffddbadbe736ccfe5100c7610b8c`，最初在 `fix/raft-correctness` 分支整理。本文记录实现和测试范围，提交与发布状态以仓库历史为准。
 
-## 最新改动：客户端读取对照（2026-09-13，Linux 对照待执行）
+## 最新改动：客户端读取对照（2026-09-13，已实测归档）
 
-正常负载[原始诊断已归档核验](docs/benchmarks/profile-validation.md)：100,000 次请求零错误、约 5146 次/秒，正式窗口整机空闲约 4.97%。新增可选 RESP 头部合并读取和四轮交替对照，本地相关辅助检查 16/16 PASS；服务端二进制不变，新对照 **UNRUN**，不提前填写收益。[执行与判断边界](docs/optimizations/client-overhead.md)。
+正常负载[原始诊断已归档核验](docs/benchmarks/profile-validation.md)：100,000 次请求零错误、约 5146 次/秒，正式窗口整机空闲约 4.97%。可选 RESP 头部合并读取及四轮对照的本地辅助检查 16/16 PASS，[真实 Linux 四轮对照](docs/benchmarks/client-header-validation.md)亦已核验，共 400,000 次请求零错误、各轮三副本收敛。本轮合并读取吞吐 −1.53%、客户端 CPU 成本 +7.12%，未观察到收益；保留 classic 默认，服务端二进制不变。[实现与判断边界](docs/optimizations/client-overhead.md)。
 
 ## 重连退避（2026-09-09，Linux 实测已核验）
 

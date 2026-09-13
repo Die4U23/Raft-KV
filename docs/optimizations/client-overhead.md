@@ -1,6 +1,6 @@
 # 优化实验 003：降低压测客户端回复读取开销
 
-状态：实现与本地辅助检查完成，**Linux 四轮对照 UNRUN**。默认仍为原读取模式；尚不宣称 CPU 或吞吐收益。
+状态：**Linux 四轮对照 PASS，完整证据已核验归档**。本轮合并读取吞吐变化 −1.53%，客户端 CPU 成本变化 +7.12%，未观察到收益。继续保留 `classic` 默认，合并读取仅作为实验选项；[各轮数据与判断边界](../benchmarks/client-header-validation.md)。
 
 ## 改动与目的
 
@@ -29,9 +29,9 @@
 
 四轮都通过正确性及身份检查才标记 PASS；PASS 不等于性能提升。单次 ABBA 只能观察本机差异，不能排除调度、初始 Leader、系统缓存等波动。无稳定收益时保留 classic 默认，不筛掉较慢轮次。
 
-## Ubuntu 下一步
+## 历史复现方法
 
-无需重新编译服务端：
+本轮已经完成，无需再次执行。以下保留复现入口，无需重新编译服务端：
 
 ```bash
 cd ~/projects/raft-kv &&
@@ -42,6 +42,6 @@ python3 tests/compare_clients.py \
 
 通常数分钟，具体由机器决定；每轮原有 240 秒期限和独立清理保持不变。任意一轮失败即停止，查看该轮报告和日志，不继续挑选结果。
 
-最终预期 `PASS: client header ABBA; report: .../comparison.json`。保留终端开头 `Comparison artifacts:` 对应的整个目录，内含四轮报告及日志；回传汇总后再归档完整证据。
+复现时预期 `PASS: client header ABBA; report: .../comparison.json`。终端开头 `Comparison artifacts:` 对应的整个目录包含四轮报告及日志；本轮这些材料已归档，不需要补交。
 
 本地验证：`python tests/load_benchmark.py --self-test`、`python tests/client_mode_tests.py`、`python tests/profile_benchmark_tests.py`、`python tests/compare_clients_tests.py`。这些检查覆盖两模式完整请求计数、分片/嵌套/二进制响应、畸形与截断输入、部分回复后超时、外部取消、CPU/阶段统计、测量边界以及对照汇总拒绝条件，不替代 Linux 实测。
