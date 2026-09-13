@@ -1,0 +1,134 @@
+{
+  "status": "PASS",
+  "archive_sha256": "c5e475de761152a666c5cc883072f37c083e73bee441c82c2e4c7cced6a91520",
+  "archive_bytes": 43154,
+  "test_commit": "74880f392e10695e7f132cd021ef9f2d58df4724",
+  "file_manifest": [
+    {
+      "path": "run-sqgv6xg2/client-job.json",
+      "bytes": 413,
+      "sha256": "81c5e90b1cda7831c6f8714333e394bb58aece0f0720b1a2f82dfc773e78e4d2"
+    },
+    {
+      "path": "run-sqgv6xg2/client-report.json",
+      "bytes": 24437,
+      "sha256": "fa154dac0e3e105da157301c08e1d9751fec30aff7c2fa3dd1aa6bd3bc979a5f"
+    },
+    {
+      "path": "run-sqgv6xg2/client.log",
+      "bytes": 74,
+      "sha256": "95f154bf83022228a53d41578f0eb4a03d8e79e2181025f87a4b9d7c08cec262"
+    },
+    {
+      "path": "run-sqgv6xg2/git-head.log",
+      "bytes": 41,
+      "sha256": "7d929734599a0d6735fe4504edf96b9aba7fa0f62c869d2e894c93aad9af6c92"
+    },
+    {
+      "path": "run-sqgv6xg2/git-status.log",
+      "bytes": 50,
+      "sha256": "d6a2bae4bb3ee631a5ad4dd2d73a7956236eb2e9e604c9068c05e60bb11b7720"
+    },
+    {
+      "path": "run-sqgv6xg2/node-0.log",
+      "bytes": 65861,
+      "sha256": "6b0f2c39dd0f5bd0c0cb71939e1d90a003da2b90c5633b511b8b960848051d76"
+    },
+    {
+      "path": "run-sqgv6xg2/node-1.log",
+      "bytes": 324,
+      "sha256": "c3ad5a1059f4cfe1fa63e13d9adc45799cb7d1bc976e1d934ee400a07fef0a8b"
+    },
+    {
+      "path": "run-sqgv6xg2/node-2.log",
+      "bytes": 323,
+      "sha256": "17f48183d2493b98769cf90f5a9acd3fd3eaf9a418c9d47d49da19416d2adaa9"
+    },
+    {
+      "path": "run-sqgv6xg2/referenced-build-report.json",
+      "bytes": 60190,
+      "sha256": "8f237c0e630bef84f08219603cffbfcae673584852d75b3f37490e729d26b816"
+    },
+    {
+      "path": "run-sqgv6xg2/report.json",
+      "bytes": 85416,
+      "sha256": "163ba70e6e00634d753d7bd70c1042cad48cdd5bfbb860958938ced041730a41"
+    }
+  ],
+  "binary_sha256": "1cb823ecb51f1a2759f93347ee5170f173c7db557a53b488776cd706b7d5f41c",
+  "matched_sources": 33,
+  "success": 100000,
+  "errors": 0,
+  "goodput": 5145.921141601593,
+  "latency_ms": {
+    "p50": 5.241940500127384,
+    "p95": 14.631019998705604,
+    "p99": 21.66308699903309
+  },
+  "cpu": {
+    "window_seconds": 19.434313648998796,
+    "processes": {
+      "0": {
+        "cpu_seconds": 11.43,
+        "percent_of_one_core": 58.81349970179597
+      },
+      "1": {
+        "cpu_seconds": 3.26,
+        "percent_of_one_core": 16.774453983189403
+      },
+      "2": {
+        "cpu_seconds": 3.12,
+        "percent_of_one_core": 16.054078658757955
+      },
+      "client": {
+        "cpu_seconds": 12.22,
+        "percent_of_one_core": 62.87847474680199
+      }
+    },
+    "system_percent": {
+      "user": 64.52287581699346,
+      "nice": 0.0,
+      "system": 23.712418300653596,
+      "idle": 4.967320261437909,
+      "iowait": 0.0,
+      "irq": 0.0,
+      "softirq": 6.7973856209150325,
+      "steal": 0.0
+    }
+  },
+  "stages": {
+    "write_queue_wait": {
+      "count": 50000,
+      "mean_us": 1080.6113
+    },
+    "leader_log_write": {
+      "count": 5681,
+      "mean_us": 118.79545854603063,
+      "mean_entries": 8.801267382503081
+    },
+    "replication_data_ack": {
+      "count": 11322,
+      "mean_us": 1191.4265147500441
+    },
+    "kv_apply": {
+      "count": 5666,
+      "mean_us": 151.43928697493823,
+      "mean_entries": 8.824567596187787
+    },
+    "apply_dispatch": {
+      "count": 5666,
+      "mean_us": 464.1426050123544
+    },
+    "write_completed": {
+      "count": 50000,
+      "mean_us": 3608.33178
+    },
+    "local_read": {
+      "count": 50000,
+      "mean_us": 14.88906
+    }
+  },
+  "measured_samples": 38,
+  "final_commit_and_applied_index": 55065,
+  "limitation": "One VM diagnostic; quantiles are reported, raw latency samples unavailable; not an optimization comparison"
+}

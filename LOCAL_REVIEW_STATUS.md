@@ -1,8 +1,12 @@
-# 本地优化状态（实现记录 2026-09-04，用户测试证据更新 2026-09-09）
+# 本地优化状态（实现记录 2026-09-04，用户测试证据更新 2026-09-13）
 
 优化基线：`raft-cluster-namespace` 的 `bc853d5fe8d0ffddbadbe736ccfe5100c7610b8c`，最初在 `fix/raft-correctness` 分支整理。本文记录实现和测试范围，提交与发布状态以仓库历史为准。
 
-## 最新改动：重连退避（2026-09-09，Linux 实测已核验）
+## 最新改动：客户端读取对照（2026-09-13，Linux 对照待执行）
+
+正常负载[原始诊断已归档核验](docs/benchmarks/profile-validation.md)：100,000 次请求零错误、约 5146 次/秒，正式窗口整机空闲约 4.97%。新增可选 RESP 头部合并读取和四轮交替对照，本地相关辅助检查 16/16 PASS；服务端二进制不变，新对照 **UNRUN**，不提前填写收益。[执行与判断边界](docs/optimizations/client-overhead.md)。
+
+## 重连退避（2026-09-09，Linux 实测已核验）
 
 PeerManager 已增加已建连后断线的 0.5/1/2 秒退避、10 秒稳定重置、旧定时任务及对象生命周期保护；建连失败仍使用 Connector 原有策略。Windows CTest 6/6、分区辅助检查 8/8 通过；实现提交 `ef17ef7` 的新版 Linux 构建、CTest 7/7（含真实 Muduo 生命周期）、冒烟 10 项、分区 5 个阶段已[归档核验](docs/benchmarks/reconnect-validation.md)。本次同类分区对比拒绝重连从 24,731 降至 11，完整日志从 5,498,325 降至 146,110 字节；初始 Leader 和选举时序不同，不据此宣称 CPU、QPS 或长期稳定性收益。下文旧版本事实仍保留为历史基线。原因、取舍和验收见[优化记录](docs/optimizations/peer-reconnect-backoff.md)，逐次改动见[更新日志](CHANGELOG.md)。
 

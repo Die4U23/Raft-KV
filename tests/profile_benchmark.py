@@ -121,13 +121,14 @@ def worker(job_path):
     return 0 if result['status'] == 'PASS' else 1
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--build-report', type=Path)
     parser.add_argument('--artifacts', type=Path, default=Path('build-linux-reconnect/profile-reports'))
     parser.add_argument('--requests', type=int, default=100000)
+    parser.add_argument('--client-mode', choices=('classic', 'combined-header'), default='classic')
     parser.add_argument('--worker', type=Path, help=argparse.SUPPRESS)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if sys.platform != 'linux':
         parser.error('Requires Linux /proc; use profile_benchmark_tests.py for helper checks')
     if args.worker:
@@ -163,7 +164,8 @@ def main():
             report['leader'] = leader
             print('Leader: ' + str(leader), flush=True)
             configuration = dict(host='127.0.0.1', port=cluster.nodes[leader].client_port, connections=32,
-                requests=args.requests, pipeline=1, value_size=128, write_ratio=0.5, timeout=5, namespace='profile')
+                requests=args.requests, pipeline=1, value_size=128, write_ratio=0.5, timeout=5, namespace='profile',
+                client_mode=args.client_mode)
             job = dict(configuration=configuration, leader=leader, deadline=cluster.deadline,
                 server_pids={str(n.node_id): n.process.pid for n in cluster.nodes},
                 ports={str(n.node_id): n.client_port for n in cluster.nodes})

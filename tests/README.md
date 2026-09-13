@@ -1,6 +1,6 @@
 # 测试
 
-正常性能诊断见[执行说明](../docs/optimizations/performance-diagnostic.md)：现有二进制无需重编译，新增工具记录正式负载的进程 CPU 和 INFO 差分；真实 Linux 采样待执行。
+正常性能诊断的[真实 Linux 证据](../docs/benchmarks/profile-validation.md)已核验。下一步执行[客户端头部读取四轮对照](../docs/optimizations/client-overhead.md)，现有二进制无需重编译；新对照尚未在 Linux 实测。
 
 ## 可移植协议与核心测试
 

@@ -24,11 +24,15 @@ def encode(*args):
     return b"*%d\r\n" % len(parts) + b"".join(b"$%d\r\n" % len(p) + p + b"\r\n" for p in parts)
 
 
-async def read_reply(reader, depth=0):
+async def read_reply(reader, depth=0, combined_header=False):
     if depth > 16:
         raise ValueError("RESP nesting exceeds limit")
-    prefix = await reader.readexactly(1)
-    line = await reader.readuntil(b"\r\n")
+    if combined_header:
+        header = await reader.readuntil(b"\r\n")
+        prefix, line = header[:1], header[1:]
+    else:
+        prefix = await reader.readexactly(1)
+        line = await reader.readuntil(b"\r\n")
     if len(line) > 1024:
         raise ValueError("RESP header exceeds limit")
     line = line[:-2]
@@ -45,7 +49,7 @@ async def read_reply(reader, depth=0):
         if size < 0 or size > (8 * 1024 * 1024 if prefix == b"$" else 1024):
             raise ValueError("RESP length exceeds limit")
         if prefix == b"*":
-            return [await read_reply(reader, depth + 1) for _ in range(size)]
+            return [await read_reply(reader, depth + 1, combined_header) for _ in range(size)]
         data = await reader.readexactly(size + 2)
         if data[-2:] != b"\r\n":
             raise ValueError("invalid bulk terminator")
@@ -53,11 +57,11 @@ async def read_reply(reader, depth=0):
     raise ValueError("unknown RESP type")
 
 
-async def exchange(reader, writer, payload, count, replies):
+async def exchange(reader, writer, payload, count, replies, combined_header=False):
     writer.write(payload)
     await writer.drain()
     for _ in range(count):
-        replies.append(await read_reply(reader))  # Preserve replies received before a timeout.
+        replies.append(await read_reply(reader, combined_header=combined_header))  # Preserve partial replies.
 
 
 async def close(writer):
@@ -121,6 +125,9 @@ class Samples:
 
 
 async def benchmark(args, measurement_observer=None):
+    client_mode = getattr(args, 'client_mode', 'classic')
+    if client_mode not in ('classic', 'combined-header'):
+        raise ValueError('Unknown client mode: ' + client_mode)
     reader, writer = await asyncio.wait_for(asyncio.open_connection(args.host, args.port), args.timeout)
     try:
         info = await one(reader, writer, encode("INFO"), args.timeout)
@@ -173,7 +180,8 @@ async def benchmark(args, measurement_observer=None):
                     active[index] = await asyncio.wait_for(selected_connection(args), args.timeout)
                 reader, writer = active[index]
                 started = time.perf_counter()
-                await asyncio.wait_for(exchange(reader, writer, payload, size, replies), args.timeout)
+                await asyncio.wait_for(exchange(reader, writer, payload, size, replies,
+                                                client_mode == 'combined-header'), args.timeout)
                 samples.add((time.perf_counter() - started) * 1000)
             except asyncio.TimeoutError:
                 error = "timeout"
@@ -265,11 +273,13 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         args = argparse.Namespace(host="unused", port=1, connections=3, requests=103,
                                   pipeline=8, value_size=16, write_ratio=0.5, timeout=5,
                                   namespace="bench", output=None, self_test=False)
-        with patch("asyncio.open_connection", connect):
-            report = await benchmark(args)
-        self.assertEqual((report["attempted"], report["success"], report["errors"]), (103, 103, 0))
-        self.assertEqual((report["writes_attempted"], report["reads_attempted"]), (51, 52))
-        self.assertEqual(report["completed_batches"], 15)
+        for mode in ('classic', 'combined-header'):
+            with self.subTest(mode=mode), patch("asyncio.open_connection", connect):
+                args.client_mode = mode
+                report = await benchmark(args)
+                self.assertEqual((report["attempted"], report["success"], report["errors"]), (103, 103, 0))
+                self.assertEqual((report["writes_attempted"], report["reads_attempted"]), (51, 52))
+                self.assertEqual(report["completed_batches"], 15)
 
     async def test_resp(self):
         reader = asyncio.StreamReader()
@@ -315,6 +325,7 @@ def main():
     parser.add_argument("--write-ratio", type=float, default=0.5)
     parser.add_argument("--timeout", type=float, default=5)
     parser.add_argument("--namespace", default="bench")
+    parser.add_argument("--client-mode", choices=('classic', 'combined-header'), default='classic')
     parser.add_argument("--output", type=Path)
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()

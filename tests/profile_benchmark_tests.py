@@ -73,7 +73,7 @@ class ObserverTests(unittest.IsolatedAsyncioTestCase):
             if b'INFO' in payload: return b'state:leader\r\nleader_id:0\r\n'
             if b'SET' in payload: events.append('preload')
             return b'OK'
-        async def exchange(_r, _w, payload, count, replies):
+        async def exchange(_r, _w, payload, count, replies, _combined_header=False):
             self.assertIn('start', events)
             self.assertNotIn('end', events)
             writes.append(payload)
