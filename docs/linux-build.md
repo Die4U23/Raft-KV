@@ -79,7 +79,7 @@ Git 可用时，报告目录还保存 HEAD、工作区状态和相关已跟踪�
 
 ## Docker 路径
 
-`docker/dev.Dockerfile` 的 Muduo 步骤也复用同一个准备脚本、兼容参数和扩展开关。该镜像仍是原有 Ubuntu 20.04 多依赖开发环境，含本项目主服务不直接使用的其他库；本次未调整这些依赖，也未验证整个镜像构建成功。当前 Ubuntu 26.04 验证优先使用上面的原生流程。
+`docker/dev.Dockerfile` 只准备服务直接需要的 RocksDB 和 Muduo；Muduo 步骤复用同一个准备脚本、兼容参数和扩展开关。仓库不再携带未被服务链接的 brpc、braft、NuRaft 和 redis-plus-plus 源码归档。当前仍优先使用上面的 Ubuntu 26.04 原生流程；Docker 镜像需在有网络的 Linux 环境单独验证。
 
 ## 本地检查记录
 
