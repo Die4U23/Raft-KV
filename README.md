@@ -4,6 +4,8 @@
 
 基于 Raft 共识协议的固定成员 KV 存储学习项目，使用 C++17、Muduo、Protobuf 和 RocksDB。默认配置为三个节点。
 
+项目实践长文：[从三节点存储到故障验证与性能优化](docs/raft-kv-project-practice.md)，包含架构与写入时序、原有实现和个人改造范围、故障证据、优化取舍及持续更新日志。
+
 当前本地优化的实现范围和验证结果见 [LOCAL_REVIEW_STATUS.md](LOCAL_REVIEW_STATUS.md)，测试方法见 [tests/README.md](tests/README.md)。完整 Linux 服务的验证状态以该记录为准。
 
 改动历史见[更新日志](CHANGELOG.md)。最新一轮为[断线重连退避优化](docs/optimizations/peer-reconnect-backoff.md)：[新版 Linux 实测](docs/benchmarks/reconnect-validation.md)已核验；本次同类分区场景拒绝重连从 24,731 降至 11，原有安全性与恢复检查通过。此结果不是正常业务吞吐提升。
