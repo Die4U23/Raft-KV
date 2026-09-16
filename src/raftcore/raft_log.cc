@@ -24,6 +24,7 @@ RaftLog::RaftLog(const std::string& path) {
             entry.index() != _last_index + 1 || entry.term() <= 0)
             throw std::runtime_error("corrupt or non-contiguous Raft log");
         ++_last_index;
+        _last_term = entry.term();
     }
     RequireStorageOK(it->status(), "scan Raft log");
 }
@@ -56,6 +57,7 @@ void RaftLog::AppendBatch(const std::vector<raftcore::LogEntry>& entries) {
     }
     RequireStorageOK(_db->Write(DurableWriteOptions(), &batch), "append Raft log batch");
     _last_index = last;
+    _last_term = entries.back().term();
 }
 bool RaftLog::Get(int64_t index, raftcore::LogEntry* entry) const {
     if (index <= 0 || index > _last_index) return false;
@@ -66,9 +68,6 @@ bool RaftLog::Get(int64_t index, raftcore::LogEntry* entry) const {
         throw std::runtime_error("corrupt Raft log entry");
     return true;
 }
-int64_t RaftLog::LastTerm() const {
-    return _last_index == 0 ? 0 : GetTerm(_last_index);
-}
 int64_t RaftLog::GetTerm(int64_t index) const {
     if (index == 0) return 0;
     raftcore::LogEntry entry;
@@ -77,13 +76,16 @@ int64_t RaftLog::GetTerm(int64_t index) const {
 void RaftLog::TruncateSuffix(int64_t start) {
     if (start <= 0) throw std::runtime_error("cannot truncate hard state");
     if (start > _last_index) return;
+    const int64_t new_last_index = start - 1;
+    const int64_t new_last_term = new_last_index == 0 ? 0 : GetTerm(new_last_index);
     rocksdb::WriteBatch batch;
     for (int64_t index = start;; ++index) {
         batch.Delete(IndexToKey(index));
         if (index == _last_index) break;
     }
     RequireStorageOK(_db->Write(DurableWriteOptions(), &batch), "truncate Raft log");
-    _last_index = start - 1;
+    _last_index = new_last_index;
+    _last_term = new_last_term;
 }
 void RaftLog::SaveHardState(int32_t term, int32_t voted_for) {
     if (term < 0 || voted_for < -1) throw std::runtime_error("invalid hard state");

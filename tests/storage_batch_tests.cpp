@@ -48,6 +48,42 @@ static void LogBatches() {
     Check(reopened.LastIndex() == 64 && reopened.Get(64, &last) && last.command() == "value",
           "reopened log lost batch tail");
 }
+static void LogTailTermCache() {
+    const std::string path = "storage-batch/tail-term";
+    auto state = rocksdb::testing::StateFor(path);
+    {
+        RaftLog log(path);
+        log.AppendBatch({Entry(1, 1), Entry(2, 2), Entry(3, 2)});
+        state->fail_reads = 1;
+        Check(log.LastTerm() == 2 && state->fail_reads == 1,
+              "last term performed a storage read after append");
+        state->fail_reads = 0;
+        state->fail_writes = 1;
+        Throws([&] { log.Append(Entry(4, 3)); });
+        Check(log.LastIndex() == 3 && log.LastTerm() == 2,
+              "failed append changed the tail cache");
+        state->fail_writes = 1;
+        Throws([&] { log.TruncateSuffix(3); });
+        Check(log.LastIndex() == 3 && log.LastTerm() == 2,
+              "failed truncation changed the tail cache");
+        log.TruncateSuffix(3);
+        Check(log.LastIndex() == 2 && log.LastTerm() == 2,
+              "tail cache changed after same-term truncation");
+        log.TruncateSuffix(2);
+        Check(log.LastIndex() == 1 && log.LastTerm() == 1,
+              "tail cache did not follow truncation to an older term");
+        log.TruncateSuffix(1);
+        Check(log.LastIndex() == 0 && log.LastTerm() == 0,
+              "empty log retained a cached term");
+        log.Append(Entry(1, 3));
+        Check(log.LastTerm() == 3, "tail cache did not follow append after truncation");
+    }
+    RaftLog reopened(path);
+    state->fail_reads = 1;
+    Check(reopened.LastIndex() == 1 && reopened.LastTerm() == 3 && state->fail_reads == 1,
+          "reopened log did not rebuild the tail cache from its scan");
+    state->fail_reads = 0;
+}
 static void ApplicationBatches() {
     const std::string path = "storage-batch/kv";
     auto state = rocksdb::testing::StateFor(path);
@@ -109,7 +145,7 @@ static void StoreFailures() {
 }
 int main() {
     try {
-        LogBatches(); ApplicationBatches(); StoreFailures();
+        LogBatches(); LogTailTermCache(); ApplicationBatches(); StoreFailures();
         std::cout << "PASS: storage batching, atomic validation, failures and reopen (in-process doubles)\n";
         return 0;
     } catch (const std::exception& error) {

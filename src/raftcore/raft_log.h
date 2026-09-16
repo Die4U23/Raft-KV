@@ -19,7 +19,7 @@ public:
     void AppendBatch(const std::vector<raftcore::LogEntry>& entries);
     bool Get(int64_t index, raftcore::LogEntry* entry) const;
     int64_t LastIndex() const { return _last_index; }
-    int64_t LastTerm() const;
+    int64_t LastTerm() const { return _last_term; }
     int64_t GetTerm(int64_t index) const;
     void TruncateSuffix(int64_t start_index);
     void SaveHardState(int32_t term, int32_t voted_for);
@@ -28,4 +28,5 @@ private:
     static std::string IndexToKey(int64_t index);
     std::unique_ptr<rocksdb::DB> _db;
     int64_t _last_index = 0;
+    int64_t _last_term = 0;
 };
