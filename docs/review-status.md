@@ -4,11 +4,11 @@
 
 ## 最新改动：客户端读取对照（2026-09-13，已实测归档）
 
-正常负载[原始诊断已归档核验](docs/benchmarks/profile-validation.md)：100,000 次请求零错误、约 5146 次/秒，正式窗口整机空闲约 4.97%。可选 RESP 头部合并读取及四轮对照的本地辅助检查 16/16 PASS，[真实 Linux 四轮对照](docs/benchmarks/client-header-validation.md)亦已核验，共 400,000 次请求零错误、各轮三副本收敛。本轮合并读取吞吐 −1.53%、客户端 CPU 成本 +7.12%，未观察到收益；保留 classic 默认，服务端二进制不变。[实现与判断边界](docs/optimizations/client-overhead.md)。
+正常负载[原始诊断已归档核验](benchmarks/profile-validation.md)：100,000 次请求零错误、约 5146 次/秒，正式窗口整机空闲约 4.97%。可选 RESP 头部合并读取及四轮对照的本地辅助检查 16/16 PASS，[真实 Linux 四轮对照](benchmarks/client-header-validation.md)亦已核验，共 400,000 次请求零错误、各轮三副本收敛。本轮合并读取吞吐 −1.53%、客户端 CPU 成本 +7.12%，未观察到收益；保留 classic 默认，服务端二进制不变。[实现与判断边界](optimizations/client-overhead.md)。
 
 ## 重连退避（2026-09-09，Linux 实测已核验）
 
-PeerManager 已增加已建连后断线的 0.5/1/2 秒退避、10 秒稳定重置、旧定时任务及对象生命周期保护；建连失败仍使用 Connector 原有策略。Windows CTest 6/6、分区辅助检查 8/8 通过；实现提交 `ef17ef7` 的新版 Linux 构建、CTest 7/7（含真实 Muduo 生命周期）、冒烟 10 项、分区 5 个阶段已[归档核验](docs/benchmarks/reconnect-validation.md)。本次同类分区对比拒绝重连从 24,731 降至 11，完整日志从 5,498,325 降至 146,110 字节；初始 Leader 和选举时序不同，不据此宣称 CPU、QPS 或长期稳定性收益。下文旧版本事实仍保留为历史基线。原因、取舍和验收见[优化记录](docs/optimizations/peer-reconnect-backoff.md)，逐次改动见[更新日志](CHANGELOG.md)。
+PeerManager 已增加已建连后断线的 0.5/1/2 秒退避、10 秒稳定重置、旧定时任务及对象生命周期保护；建连失败仍使用 Connector 原有策略。Windows CTest 6/6、分区辅助检查 8/8 通过；实现提交 `ef17ef7` 的新版 Linux 构建、CTest 7/7（含真实 Muduo 生命周期）、冒烟 10 项、分区 5 个阶段已[归档核验](benchmarks/reconnect-validation.md)。本次同类分区对比拒绝重连从 24,731 降至 11，完整日志从 5,498,325 降至 146,110 字节；初始 Leader 和选举时序不同，不据此宣称 CPU、QPS 或长期稳定性收益。下文旧版本事实仍保留为历史基线。原因、取舍和验收见[优化记录](optimizations/peer-reconnect-backoff.md)，逐次改动见[更新日志](../CHANGELOG.md)。
 
 ## 已验证
 
@@ -45,21 +45,21 @@ ctest --test-dir build-portable --output-on-failure
 
 ## 用户回传的真实环境验证与剩余缺口
 
-用户在 Ubuntu 26.04 VM 完成真实服务构建，三节点冒烟原始报告确认 10 项检查通过；另有异步→同步→同步→异步四轮负载，共 40 万次正式请求、0 错误。环境、每轮指标、CPU、阶段差分和证据哈希见 [性能基线报告](docs/benchmarks/ubuntu-2cpu-abba.md)。四轮性能原始材料共 44 个文件已核验；冒烟报告与节点日志、事后构建快照另有 25 个文件已归档，详见 [构建与冒烟核验](docs/benchmarks/ubuntu-build-and-smoke.md)。快照记录当前 HEAD、二进制哈希文本、缓存、依赖版本与兼容修补，但不能追溯证明测试当时的精确二进制身份。
+用户在 Ubuntu 26.04 VM 完成真实服务构建，三节点冒烟原始报告确认 10 项检查通过；另有异步→同步→同步→异步四轮负载，共 40 万次正式请求、0 错误。环境、每轮指标、CPU、阶段差分和证据哈希见 [性能基线报告](benchmarks/ubuntu-2cpu-abba.md)。四轮性能原始材料共 44 个文件已核验；冒烟报告与节点日志、事后构建快照另有 25 个文件已归档，详见 [构建与冒烟核验](benchmarks/ubuntu-build-and-smoke.md)。快照记录当前 HEAD、二进制哈希文本、缓存、依赖版本与兼容修补，但不能追溯证明测试当时的精确二进制身份。
 
 此前 Windows 本地完整服务配置停在缺少 Protobuf 头文件及库，未发现可用 WSL 或 Docker；这是历史本机限制，不代表用户 Ubuntu 测试未执行。本次文档更新没有在 Windows 重跑真实 Linux 服务，也没有重新执行上文的可移植测试。
 
-真实环境验收命令见 [tests/README.md](tests/README.md)。已新增 [Ubuntu 自动构建流程](docs/linux-build.md)：查找 Boost >= 1.69 的 thread 组件，校验固定 Muduo zip 并自动应用已核对的 HttpResponse 修补，私有安装 Muduo，在构建/冒烟时记录源码与二进制指纹。Docker 的 Muduo 步骤复用准备脚本。准备逻辑和失败处理已做本地测试，可移植 CTest 5/5 再次通过；用户回传的[自动 Linux 增量验收](docs/benchmarks/linux-workflow-validation.md)也已核验，CTest 5/5、真实冒烟 10 项通过，48 个已跟踪输入匹配提交 35a348d。后续[空目录全量构建](docs/benchmarks/linux-fresh-validation.md)及两类测试也已核验通过；干净系统复现和 Docker 构建仍待验证。
+真实环境验收命令见 [tests/README.md](../tests/README.md)。已新增 [Ubuntu 自动构建流程](linux-build.md)：查找 Boost >= 1.69 的 thread 组件，校验固定 Muduo zip 并自动应用已核对的 HttpResponse 修补，私有安装 Muduo，在构建/冒烟时记录源码与二进制指纹。Docker 的 Muduo 步骤复用准备脚本。准备逻辑和失败处理已做本地测试，可移植 CTest 5/5 再次通过；用户回传的[自动 Linux 增量验收](benchmarks/linux-workflow-validation.md)也已核验，CTest 5/5、真实冒烟 10 项通过，48 个已跟踪输入匹配提交 35a348d。后续[空目录全量构建](benchmarks/linux-fresh-validation.md)及两类测试也已核验通过；干净系统复现和 Docker 构建仍待验证。
 
 剩余验证包括新流程的干净 Linux 环境复现、真实存储故障、静默丢包与非对称分区等其他网络故障、长时间负载，以及写入期间停机和异常传播的专项检查。短时对称 TCP 分区已有真实验收及持续 INFO 采样，其他场景不能由现有结果替代。
 
 ## 使用限制
 
-第三组 `tests/cluster_overload.py` 与本地辅助检查已提供：以测试配置 max_clients=32 触发准入拒绝，隔离 Leader 后触发写入积压 BUSY，恢复后运行 60 秒固定键读写并记录 RSS/CPU/FD/日志和 INFO。真实 Linux 4 个阶段 PASS，原始证据已核验：5 个超额连接关闭、4 次 BUSY、60 秒正式采样、卸载后资源清零；[核验报告](docs/benchmarks/overload-validation.md)。7,897 次重连和约 1.66 MiB 节点日志仍作为已知开销记录。这次仅扩展 Python 节点启动参数，没有修改 C++ 服务或修复已知重连开销。
+第三组 `tests/cluster_overload.py` 与本地辅助检查已提供：以测试配置 max_clients=32 触发准入拒绝，隔离 Leader 后触发写入积压 BUSY，恢复后运行 60 秒固定键读写并记录 RSS/CPU/FD/日志和 INFO。真实 Linux 4 个阶段 PASS，原始证据已核验：5 个超额连接关闭、4 次 BUSY、60 秒正式采样、卸载后资源清零；[核验报告](benchmarks/overload-validation.md)。7,897 次重连和约 1.66 MiB 节点日志仍作为已知开销记录。这次仅扩展 Python 节点启动参数，没有修改 C++ 服务或修复已知重连开销。
 
-第二组 `tests/cluster_write_restart.py` 已完成真实 Linux 原始证据核验：写入线程跨越 Leader SIGKILL 和旧节点重启，停止写入后再检查全体节点进程崩溃恢复。1,832 次唯一键尝试含 1,704 次成功确认、64 次拒绝、8 次未知、56 次未发送；已确认键在两次恢复后的三个副本核验中全部保留。5 个阶段 PASS，见[核验报告](docs/benchmarks/write-restart-validation.md)。本轮约定的三组收尾测试均已完成并归档核验，转入项目展示与面试材料整理；未来能力待办不作为新增收尾测试。
+第二组 `tests/cluster_write_restart.py` 已完成真实 Linux 原始证据核验：写入线程跨越 Leader SIGKILL 和旧节点重启，停止写入后再检查全体节点进程崩溃恢复。1,832 次唯一键尝试含 1,704 次成功确认、64 次拒绝、8 次未知、56 次未发送；已确认键在两次恢复后的三个副本核验中全部保留。5 个阶段 PASS，见[核验报告](benchmarks/write-restart-validation.md)。本轮约定的三组收尾测试均已完成并归档核验，后续转入项目文档整理与下一阶段能力建设；未来能力待办不作为新增收尾测试。
 
-网络分区测试已补充 `tests/cluster_partition.py` 与有向 TCP 转发器：覆盖隔离旧 Leader、多数派继续写入、三节点互相隔离和两次恢复。本地辅助测试 7 项通过，真实 Linux 原始证据的 5 个阶段、81 份 INFO 快照也已核验通过。4 次探测为 2 次拒绝、2 次结果未知，没有成功确认，恢复后收敛；见[核验报告](docs/benchmarks/partition-validation.md)。转发器累计拒绝连接 24,731 次，节点日志约 5.24 MiB，列入后续重连节流和资源观察范围。
+网络分区测试已补充 `tests/cluster_partition.py` 与有向 TCP 转发器：覆盖隔离旧 Leader、多数派继续写入、三节点互相隔离和两次恢复。本地辅助测试 7 项通过，真实 Linux 原始证据的 5 个阶段、81 份 INFO 快照也已核验通过。4 次探测为 2 次拒绝、2 次结果未知，没有成功确认，恢复后收敛；见[核验报告](benchmarks/partition-validation.md)。转发器累计拒绝连接 24,731 次，节点日志约 5.24 MiB，列入后续重连节流和资源观察范围。
 
 - 新状态机要求持久化 lastApplied 标记；旧的非空 KV 数据库没有该标记时会拒绝启动。保留原数据，验证时使用全新的、配套的 KV 与 Raft 日志目录。目前没有自动迁移方案。
 - AppendEntries 增加 rpc_id 校验，测试集群所有节点须使用同一版本重新构建。
@@ -86,4 +86,4 @@ ctest --test-dir build-portable --output-on-failure
 - INFO 新增排队、Leader/Follower 日志追加、数据复制确认、KV 应用、完成通知派发、本地 GET 和服务端成功写完成的耗时统计，以及平均批量条数。使用单调时钟、固定数量累计计数器，报告微秒总计、最大值及整数平均值；不保存逐请求样本，不提供分位数。复制确认包含缓冲和重试，服务端完成不包含客户端收到回复的时间，阶段平均值不能直接相加。
 - 新增并发压测客户端，报告成功吞吐、错误分类与整批延迟；用户四轮真实服务性能原始结果已核验。真实集成脚本的 32 并发连接检查包含在已归档的冒烟 PASS 原始报告中。
 
-机制、参数和限制见 [并发处理说明](docs/concurrency.md)，实验矩阵见 [压测说明](docs/benchmark.md)。本轮仅隔离已提交 KV 批次的同步写入；Raft 日志、硬状态和本地 GET 仍可能占用事件循环。已有短时真实负载不覆盖所有 RocksDB 并发访问、写入期间停机和完整服务异常传播场景；不能把批量调用次数减少或线程隔离直接写成稳定 QPS 提升。
+机制、参数和限制见 [并发处理说明](concurrency.md)，实验矩阵见 [压测说明](benchmark.md)。本轮仅隔离已提交 KV 批次的同步写入；Raft 日志、硬状态和本地 GET 仍可能占用事件循环。已有短时真实负载不覆盖所有 RocksDB 并发访问、写入期间停机和完整服务异常传播场景；不能把批量调用次数减少或线程隔离直接写成稳定 QPS 提升。
