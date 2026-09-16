@@ -1,0 +1,42 @@
+name: Portable checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: portable-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Configure portable C++ tests
+        run: >-
+          cmake -S . -B build-ci
+          -DRAFTKV_BUILD_SERVER=OFF
+          -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build portable C++ tests
+        run: cmake --build build-ci --parallel 2
+
+      - name: Run portable C++ tests
+        run: ctest --test-dir build-ci --output-on-failure
+
+      - name: Run Python helper tests
+        run: python -m unittest discover -s tests -p '*_tests.py'

@@ -1,5 +1,7 @@
 # Raft-KV
 
+[![Portable checks](https://github.com/Die4U23/Raft-KV/actions/workflows/portable.yml/badge.svg)](https://github.com/Die4U23/Raft-KV/actions/workflows/portable.yml)
+
 一个用 C++17 实现的三节点 Raft KV 存储学习项目，把 Muduo 网络接入、Raft 共识、RocksDB 持久化、有界并发与真实故障验证放进同一条请求链路。
 
 项目实践长文：[从三节点存储到故障验证与性能优化](docs/raft-kv-project-practice.md)。
