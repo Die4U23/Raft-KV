@@ -159,4 +159,21 @@ scripts/           Linux 构建与固定 Muduo 准备流程
 
 ## 依赖与来源
 
-主要依赖为 Muduo、RocksDB、Protobuf、gflags、glog 与 Boost。项目早期参考过现已无法确认的教程/代码，因此不把全部基础实现声明为个人原创；可追溯的后续改造范围在[项目实践长文](docs/raft-kv-project-practice.md#项目来源许可证与改造范围)中单独列出。在源码归属核对完成前，仓库不宣告项目级开源许可证。
+主要依赖为 Muduo、RocksDB、Protobuf、gflags、glog 与 Boost。
+
+项目的实现与设计参考了以下论文、资料和开源项目：
+
+| 参考项目 | 地址 | 用途 |
+|---|---|---|
+| **Raft 论文** | https://raft.github.io/raft.pdf | Raft 算法权威文档 |
+| **Raft 可视化** | https://raft.github.io/ | 帮助理解选举与日志复制 |
+| **muduo** | https://github.com/chenshuo/muduo | 网络层 |
+| **RocksDB** | https://github.com/facebook/rocksdb | 存储引擎 |
+| **etcd** | https://github.com/etcd-io/etcd | 成熟 Raft 应用，思路参考 |
+| **TiKV** | https://github.com/tikv/tikv | Raft + RocksDB 工业实践 |
+
+感谢这些开源项目及其维护者提供的学习资源。可追溯的后续改造范围在[项目实践长文](docs/raft-kv-project-practice.md#项目来源许可证与改造范围)中单独列出。
+
+## 许可证
+
+本项目采用 [MIT License](LICENSE) 开源许可证。
