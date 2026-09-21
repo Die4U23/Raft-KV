@@ -3,9 +3,12 @@
 
 #include <iostream>
 #include <cassert>
+#include <cstdint>
 #include <string>
 #include <functional>
 #include <vector>
+#include <set>
+#include <deque>
 
 static int test_count = 0;
 
@@ -177,6 +180,7 @@ static void TestNoOpPrerequisite() {
 
     // 提交 no-op 后
     mgr.SetCanServeRead(true);
+    mgr.AdvanceLastApplied(10);  // 设置 lastApplied >= read_index
 
     callback_invoked = false;
     mgr.RequestReadIndex(10, [&](bool s, int64_t idx, std::string err) {
@@ -199,6 +203,7 @@ static void TestHeartbeatAcks() {
 
     ReadIndexManager mgr(0, 2);  // 3 节点，quorum=2
     mgr.SetCanServeRead(true);
+    mgr.AdvanceLastApplied(10);  // 设置 lastApplied >= read_index
 
     bool callback_invoked = false;
     mgr.RequestReadIndex(10, [&](bool s, int64_t idx, std::string err) {
@@ -281,6 +286,7 @@ static void TestHeartbeatBatching() {
 
     ReadIndexManager mgr(0, 2);
     mgr.SetCanServeRead(true);
+    mgr.AdvanceLastApplied(10);  // 设置 lastApplied >= read_index
 
     int callback_count = 0;
 
@@ -303,6 +309,7 @@ static void TestMultipleRounds() {
 
     ReadIndexManager mgr(0, 2);
     mgr.SetCanServeRead(true);
+    mgr.AdvanceLastApplied(15);  // 设置 lastApplied 足够大
 
     int round1_count = 0;
     int round2_count = 0;

@@ -84,10 +84,11 @@ private:
 
     // Heartbeat round for ReadIndex
     struct HeartbeatRound {
-        uint64_t round_id;                      // unique round ID
+        uint64_t round_id;                      // unique round ID (same as rpc_id)
         std::set<int> acks;                     // peers that acknowledged (includes self)
         std::vector<ReadIndexRequest> requests; // requests bound to this round
         SteadyClock::time_point sent_at;        // when heartbeat was sent
+        bool confirmed;                         // whether quorum reached
     };
 
     void BecomeFollower(int32_t term);

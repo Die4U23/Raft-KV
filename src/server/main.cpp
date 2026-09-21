@@ -369,32 +369,13 @@ static void ExecuteNextCommand(const muduo::net::TcpConnectionPtr& conn,
                         return;
                     }
 
-                    // Wait for lastApplied >= read_index
-                    if (g_raft->GetLastApplied() >= read_index) {
-                        // Ready to read
-                        std::string value;
-                        bool found = g_sm->Get(key, &value);
-                        SendReply(c, s, found ? Bulk(value) : "$-1\r\n");
-                        OnCommandComplete(c, s);
-                    } else {
-                        // Schedule check when applied
-                        g_loop->runAfter(0.001, [weak_conn, weak_session, key, read_index]() {
-                            auto c = weak_conn.lock();
-                            auto s = weak_session.lock();
-                            if (!c || !s || !c->connected()) return;
-
-                            if (g_raft->GetLastApplied() >= read_index) {
-                                std::string value;
-                                bool found = g_sm->Get(key, &value);
-                                SendReply(c, s, found ? Bulk(value) : "$-1\r\n");
-                                OnCommandComplete(c, s);
-                            } else {
-                                // Timeout or still waiting - return error
-                                SendReply(c, s, Error("read timeout"));
-                                OnCommandComplete(c, s);
-                            }
-                        });
-                    }
+                    // Callback is invoked when lastApplied >= read_index
+                    // or when the read request times out
+                    // At this point, it's safe to read from state machine
+                    std::string value;
+                    bool found = g_sm->Get(key, &value);
+                    SendReply(c, s, found ? Bulk(value) : "$-1\r\n");
+                    OnCommandComplete(c, s);
                 });
             } else {
                 // Local read (default or not leader)
