@@ -30,11 +30,26 @@ RaftNode::RaftNode(int id, const std::vector<PeerInfo>& peers,
 RaftNode::~RaftNode() { _lifetime.reset(); }
 
 std::string RaftNode::MetricsInfo() const {
-    return _leader_log_write.ToInfo("leader_log_write") +
+    std::string info = _leader_log_write.ToInfo("leader_log_write") +
            _follower_log_write.ToInfo("follower_log_write") +
            _replication_data_ack.ToInfo("replication_data_ack") +
            _kv_apply.ToInfo("kv_apply") + _apply_dispatch.ToInfo("apply_dispatch") +
            "replication_retry_attempts:" + std::to_string(_replication_retry_attempts) + "\r\n";
+
+    // ReadIndex metrics
+    info += "read_index_total:" + std::to_string(_read_index_total) + "\r\n";
+    info += "read_index_succeeded:" + std::to_string(_read_index_succeeded) + "\r\n";
+    info += "read_index_timeout:" + std::to_string(_read_index_timeout) + "\r\n";
+    info += "read_index_not_leader:" + std::to_string(_read_index_not_leader) + "\r\n";
+    info += "read_index_overload:" + std::to_string(_read_index_overload) + "\r\n";
+
+    size_t pending_count = _pending_reads.size();
+    for (const auto& round : _heartbeat_rounds) {
+        pending_count += round.requests.size();
+    }
+    info += "read_index_pending:" + std::to_string(pending_count) + "\r\n";
+
+    return info;
 }
 const char* RaftNode::StateName() const {
     if (!_running) return "stopped";
@@ -122,6 +137,9 @@ void RaftNode::BecomeFollower(int32_t term) {
     for (auto& item : _inflight) item.second = {};
     ResetElectionTimer();
     FailPending("-ERR leadership lost; outcome unknown\r\n");
+    // Clear ReadIndex queues on step down
+    ClearReadIndexQueues("leadership lost");
+    _can_serve_read = false;
 }
 void RaftNode::BecomeCandidate() {
     if (_current_term == INT32_MAX) throw std::runtime_error("Raft term exhausted");
@@ -156,6 +174,8 @@ void RaftNode::BecomeLeader() {
     _match_index[_node_id] = _log->LastIndex();
     _heartbeat_timer_ms = kHeartbeatIntervalMs;
     // Commit one entry in this term so recovered older entries can be applied.
+    // This no-op also enables ReadIndex (once committed)
+    _can_serve_read = false;
     Propose("", {});
 }
 void RaftNode::ResetElectionTimer() {
@@ -272,6 +292,24 @@ void RaftNode::HandleAppendEntriesResponse(int from,
         return;
     }
     if (!IsLeader() || response.term() != _current_term) return;
+
+    // Process heartbeat ack for ReadIndex (both success and failure count)
+    // Failure with current term means follower acknowledges Leader
+    if (!_heartbeat_rounds.empty()) {
+        auto& current_round = _heartbeat_rounds.back();
+        current_round.acks.insert(from);
+
+        // Check if reached quorum
+        if (static_cast<int>(current_round.acks.size()) >= QuorumSize()) {
+            ProcessConfirmedRound(current_round);
+            _heartbeat_rounds.pop_front();
+
+            if (_heartbeat_rounds.empty()) {
+                _heartbeat_in_flight = false;
+            }
+        }
+    }
+
     auto& flight = _inflight.at(from);
     if (!flight.id || response.rpc_id() != flight.id || response.last_log_index() < 0)
         return;
@@ -421,6 +459,18 @@ void RaftNode::FinishApply(int64_t first, size_t count, const ApplyExecutor::Res
     ++_apply_batches;
     _kv_apply.Observe(work_us, count, bytes);
     _apply_dispatch.Observe(dispatch_us);
+
+    // Check if no-op is committed (enables ReadIndex)
+    if (_state == LEADER && !_can_serve_read) {
+        // Check if we've committed an entry in current term
+        if (_commit_index > 0 && _log->GetTerm(_commit_index) == _current_term) {
+            _can_serve_read = true;
+        }
+    }
+
+    // Process pending ReadIndex requests
+    ProcessPendingReads();
+
     // Publish the whole durable batch before callbacks, even if Stop was called.
     std::vector<std::pair<ProposeCallback, std::string>> callbacks;
     for (size_t i = 0; i < count; ++i) {
@@ -448,5 +498,152 @@ void RaftNode::Tick() {
             BroadcastAppendEntries();
             _heartbeat_timer_ms = kHeartbeatIntervalMs;
         }
+        // Check ReadIndex timeout
+        CheckReadIndexTimeout();
     }
 }
+
+// ReadIndex implementation
+
+bool RaftNode::RequestReadIndex(ReadIndexCallback callback) {
+    ++_read_index_total;
+
+    // Check if running and is Leader
+    if (!IsLeader()) {
+        ++_read_index_not_leader;
+        callback(false, -1, _leader_id == -1 ? "no leader" : "not leader");
+        return false;
+    }
+
+    // Check if can serve reads (no-op committed)
+    if (!_can_serve_read) {
+        ++_read_index_not_leader;
+        callback(false, -1, "waiting for leader to commit no-op");
+        return false;
+    }
+
+    // Check queue depth
+    size_t total_pending = 0;
+    for (const auto& round : _heartbeat_rounds) {
+        total_pending += round.requests.size();
+    }
+    total_pending += _pending_reads.size();
+
+    if (total_pending >= kMaxPendingReadIndex) {
+        ++_read_index_overload;
+        callback(false, -1, "read index queue full");
+        return false;
+    }
+
+    // Create ReadIndex request
+    ReadIndexRequest req;
+    req.read_index = _commit_index;
+    req.callback = std::move(callback);
+    req.created_at = SteadyClock::now();
+
+    // If no in-flight heartbeat, start a new round
+    if (!_heartbeat_in_flight) {
+        StartHeartbeatRound();
+    }
+
+    // Bind request to current round
+    _heartbeat_rounds.back().requests.push_back(std::move(req));
+    return true;
+}
+
+void RaftNode::StartHeartbeatRound() {
+    HeartbeatRound round;
+    round.round_id = ++_next_round_id;
+    round.acks.insert(_node_id);  // Leader counts itself
+    round.sent_at = SteadyClock::now();
+
+    _heartbeat_rounds.push_back(round);
+    _heartbeat_in_flight = true;
+
+    // Send heartbeat (empty AppendEntries) to all peers
+    BroadcastAppendEntries();
+}
+
+void RaftNode::ProcessConfirmedRound(const HeartbeatRound& round) {
+    for (const auto& req : round.requests) {
+        // Check if already applied
+        if (_last_applied >= req.read_index) {
+            // Ready to read immediately
+            req.callback(true, req.read_index, "");
+            ++_read_index_succeeded;
+        } else {
+            // Need to wait for apply
+            _pending_reads.push_back(req);
+        }
+    }
+}
+
+void RaftNode::ProcessPendingReads() {
+    while (!_pending_reads.empty()) {
+        auto& req = _pending_reads.front();
+
+        if (_last_applied >= req.read_index) {
+            req.callback(true, req.read_index, "");
+            ++_read_index_succeeded;
+            _pending_reads.pop_front();
+        } else {
+            break;  // Queue is ordered
+        }
+    }
+}
+
+void RaftNode::CheckReadIndexTimeout() {
+    const auto now = SteadyClock::now();
+    const auto timeout = std::chrono::milliseconds(kReadIndexTimeoutMs);
+
+    // Check heartbeat rounds timeout
+    while (!_heartbeat_rounds.empty()) {
+        auto& round = _heartbeat_rounds.front();
+
+        if (now - round.sent_at > timeout) {
+            // Timeout, reject all requests in this round
+            for (auto& req : round.requests) {
+                req.callback(false, -1, "read index timeout");
+                ++_read_index_timeout;
+            }
+            _heartbeat_rounds.pop_front();
+        } else {
+            break;  // Queue is ordered
+        }
+    }
+
+    if (_heartbeat_rounds.empty()) {
+        _heartbeat_in_flight = false;
+    }
+
+    // Check pending reads timeout
+    while (!_pending_reads.empty()) {
+        auto& req = _pending_reads.front();
+
+        if (now - req.created_at > timeout) {
+            req.callback(false, -1, "apply timeout");
+            ++_read_index_timeout;
+            _pending_reads.pop_front();
+        } else {
+            break;
+        }
+    }
+}
+
+void RaftNode::ClearReadIndexQueues(const std::string& reason) {
+    // Clear heartbeat rounds
+    for (auto& round : _heartbeat_rounds) {
+        for (auto& req : round.requests) {
+            req.callback(false, -1, reason);
+        }
+    }
+    _heartbeat_rounds.clear();
+    _heartbeat_in_flight = false;
+
+    // Clear pending reads
+    for (auto& req : _pending_reads) {
+        req.callback(false, -1, reason);
+    }
+    _pending_reads.clear();
+}
+
