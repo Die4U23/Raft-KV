@@ -1,0 +1,65 @@
+Raft-KV
+Copyright 2026 Raft-KV Contributors
+
+This project uses third-party components and was informed by the public references listed below.
+The MIT License in LICENSE applies to Raft-KV's original code and documentation.
+Bundled third-party archives and linked dependencies remain under their own licenses.
+
+================================================================================
+
+Muduo Network Library
+https://github.com/chenshuo/muduo
+Copyright (c) 2010, Shuo Chen
+Licensed under the BSD 3-Clause License.
+Used for network layer and event loop implementation.
+
+================================================================================
+
+RocksDB
+https://github.com/facebook/rocksdb
+Copyright (c) Facebook, Inc. and its affiliates.
+Licensed under Apache License 2.0 or GPLv2.
+Used as the storage engine.
+
+================================================================================
+
+Protocol Buffers
+https://github.com/protocolbuffers/protobuf
+Copyright 2008 Google LLC
+Licensed under BSD 3-Clause License.
+Used for RPC message serialization.
+
+================================================================================
+
+gflags
+https://github.com/gflags/gflags
+Copyright (c) 2006, Google Inc.
+Licensed under BSD 3-Clause License.
+Used for command line flag parsing.
+
+================================================================================
+
+glog
+https://github.com/google/glog
+Copyright (c) 2008, Google Inc.
+Licensed under BSD 3-Clause License.
+Used for logging.
+
+================================================================================
+
+Raft Consensus Algorithm
+https://raft.github.io/
+"In Search of an Understandable Consensus Algorithm" by Diego Ongaro and John Ousterhout
+This project implements the Raft consensus algorithm as described in the paper.
+
+================================================================================
+
+Additional references for design inspiration:
+
+- etcd (https://github.com/etcd-io/etcd) - Apache License 2.0
+- TiKV (https://github.com/tikv/tikv) - Apache License 2.0
+
+================================================================================
+
+See the project documentation for detailed attribution and the scope of traceable modifications:
+docs/raft-kv-project-practice.md

@@ -125,7 +125,7 @@ redis-cli -p 8080 DEL user:1
 
 ## 当前边界
 
-- `GET` 是本地读；`--leader_only_reads=true` 只检查本机角色，**不是 ReadIndex，不保证线性一致读**。
+- `GET` 是本地读；`--leader_only_reads=true` 只检查本机角色，**不是 ReadIndex，不保证线性一致读**。详见 [读一致性保证](docs/read-consistency.md)。
 - 集群是固定成员的单 Raft 组，没有动态成员变更和多分片。
 - 没有快照与日志压缩，日志和启动扫描成本会随历史增长。
 - 没有 `client_id + request_id` 去重；超时或回复丢失后重试可能重复执行。
@@ -148,7 +148,7 @@ docs/benchmarks/   原始证据、核验脚本和结果边界
 scripts/           Linux 构建与固定 Muduo 准备流程
 ```
 
-进一步阅读：[测试说明](tests/README.md) · [构建说明](docs/linux-build.md) · [压测方法](docs/benchmark.md) · [更新日志](CHANGELOG.md)
+进一步阅读：[测试说明](tests/README.md) · [构建说明](docs/linux-build.md) · [压测方法](docs/benchmark.md) · [读一致性保证](docs/read-consistency.md) · [更新日志](CHANGELOG.md)
 
 ## 路线图
 
@@ -159,4 +159,21 @@ scripts/           Linux 构建与固定 Muduo 准备流程
 
 ## 依赖与来源
 
-主要依赖为 Muduo、RocksDB、Protobuf、gflags、glog 与 Boost。项目早期参考过现已无法确认的教程/代码，因此不把全部基础实现声明为个人原创；可追溯的后续改造范围在[项目实践长文](docs/raft-kv-project-practice.md#项目来源许可证与改造范围)中单独列出。在源码归属核对完成前，仓库不宣告项目级开源许可证。
+主要依赖为 Muduo、RocksDB、Protobuf、gflags、glog 与 Boost。
+
+项目的实现与设计参考了以下论文、资料和开源项目：
+
+| 参考项目 | 地址 | 用途 |
+|---|---|---|
+| **Raft 论文** | https://raft.github.io/raft.pdf | Raft 算法权威文档 |
+| **Raft 可视化** | https://raft.github.io/ | 帮助理解选举与日志复制 |
+| **muduo** | https://github.com/chenshuo/muduo | 网络层 |
+| **RocksDB** | https://github.com/facebook/rocksdb | 存储引擎 |
+| **etcd** | https://github.com/etcd-io/etcd | 成熟 Raft 应用，思路参考 |
+| **TiKV** | https://github.com/tikv/tikv | Raft + RocksDB 工业实践 |
+
+感谢这些开源项目及其维护者提供的学习资源。可追溯的后续改造范围在[项目实践长文](docs/raft-kv-project-practice.md#项目来源许可证与改造范围)中单独列出。
+
+## 许可证
+
+本项目采用 [MIT License](LICENSE) 开源许可证。

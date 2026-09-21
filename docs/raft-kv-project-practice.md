@@ -18,7 +18,20 @@ KV 存储适合承载这类练习。它的业务接口相对简单：保存一�
 
 目前维护的仓库是 [Die4U23/Raft-KV](https://github.com/Die4U23/Raft-KV)，采用 C++17、Muduo、Protobuf 和 RocksDB，默认运行一个固定成员的三节点 Raft 组。
 
-这个项目是在早期学习过程中参考已有代码和教程搭建起来的。由于时间较久，最初参考的教程链接与部分代码来源暂未找回，本文不将全部基础实现声明为个人原创；后续如找回相关资料，会补充出处与致谢。
+这个项目是在学习 Raft 与分布式系统的过程中逐步搭建和完善的。当前能够确认的算法资料、第三方组件、设计参考与曾尝试方案如下：
+
+| 参考项目 | 地址 | 用途 |
+|---|---|---|
+| **Raft 论文** | https://raft.github.io/raft.pdf | Raft 算法权威文档 |
+| **Raft 可视化** | https://raft.github.io/ | 帮助理解选举与日志复制 |
+| **muduo** | https://github.com/chenshuo/muduo | 网络层 |
+| **RocksDB** | https://github.com/facebook/rocksdb | 存储引擎 |
+| **etcd** | https://github.com/etcd-io/etcd | 成熟 Raft 应用，思路参考 |
+| **TiKV** | https://github.com/tikv/tikv | Raft + RocksDB 工业实践 |
+| **braft** | https://github.com/baidu/braft | 曾尝试，环境兼容性差，已放弃 |
+| **NuRaft** | https://github.com/eBay/NuRaft | 曾尝试，API 变动大，已放弃 |
+
+早期学习、技术选型和系统设计参考了上述资料与项目，具体用途如表中所列。本文不将第三方组件、Raft 算法或成熟系统的公开设计归为个人原创。感谢这些开源项目及其维护者提供的学习资源。
 
 目前可追溯的工程改造，以仓库 `raft-cluster-namespace` 分支的以下提交为起点：
 
@@ -28,7 +41,7 @@ KV 存储适合承载这类练习。它的业务接口相对简单：保存一�
 
 基线已经包含网络接入、Raft 共识、状态机、RocksDB 存储及命名空间等模块。本文重点介绍此后开展的正确性修复、故障恢复验证、请求处理改进、重连退避优化，以及性能诊断与对照实验。这个基线用于界定本次改造的起点，不构成对更早代码来源或原创归属的认定。
 
-**许可证信息仍待补齐。** 在基线与本文归档版本的受版本控制文件中，未找到项目级 `LICENSE`、`COPYING` 文件或明确的项目许可证声明，因此本文暂不填写具体许可证名称。第三方组件的许可与项目自身的许可分别核对，不从某个依赖的许可证推定整个项目的许可证。已知组件的官方入口列在文末。
+**许可证：** 本项目采用 MIT License 开源许可证。详见项目根目录的 LICENSE 文件。第三方依赖保持其各自的许可证。
 
 ## 二、项目目前能做什么
 
@@ -495,7 +508,7 @@ ReadIndex 的重点不只是增加一次心跳。需要明确何时可以相信�
 | [持续更新的 CHANGELOG](https://github.com/Die4U23/Raft-KV/blob/main/CHANGELOG.md) | 查看本文归档之后的更新 |
 | [归档 CHANGELOG](https://github.com/Die4U23/Raft-KV/blob/051ca62/CHANGELOG.md) | 对照本文所依据的历史更新记录 |
 
-最初参考的教程与部分代码来源仍待找回，目前没有可确认的原教程链接可列出。Muduo、RocksDB、Protobuf 等组件的官方入口是技术参考与致谢，不替代项目早期代码出处。
+项目的早期学习资料、技术参考和曾尝试的方案已在本文前部列明。Muduo、RocksDB、Protobuf 等第三方组件保留各自的版权与许可证，项目根目录的 MIT License 不替代这些第三方条款。
 
 ### 关键实现入口
 

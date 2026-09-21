@@ -28,7 +28,8 @@ public:
     ~RaftNode();
     void Start();
     void Stop();
-    // -1: not leader/stopped; -2: admission limit. No callback on rejection.
+    // -1: not leader/stopped; -2: admission limit; -3: storage unhealthy.
+    // No callback on rejection.
     // Once admitted, timeout/disconnection does NOT cancel the replicated entry.
     int64_t Propose(const std::string& command, ProposeCallback callback);
     // Returns the first index; a batch is admitted/persisted together.
@@ -39,6 +40,7 @@ public:
     void HandleAppendEntriesResponse(int from, const raftcore::AppendEntriesResponse& response);
     void Tick();
     bool IsLeader() const { return _running && _state == LEADER; }
+    bool IsHealthy() const { return _storage_healthy; }
     const char* StateName() const;
     int GetLeaderId() const { return _leader_id; }
     int GetNodeId() const { return _node_id; }
@@ -85,6 +87,7 @@ private:
     ApplyExecutor* _apply_executor;
     std::shared_ptr<int> _lifetime = std::make_shared<int>(0);
     bool _apply_inflight = false;
+    bool _storage_healthy = true;  // Set to false on storage exceptions
     std::unique_ptr<RaftLog> _log;
     int32_t _current_term = 0;
     int32_t _voted_for = -1;
