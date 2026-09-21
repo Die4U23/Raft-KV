@@ -44,12 +44,23 @@ static KVStateMachine* g_sm = nullptr;
 static RaftNode* g_raft = nullptr;
 static muduo::net::EventLoop* g_loop = nullptr;
 static NamespaceManager g_namespaces;
+// Per-connection command queue entry
+struct QueuedCommand {
+    enum Type { READ, WRITE };
+    Type type;
+    std::vector<std::string> args;
+    SteadyClock::time_point enqueued_at;
+};
+
 struct ClientSession {
     CommandBuffer input;
     bool waiting = false;
     bool closing = false;
     bool drain_scheduled = false;
     size_t accounted_output = 0;
+    // Per-connection command queue for ordered execution
+    std::deque<QueuedCommand> command_queue;
+    bool executing = false;  // Whether a command is currently executing
 };
 static std::map<std::string, std::shared_ptr<ClientSession>> g_sessions;
 static constexpr size_t kMaxCommandsPerTurn = 128;
@@ -175,6 +186,17 @@ static void ScheduleDrain(const muduo::net::TcpConnectionPtr& conn,
     });
 }
 
+// Execute the next command in the per-connection queue
+static void ExecuteNextCommand(const muduo::net::TcpConnectionPtr& conn,
+                                const std::shared_ptr<ClientSession>& session);
+
+// Called when a command finishes executing
+static void OnCommandComplete(const muduo::net::TcpConnectionPtr& conn,
+                               const std::shared_ptr<ClientSession>& session) {
+    session->executing = false;
+    ExecuteNextCommand(conn, session);
+}
+
 static void ScheduleFlush();
 static void FlushQueuedWrites() {
     std::vector<RaftNode::Proposal> proposals;
@@ -208,7 +230,7 @@ static void FlushQueuedWrites() {
                 if (!conn || !session || !conn->connected() || session->closing) return;
                 SendReply(conn, session, response);
                 session->waiting = false;
-                ScheduleDrain(conn, session);
+                OnCommandComplete(conn, session);  // Continue with next command
             }});
         owners.push_back(std::move(write));
     }
@@ -224,7 +246,7 @@ static void FlushQueuedWrites() {
                 SendReply(conn, state, index == -1 ?
                     Error("MOVED " + std::to_string(g_raft->GetLeaderId())) :
                     Error("BUSY proposal capacity exhausted"));
-                ScheduleDrain(conn, state);
+                OnCommandComplete(conn, state);  // Continue with next command
             }
         }
     }
@@ -267,16 +289,19 @@ static void SubmitWrite(const muduo::net::TcpConnectionPtr& conn,
     // Namespace expansion must also fit the state machine's parser limit.
     if (command.size() > RespParser::kMaxCommandBytes) {
         SendReply(conn, session, Error("command too large"));
+        OnCommandComplete(conn, session);
         return;
     }
     if (!g_raft->IsLeader()) {
         SendReply(conn, session, Error("MOVED " + std::to_string(g_raft->GetLeaderId())));
+        OnCommandComplete(conn, session);
         return;
     }
     if (g_writes.size() >= kMaxQueuedWrites ||
         command.size() > kMaxQueuedWriteBytes - g_queued_write_bytes) {
         ++g_overload_rejections;
         SendReply(conn, session, Error("BUSY write queue full"));
+        OnCommandComplete(conn, session);
         return;
     }
     g_writes.push_back({command, conn, session, SteadyClock::now()});
@@ -284,49 +309,55 @@ static void SubmitWrite(const muduo::net::TcpConnectionPtr& conn,
     session->waiting = true;
     ScheduleFlush();
 }
-static void DrainClient(const muduo::net::TcpConnectionPtr& conn,
-                        const std::shared_ptr<ClientSession>& session) {
-    for (size_t handled = 0; handled < kMaxCommandsPerTurn && conn->connected() &&
-         !session->waiting && !session->closing && !session->drain_scheduled; ++handled) {
-        auto parsed = session->input.Next();
-        if (parsed.state == RespParser::State::NeedMore) return;
-        if (parsed.state == RespParser::State::Invalid) {
-            conn->stopRead();
-            SendReply(conn, session, Error(parsed.error));
-            session->closing = true;
-            conn->shutdown();
-            conn->forceCloseWithDelay(1.0);
-            return;
-        }
-        g_input_bytes -= parsed.consumed;
-        auto& args = parsed.args;
-        for (char& c : args[0])
-            c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+static void ExecuteNextCommand(const muduo::net::TcpConnectionPtr& conn,
+                                const std::shared_ptr<ClientSession>& session) {
+    // Don't start new command if already executing or session is closing
+    if (session->executing || session->closing || !conn->connected()) return;
+
+    // Check if there are commands in the queue
+    if (session->command_queue.empty()) {
+        // Queue is empty, resume parsing input
+        ScheduleDrain(conn, session);
+        return;
+    }
+
+    // Mark as executing
+    session->executing = true;
+
+    // Get the next command
+    auto cmd = std::move(session->command_queue.front());
+    session->command_queue.pop_front();
+    auto& args = cmd.args;
+
+    // Execute the command based on type
+    if (cmd.type == QueuedCommand::READ) {
+        // Execute read command immediately
         const std::string& op = args[0];
-        if (op == "PING" && args.size() == 1) {
+
+        if (op == "PING") {
             SendReply(conn, session, "+PONG\r\n");
-        } else if (op == "SELECT" && args.size() == 2) {
+            OnCommandComplete(conn, session);
+        } else if (op == "SELECT") {
             if (!NamespaceManager::IsValidName(args[1])) {
                 SendReply(conn, session, Error("invalid namespace name"));
-                continue;
+            } else {
+                g_namespaces.SetNs(conn->name(), args[1]);
+                SendReply(conn, session, "+OK\r\n");
             }
-            g_namespaces.SetNs(conn->name(), args[1]);
-            SendReply(conn, session, "+OK\r\n");
-        } else if (op == "GET" && args.size() == 2) {
+            OnCommandComplete(conn, session);
+        } else if (op == "GET") {
             if (FLAGS_leader_only_reads && !g_raft->IsLeader()) {
                 SendReply(conn, session, Error("MOVED " + std::to_string(g_raft->GetLeaderId())));
-                continue;
+            } else {
+                std::string value;
+                const auto key = g_namespaces.MakeKey(conn->name(), args[1]);
+                const auto started = SteadyClock::now();
+                const bool found = g_sm->Get(key, &value);
+                g_local_read.Observe(ElapsedMicros(started));
+                SendReply(conn, session, found ? Bulk(value) : "$-1\r\n");
             }
-            std::string value;
-            const auto key = g_namespaces.MakeKey(conn->name(), args[1]);
-            const auto started = SteadyClock::now();
-            const bool found = g_sm->Get(key, &value);
-            g_local_read.Observe(ElapsedMicros(started));
-            SendReply(conn, session, found ? Bulk(value) : "$-1\r\n");
-        } else if ((op == "SET" && args.size() == 3) ||
-                   (op == "DEL" && args.size() == 2)) {
-            SubmitWrite(conn, session, std::move(args));
-        } else if (op == "INFO" && args.size() == 1) {
+            OnCommandComplete(conn, session);
+        } else if (op == "INFO") {
             std::string info = "node_id:" + std::to_string(g_raft->GetNodeId()) + "\r\n";
             info += "state:" + std::string(g_raft->StateName()) + "\r\n";
             info += "leader_id:" + std::to_string(g_raft->GetLeaderId()) + "\r\n";
@@ -355,11 +386,59 @@ static void DrainClient(const muduo::net::TcpConnectionPtr& conn,
             info += g_local_read.ToInfo("local_read");
             info += g_raft->MetricsInfo();
             SendReply(conn, session, Bulk(info));
-        } else {
-            SendReply(conn, session, Error("unknown command or wrong number of arguments"));
+            OnCommandComplete(conn, session);
         }
+    } else {
+        // Execute write command (will be async)
+        SubmitWrite(conn, session, std::move(args));
     }
-    if (conn->connected()) ScheduleDrain(conn, session);
+}
+
+static void DrainClient(const muduo::net::TcpConnectionPtr& conn,
+                        const std::shared_ptr<ClientSession>& session) {
+    // Parse commands from input and add to per-connection queue
+    for (size_t handled = 0; handled < kMaxCommandsPerTurn && conn->connected() &&
+         !session->closing && !session->drain_scheduled; ++handled) {
+        auto parsed = session->input.Next();
+        if (parsed.state == RespParser::State::NeedMore) break;
+        if (parsed.state == RespParser::State::Invalid) {
+            conn->stopRead();
+            SendReply(conn, session, Error(parsed.error));
+            session->closing = true;
+            conn->shutdown();
+            conn->forceCloseWithDelay(1.0);
+            return;
+        }
+        g_input_bytes -= parsed.consumed;
+        auto& args = parsed.args;
+        for (char& c : args[0])
+            c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+
+        const std::string& op = args[0];
+
+        // Determine command type and enqueue
+        QueuedCommand::Type cmd_type = QueuedCommand::READ;
+        if ((op == "SET" && args.size() == 3) || (op == "DEL" && args.size() == 2)) {
+            cmd_type = QueuedCommand::WRITE;
+        } else if ((op == "PING" && args.size() != 1) ||
+                   (op == "SELECT" && args.size() != 2) ||
+                   (op == "GET" && args.size() != 2) ||
+                   (op == "INFO" && args.size() != 1)) {
+            // Invalid command - handle immediately without queueing
+            SendReply(conn, session, Error("unknown command or wrong number of arguments"));
+            continue;
+        }
+
+        // Add command to queue
+        session->command_queue.push_back({cmd_type, std::move(args), SteadyClock::now()});
+    }
+
+    // Start executing commands if not already executing
+    if (!session->executing && !session->command_queue.empty()) {
+        ExecuteNextCommand(conn, session);
+    } else if (conn->connected() && !session->executing) {
+        ScheduleDrain(conn, session);
+    }
 }
 static void OnClientConnection(const muduo::net::TcpConnectionPtr& conn) {
     if (conn->connected()) {
