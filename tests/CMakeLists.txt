@@ -88,3 +88,11 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(connection_order_tests PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 add_test(NAME connection_order_tests COMMAND connection_order_tests)
+
+# Extended replication partition tests
+add_executable(replication_partition_tests replication_partition_tests.cpp)
+target_include_directories(replication_partition_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(replication_partition_tests PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+add_test(NAME replication_partition_tests COMMAND replication_partition_tests)

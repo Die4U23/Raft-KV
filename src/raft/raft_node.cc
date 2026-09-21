@@ -168,7 +168,9 @@ void RaftNode::HandleRequestVote(int from, const raftcore::RequestVote& request)
     if (!_running || !IsRemotePeer(from) || request.candidate_id() != from ||
         request.term() <= 0 || request.last_log_index() < 0 || request.last_log_term() < 0 ||
         request.last_log_term() > request.term()) return;
+    // Raft §5.1: If RPC contains term T > currentTerm, set currentTerm = T, convert to Follower
     if (request.term() > _current_term) BecomeFollower(request.term());
+    // Raft §5.2, §5.4: Grant vote if candidate's log is at least as up-to-date as ours
     const bool grant = request.term() == _current_term &&
         (_voted_for == -1 || _voted_for == from) &&
         IsLogUpToDate(request.last_log_index(), request.last_log_term());
@@ -214,6 +216,9 @@ void RaftNode::HandleAppendEntries(int from, const raftcore::AppendEntries& requ
     }
     raftcore::AppendEntriesResponse response;
     response.set_rpc_id(request.rpc_id());
+    // Raft §5.1: If RPC request contains term T > currentTerm, set currentTerm = T
+    // Raft §5.2: Candidate receiving AppendEntries from valid leader in current term
+    // converts to Follower (implicit leader recognition)
     if (request.term() > _current_term ||
         (request.term() == _current_term && _state != FOLLOWER))
         BecomeFollower(request.term());
@@ -338,6 +343,8 @@ void RaftNode::BroadcastAppendEntries() {
         if (peer.id != _node_id) SendAppendEntries(peer.id);
 }
 void RaftNode::AdvanceCommitIndex() {
+    // Raft §5.3, §5.4: Leader only commits entries from current term by counting replicas
+    // Entry at index N is safe to commit if replicated on majority and term[N] == currentTerm
     std::vector<int64_t> matched;
     for (const auto& peer : _all_peers) matched.push_back(_match_index.at(peer.id));
     std::sort(matched.begin(), matched.end(), std::greater<int64_t>());
