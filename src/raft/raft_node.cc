@@ -68,6 +68,7 @@ int64_t RaftNode::Propose(const std::string& command, ProposeCallback callback) 
 }
 int64_t RaftNode::ProposeBatch(std::vector<Proposal> proposals) {
     if (!IsLeader()) return -1;
+    if (!_storage_healthy) return -3;  // Reject proposals when storage is unhealthy
     if (proposals.empty() || proposals.size() > kMaxBatchEntries ||
         proposals.size() > kMaxPending - _pending.size()) return -2;
     size_t bytes = 0;
@@ -90,8 +91,15 @@ int64_t RaftNode::ProposeBatch(std::vector<Proposal> proposals) {
         entries.back().set_command(proposals[i].command);
     }
     const auto write_started = SteadyClock::now();
-    _log->AppendBatch(entries); // one durable write before counting the local replica
-    _leader_log_write.Observe(ElapsedMicros(write_started), entries.size(), bytes);
+    try {
+        _log->AppendBatch(entries); // one durable write before counting the local replica
+        _leader_log_write.Observe(ElapsedMicros(write_started), entries.size(), bytes);
+    } catch (const std::exception& e) {
+        _storage_healthy = false;
+        // Log error and fail pending proposals before rethrowing
+        FailPending("-ERR storage failure; outcome unknown\r\n");
+        throw;  // Let the exception propagate to process boundary (fail-stop)
+    }
     ++_proposal_batches;
     for (size_t i = 0; i < proposals.size(); ++i)
         _pending.emplace(entries[i].index(), Pending{std::move(proposals[i].callback),
@@ -232,8 +240,13 @@ void RaftNode::HandleAppendEntries(int from, const raftcore::AppendEntries& requ
                 size_t bytes = 0;
                 for (const auto& entry : appended) bytes += entry.command().size();
                 const auto write_started = SteadyClock::now();
-                _log->AppendBatch(appended);
-                _follower_log_write.Observe(ElapsedMicros(write_started), appended.size(), bytes);
+                try {
+                    _log->AppendBatch(appended);
+                    _follower_log_write.Observe(ElapsedMicros(write_started), appended.size(), bytes);
+                } catch (const std::exception& e) {
+                    _storage_healthy = false;
+                    throw;  // Propagate to process boundary (fail-stop)
+                }
             }
             const int64_t matched = request.prev_log_index() + request.entries_size();
             _commit_index = std::max(_commit_index, std::min(request.leader_commit(), matched));
@@ -370,7 +383,10 @@ void RaftNode::ApplyCommitted() {
                     if (lifetime.expired()) return;
                     // Keep this set on error: the owner must fail-stop, not retry
                     // a batch whose durable outcome might be uncertain.
-                    if (error) std::rethrow_exception(error);
+                    if (error) {
+                        _storage_healthy = false;
+                        std::rethrow_exception(error);
+                    }
                     FinishApply(first, count, results, timing->work_us, bytes,
                                 ElapsedMicros(timing->finished));
                     _apply_inflight = false;
@@ -380,9 +396,14 @@ void RaftNode::ApplyCommitted() {
             return;
         }
         const auto started = SteadyClock::now();
-        const auto results = _sm->ApplyBatch(first, commands);
-        // Synchronous application has no worker-to-owner dispatch delay.
-        FinishApply(first, count, results, ElapsedMicros(started), bytes, 0);
+        try {
+            const auto results = _sm->ApplyBatch(first, commands);
+            // Synchronous application has no worker-to-owner dispatch delay.
+            FinishApply(first, count, results, ElapsedMicros(started), bytes, 0);
+        } catch (const std::exception& e) {
+            _storage_healthy = false;
+            throw;  // Propagate to process boundary (fail-stop)
+        }
     }
 }
 void RaftNode::FinishApply(int64_t first, size_t count, const ApplyExecutor::Results& results,

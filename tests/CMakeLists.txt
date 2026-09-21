@@ -59,3 +59,16 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(peer_retry_tests PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 add_test(NAME peer_retry_tests COMMAND peer_retry_tests)
+
+add_executable(storage_failure_tests storage_failure_tests.cpp
+    ${PROJECT_SOURCE_DIR}/src/raft/raft_node.cc
+    ${PROJECT_SOURCE_DIR}/src/raft/kv_state_machine.cc
+    ${PROJECT_SOURCE_DIR}/src/raftcore/raft_log.cc
+    ${PROJECT_SOURCE_DIR}/src/storage/rocksdb_store.cpp)
+target_include_directories(storage_failure_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_support
+    ${PROJECT_SOURCE_DIR}/src)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(storage_failure_tests PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+add_test(NAME storage_failure_tests COMMAND storage_failure_tests)
