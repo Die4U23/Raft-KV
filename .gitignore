@@ -39,3 +39,6 @@ third_party/*/
 tmp/
 __pycache__/
 *.pyc
+
+# PR 描述文件（本地使用）
+PR_DESCRIPTION.md
