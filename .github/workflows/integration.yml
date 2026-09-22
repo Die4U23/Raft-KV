@@ -72,10 +72,10 @@ jobs:
         run: ctest --test-dir build-ci --output-on-failure
 
       - name: Run cluster smoke tests
-        run: python3 tests/cluster_smoke.py --server build-ci/raft_kv_server
+        run: python3 tests/cluster_smoke.py
 
       - name: Run ReadIndex integration tests
-        run: python3 tests/test_readindex_integration.py --server build-ci/raft_kv_server
+        run: python3 tests/test_readindex_integration.py
 
       - name: Run linearizable read tests
-        run: python3 tests/test_linearizable_read.py --server build-ci/raft_kv_server
+        run: python3 tests/test_linearizable_read.py

@@ -26,6 +26,8 @@ def test_network_partition_old_leader():
 
     binary = Path('build-linux-repro/server/raft_kv_server')
     if not binary.exists():
+        binary = Path('build-ci/raft_kv_server')
+    if not binary.exists():
         binary = Path('build/server/raft_kv_server')
     if not binary.exists():
         print("SKIP: binary not found")
@@ -110,6 +112,8 @@ def test_write_then_read_consistency():
 
     binary = Path('build-linux-repro/server/raft_kv_server')
     if not binary.exists():
+        binary = Path('build-ci/raft_kv_server')
+    if not binary.exists():
         binary = Path('build/server/raft_kv_server')
     if not binary.exists():
         print("SKIP: binary not found")
@@ -169,6 +173,8 @@ def test_concurrent_reads():
     print("\n=== Test 3: Concurrent reads ===")
 
     binary = Path('build-linux-repro/server/raft_kv_server')
+    if not binary.exists():
+        binary = Path('build-ci/raft_kv_server')
     if not binary.exists():
         binary = Path('build/server/raft_kv_server')
     if not binary.exists():
@@ -244,6 +250,8 @@ def test_leader_change():
     print("\n=== Test 4: Leader change ===")
 
     binary = Path('build-linux-repro/server/raft_kv_server')
+    if not binary.exists():
+        binary = Path('build-ci/raft_kv_server')
     if not binary.exists():
         binary = Path('build/server/raft_kv_server')
     if not binary.exists():

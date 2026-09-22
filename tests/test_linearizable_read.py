@@ -68,6 +68,7 @@ class LinearizableReadTests(unittest.TestCase):
         if not cls.server_bin.exists():
             # Try alternative paths
             alternatives = [
+                Path("build-ci/raft_kv_server"),
                 Path("build-portable/server/raft_kv_server"),
                 Path("build/server/raft_kv_server"),
             ]
@@ -426,6 +427,7 @@ class LinearizableReadDisabledTests(unittest.TestCase):
         cls.server_bin = Path("build-linux-repro/server/raft_kv_server")
         if not cls.server_bin.exists():
             alternatives = [
+                Path("build-ci/raft_kv_server"),
                 Path("build-portable/server/raft_kv_server"),
                 Path("build/server/raft_kv_server"),
             ]
