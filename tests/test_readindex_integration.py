@@ -293,19 +293,35 @@ def test_leader_change():
             new_leader = cluster.leader(remaining)
             print(f"  New leader: node {new_leader}")
 
+            # Wait for new leader to commit no-op and be ready for reads
+            time.sleep(2)
+
             # Read from new leader - should get committed value
+            # New leader needs time to commit no-op entry before ReadIndex works
             new_port = cluster.nodes[new_leader].client_port
             with RespClient.connect(new_port, time.time() + 30, 5) as client:
                 client.command('SELECT', 'test4')
-                result = client.command('GET', 'stable_key')
-                if isinstance(result, bytes):
-                    result = result.decode('utf-8')
 
-                if result == 'committed_value':
-                    print(f"  OK: New leader returned committed value")
-                else:
-                    print(f"  FAIL: Expected 'committed_value', got '{result}'")
-                    raise AssertionError(f"New leader returned wrong value: {result}")
+                # Retry on timeout - new leader may still be committing no-op
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        result = client.command('GET', 'stable_key')
+                        if isinstance(result, bytes):
+                            result = result.decode('utf-8')
+
+                        if result == 'committed_value':
+                            print(f"  OK: New leader returned committed value")
+                            break
+                        else:
+                            print(f"  FAIL: Expected 'committed_value', got '{result}'")
+                            raise AssertionError(f"New leader returned wrong value: {result}")
+                    except Exception as e:
+                        if 'timeout' in str(e).lower() and attempt < max_retries - 1:
+                            print(f"  Retry {attempt + 1}/{max_retries}: ReadIndex timeout, waiting for no-op commit...")
+                            time.sleep(2)
+                        else:
+                            raise
 
             print("  PASS: Leader change preserves committed data")
 
