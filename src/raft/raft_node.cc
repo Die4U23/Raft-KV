@@ -293,32 +293,37 @@ void RaftNode::HandleAppendEntriesResponse(int from,
     }
     if (!IsLeader() || response.term() != _current_term) return;
 
-    // Process heartbeat ack for ReadIndex
-    // Any AppendEntriesResponse with current term counts as acknowledgement
-    // that the follower recognizes this Leader (even if success=false)
-    // Add ack to all unconfirmed rounds that were sent before this response arrived
-    for (auto& round : _heartbeat_rounds) {
-        if (!round.confirmed) {
-            round.acks.insert(from);
+    // Process heartbeat ack for ReadIndex and replication responses together
+    auto& flight = _inflight.at(from);
 
-            // Check if reached quorum
-            if (static_cast<int>(round.acks.size()) >= QuorumSize()) {
-                round.confirmed = true;
-                ProcessConfirmedRound(round);
+    // Match response to its specific ReadIndex round using rpc_id
+    if (flight.id && response.rpc_id() == flight.id) {
+        // This response corresponds to a request we sent
+        // Add ack to the round that initiated this RPC
+        for (auto& round : _heartbeat_rounds) {
+            if (!round.confirmed && round.round_id == flight.id) {
+                round.acks.insert(from);
+
+                // Check if reached quorum
+                if (static_cast<int>(round.acks.size()) >= QuorumSize()) {
+                    round.confirmed = true;
+                    ProcessConfirmedRound(round);
+                }
+                break;
             }
+        }
+
+        // Remove all confirmed rounds from the front
+        while (!_heartbeat_rounds.empty() && _heartbeat_rounds.front().confirmed) {
+            _heartbeat_rounds.pop_front();
+        }
+
+        if (_heartbeat_rounds.empty()) {
+            _heartbeat_in_flight = false;
         }
     }
 
-    // Remove all confirmed rounds from the front
-    while (!_heartbeat_rounds.empty() && _heartbeat_rounds.front().confirmed) {
-        _heartbeat_rounds.pop_front();
-    }
-
-    if (_heartbeat_rounds.empty()) {
-        _heartbeat_in_flight = false;
-    }
-
-    auto& flight = _inflight.at(from);
+    // Process replication response
     if (!flight.id || response.rpc_id() != flight.id || response.last_log_index() < 0)
         return;
     if (response.success() && response.last_log_index() != flight.last_index) return;

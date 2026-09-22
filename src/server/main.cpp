@@ -62,6 +62,7 @@ struct ClientSession {
     // Per-connection command queue for ordered execution
     std::deque<QueuedCommand> command_queue;
     bool executing = false;  // Whether a command is currently executing
+    size_t queued_bytes = 0;  // Bytes in command_queue (for memory accounting)
 };
 static std::map<std::string, std::shared_ptr<ClientSession>> g_sessions;
 static constexpr size_t kMaxCommandsPerTurn = 128;
@@ -70,6 +71,8 @@ static constexpr size_t kMaxTotalOutput = 64 * 1024 * 1024;
 static constexpr size_t kMaxClientOutput = 4 * 1024 * 1024;
 static constexpr size_t kMaxQueuedWrites = 1024;
 static constexpr size_t kMaxQueuedWriteBytes = 16 * 1024 * 1024;
+static constexpr size_t kMaxPerConnectionQueue = 1000;  // Max commands per connection
+static constexpr size_t kMaxPerConnectionQueueBytes = 4 * 1024 * 1024;  // Max bytes per connection
 static size_t g_input_bytes = 0, g_output_bytes = 0, g_queued_write_bytes = 0;
 static uint64_t g_overload_rejections = 0;
 static LatencyStats g_write_queue_wait, g_write_completed, g_local_read;
@@ -194,7 +197,27 @@ static void ExecuteNextCommand(const muduo::net::TcpConnectionPtr& conn,
 // Called when a command finishes executing
 static void OnCommandComplete(const muduo::net::TcpConnectionPtr& conn,
                                const std::shared_ptr<ClientSession>& session) {
+    // Release queue byte accounting for completed command
+    if (!session->command_queue.empty()) {
+        const auto& completed_cmd = session->command_queue.front();
+        size_t cmd_size = 0;
+        for (const auto& arg : completed_cmd.args) {
+            cmd_size += arg.size();
+        }
+        session->queued_bytes = (session->queued_bytes > cmd_size) ?
+                                 (session->queued_bytes - cmd_size) : 0;
+        session->command_queue.pop_front();
+    }
+
     session->executing = false;
+
+    // Resume reading if queue was previously full
+    if (session->command_queue.size() < kMaxPerConnectionQueue &&
+        session->queued_bytes < kMaxPerConnectionQueueBytes &&
+        conn->connected() && !session->closing) {
+        conn->startRead();
+    }
+
     ExecuteNextCommand(conn, session);
 }
 
@@ -347,8 +370,16 @@ static void ExecuteNextCommand(const muduo::net::TcpConnectionPtr& conn,
             }
             OnCommandComplete(conn, session);
         } else if (op == "GET") {
-            if (FLAGS_linearizable_reads && g_raft->IsLeader()) {
-                // Use ReadIndex for linearizable reads
+            // Linearizable reads require leader confirmation
+            if (FLAGS_linearizable_reads) {
+                if (!g_raft->IsLeader()) {
+                    // Follower must reject or redirect, not serve stale data
+                    SendReply(conn, session, Error("MOVED " + std::to_string(g_raft->GetLeaderId())));
+                    OnCommandComplete(conn, session);
+                    return;
+                }
+
+                // Leader: use ReadIndex for linearizable reads
                 std::weak_ptr<muduo::net::TcpConnection> weak_conn = conn;
                 std::weak_ptr<ClientSession> weak_session = session;
                 std::string key = g_namespaces.MakeKey(conn->name(), args[1]);
@@ -370,7 +401,6 @@ static void ExecuteNextCommand(const muduo::net::TcpConnectionPtr& conn,
                     }
 
                     // Callback is invoked when lastApplied >= read_index
-                    // or when the read request times out
                     // At this point, it's safe to read from state machine
                     std::string value;
                     bool found = g_sm->Get(key, &value);
@@ -378,7 +408,7 @@ static void ExecuteNextCommand(const muduo::net::TcpConnectionPtr& conn,
                     OnCommandComplete(c, s);
                 });
             } else {
-                // Local read (default or not leader)
+                // Local read mode
                 if (FLAGS_leader_only_reads && !g_raft->IsLeader()) {
                     SendReply(conn, session, Error("MOVED " + std::to_string(g_raft->GetLeaderId())));
                 } else {
@@ -421,6 +451,11 @@ static void ExecuteNextCommand(const muduo::net::TcpConnectionPtr& conn,
             info += g_raft->MetricsInfo();
             SendReply(conn, session, Bulk(info));
             OnCommandComplete(conn, session);
+        } else {
+            // Unknown READ command - should not reach here due to validation in DrainClient
+            // But add safety fallback to prevent connection hang
+            SendReply(conn, session, Error("ERR unknown command"));
+            OnCommandComplete(conn, session);
         }
     } else {
         // Execute write command (will be async)
@@ -433,6 +468,15 @@ static void DrainClient(const muduo::net::TcpConnectionPtr& conn,
     // Parse commands from input and add to per-connection queue
     for (size_t handled = 0; handled < kMaxCommandsPerTurn && conn->connected() &&
          !session->closing && !session->drain_scheduled; ++handled) {
+
+        // Check per-connection queue limits before parsing more
+        if (session->command_queue.size() >= kMaxPerConnectionQueue ||
+            session->queued_bytes >= kMaxPerConnectionQueueBytes) {
+            // Queue full, stop reading until commands complete
+            conn->stopRead();
+            break;
+        }
+
         auto parsed = session->input.Next();
         if (parsed.state == RespParser::State::NeedMore) break;
         if (parsed.state == RespParser::State::Invalid) {
@@ -445,26 +489,48 @@ static void DrainClient(const muduo::net::TcpConnectionPtr& conn,
         }
         g_input_bytes -= parsed.consumed;
         auto& args = parsed.args;
+
+        // Calculate command size for accounting
+        size_t cmd_size = parsed.consumed;
+        for (const auto& arg : args) {
+            cmd_size += arg.size();
+        }
+
         for (char& c : args[0])
             c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
 
         const std::string& op = args[0];
 
-        // Determine command type and enqueue
+        // Validate command and determine type
         QueuedCommand::Type cmd_type = QueuedCommand::READ;
-        if ((op == "SET" && args.size() == 3) || (op == "DEL" && args.size() == 2)) {
+        bool valid_command = true;
+
+        if (op == "SET" && args.size() == 3) {
             cmd_type = QueuedCommand::WRITE;
-        } else if ((op == "PING" && args.size() != 1) ||
-                   (op == "SELECT" && args.size() != 2) ||
-                   (op == "GET" && args.size() != 2) ||
-                   (op == "INFO" && args.size() != 1)) {
-            // Invalid command - handle immediately without queueing
-            SendReply(conn, session, Error("unknown command or wrong number of arguments"));
+        } else if (op == "DEL" && args.size() == 2) {
+            cmd_type = QueuedCommand::WRITE;
+        } else if (op == "PING" || op == "SELECT" || op == "GET" || op == "INFO") {
+            // Valid read commands - keep as READ
+            if ((op == "PING" && args.size() != 1) ||
+                (op == "SELECT" && args.size() != 2) ||
+                (op == "GET" && args.size() != 2) ||
+                (op == "INFO" && args.size() != 1)) {
+                valid_command = false;
+            }
+        } else {
+            // Unknown command
+            valid_command = false;
+        }
+
+        if (!valid_command) {
+            // Invalid command - return error immediately but keep connection alive
+            SendReply(conn, session, Error("ERR unknown command or wrong number of arguments"));
             continue;
         }
 
-        // Add command to queue
+        // Add command to queue with size accounting
         session->command_queue.push_back({cmd_type, std::move(args), SteadyClock::now()});
+        session->queued_bytes += cmd_size;
     }
 
     // Start executing commands if not already executing
