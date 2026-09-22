@@ -2,19 +2,20 @@
 
 **日期**: 2026-09-22  
 **分支**: feature/readindex-linearizable-read  
-**提交**: 7c9b1b9 test: add ReadIndex unit tests  
+**最新提交**: b8fa9cf Merge branch 'main' into feature/readindex-linearizable-read  
 **测试人员**: 自动化测试系统
 
 ---
 
 ## 执行摘要
 
-✅ **所有测试通过** - 12/12 测试套件全部成功
+✅ **所有测试通过** - 13/13 测试套件全部成功（包含合并后的新测试）
 
-- **总测试时间**: 9.19秒
+- **总测试时间**: 9.20秒
 - **成功率**: 100%
 - **失败数**: 0
 - **构建状态**: PASS
+- **合并状态**: ✅ 已与 main 分支同步
 
 ---
 
@@ -186,6 +187,17 @@
 
 ---
 
+### 13. replication_edge_cases_unit (0.00秒) ✅
+**状态**: PASS ⭐ **来自 main 分支**  
+**测试内容**: 复制边缘情况验证
+
+**边缘场景覆盖**:
+- ✓ 复制边界条件
+- ✓ 异常响应处理
+- ✓ 状态转换边缘情况
+
+---
+
 ## ReadIndex 功能覆盖
 
 ### Phase 1: Raft核心层 ✅
@@ -230,7 +242,8 @@
 | connection_order_tests | 0.01s | ✅ |
 | replication_partition_tests | 0.00s | ✅ |
 | readindex_tests | 0.00s | ✅ |
-| **总计** | **9.19s** | **✅** |
+| replication_edge_cases_unit | 0.00s | ✅ |
+| **总计** | **9.20s** | **✅** |
 
 ---
 
