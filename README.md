@@ -113,7 +113,7 @@ redis-cli -p 8080 DEL user:1
 | --- | --- |
 | `PING` | 返回 `PONG` |
 | `SET key value` | 通过 Raft 提交和状态机应用后返回 `OK` |
-| `GET key` | 读当前节点的本地状态机；启用 `--linearizable_reads=true` 后使用 ReadIndex 保证线性一致性 |
+| `GET key` | 默认读当前节点本地状态机；`--linearizable_reads=true` 时 Leader 走 ReadIndex，Follower 返回 `MOVED` |
 | `DEL key` | 通过 Raft 删除，返回 `0` 或 `1` |
 | `SELECT namespace` | 为当前 TCP 连接选择逻辑命名空间 |
 | `INFO` | 查看角色、任期、Leader、提交/应用位置和过载指标 |

@@ -1,165 +1,169 @@
-// 测试同连接命令顺序
-// 验证 SET -> GET 和 SET -> PING 在同一连接上的执行顺序
-
+// Models the per-connection FIFO used by src/server/main.cpp.
+// This is not the Muduo ClientSession; it checks queue/order semantics that
+// production relies on: ERROR items share the sequence, WRITE is async, and
+// executing prevents overlapping work. Production ReadIndex coverage is in
+// core_tests.cpp against the real RaftNode.
+#include <deque>
+#include <functional>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 #include <vector>
-#include <cassert>
 
-static int test_count = 0;
+static int check_count = 0;
 
 static void Check(bool condition, const char* message) {
-    ++test_count;
+    ++check_count;
     if (!condition) {
         std::cerr << "FAIL: " << message << std::endl;
         throw std::runtime_error(message);
     }
 }
 
-// 模拟连接状态
-struct Connection {
-    int id;
-    std::string buffer;
+struct QueuedCommand {
+    enum Type { READ, WRITE, ERROR };
+    Type type;
+    std::string name;
+    std::string error;
+};
+
+class CommandQueue {
+public:
+    std::deque<QueuedCommand> queue;
     std::vector<std::string> responses;
-    bool pending_write = false;
-};
-
-// 测试 1: 同连接 SET 后立即 GET
-static void TestSetThenGetOnSameConnection() {
-    std::cout << "Test 1: SET followed by GET on same connection" << std::endl;
-
-    Connection conn{1, "", {}, false};
-
-    // 模拟客户端在同一连接上发送 SET 和 GET
-    // 当前问题：SET 是异步的，GET 可能先返回
-
-    // 期望行为：GET 应该等待 SET 完成
-    // 实际行为：GET 可能读到旧值或空值
-
-    std::cout << "  WARNING: This test documents the current issue" << std::endl;
-    std::cout << "  Current behavior: GET may execute before SET commits" << std::endl;
-    std::cout << "  Expected behavior: GET should wait for SET" << std::endl;
-}
-
-// 测试 2: 同连接 SET 后 PING
-static void TestSetThenPingOnSameConnection() {
-    std::cout << "Test 2: SET followed by PING on same connection" << std::endl;
-
-    Connection conn{1, "", {}, false};
-
-    // 当前问题：PING 可能在 SET 响应之前返回
-    // 期望：响应顺序应该与请求顺序一致
-
-    std::cout << "  WARNING: Response order may not match request order" << std::endl;
-}
-
-// 测试 3: 多个 SET 在同一连接上
-static void TestMultipleSetsOnSameConnection() {
-    std::cout << "Test 3: Multiple SETs on same connection" << std::endl;
-
-    Connection conn{1, "", {}, false};
-
-    // 期望：SET 的执行顺序和响应顺序都应该保持
-    // 当前：由于都是异步等待，顺序应该正确，但响应可能乱序
-
-    std::cout << "  Execution order likely correct, response order may vary" << std::endl;
-}
-
-// 测试 4: Pipeline 模式下的命令顺序
-static void TestPipelineCommandOrder() {
-    std::cout << "Test 4: Command order in pipeline mode" << std::endl;
-
-    // redis-cli --pipe 模式会发送多个命令而不等待响应
-    // 这种情况下更容易暴露顺序问题
-
-    std::cout << "  Pipeline mode increases likelihood of order issues" << std::endl;
-}
-
-// 测试 5: 失去多数派后的命令积压
-static void TestCommandBacklogAfterLostQuorum() {
-    std::cout << "Test 5: Command backlog after losing quorum" << std::endl;
-
-    // 当失去多数派时，写请求会积压
-    // 应该设置上限并拒绝新请求
-
-    std::cout << "  Should enforce pending proposal limits" << std::endl;
-    std::cout << "  Check: kMaxPending and kMaxPendingBytes" << std::endl;
-}
-
-// 测试 6: 断开连接时的待处理请求
-static void TestPendingRequestsOnDisconnect() {
-    std::cout << "Test 6: Pending requests when connection closes" << std::endl;
-
-    // 客户端断开连接时，正在等待的写请求应该如何处理？
-    // 当前：FailPending 会调用回调，但连接已关闭
-    // 改进：使用弱引用或可取消的上下文
-
-    std::cout << "  Should handle disconnected clients gracefully" << std::endl;
-}
-
-// 建议的改进方案示例
-static void ExamplePerConnectionQueue() {
-    std::cout << "\nExample: Per-connection command queue (not implemented)" << std::endl;
-
-    std::cout << R"(
-struct ConnectionState {
-    std::queue<Command> pending_commands;
     bool executing = false;
+    std::function<void()> pending_write;
 
-    void EnqueueCommand(Command cmd) {
-        pending_commands.push(cmd);
-        if (!executing) ExecuteNext();
+    void Enqueue(QueuedCommand cmd) { queue.push_back(std::move(cmd)); }
+
+    void ProcessNext() {
+        if (executing || queue.empty())
+            return;
+        executing = true;
+        auto cmd = std::move(queue.front());
+        queue.pop_front();
+        if (cmd.type == QueuedCommand::ERROR) {
+            responses.push_back("-ERR " + cmd.error);
+            Complete();
+        } else if (cmd.type == QueuedCommand::READ) {
+            responses.push_back("OK: " + cmd.name);
+            Complete();
+        } else {
+            pending_write = [this, name = cmd.name] {
+                responses.push_back("OK: " + name);
+                Complete();
+            };
+        }
     }
 
-    void ExecuteNext() {
-        if (pending_commands.empty()) {
-            executing = false;
-            return;
-        }
-        executing = true;
-        auto cmd = pending_commands.front();
-        pending_commands.pop();
+    void CompleteWrite() {
+        Check(static_cast<bool>(pending_write), "no in-flight write to complete");
+        auto done = std::move(pending_write);
+        pending_write = nullptr;
+        done();
+    }
 
-        if (cmd.type == READ) {
-            // 立即执行并返回
-            ExecuteRead(cmd);
-            ExecuteNext();  // 继续下一个
-        } else {
-            // 异步等待提交
-            ProposeWrite(cmd, [this](bool success, const std::string& result) {
-                SendResponse(result);
-                ExecuteNext();  // 完成后执行下一个
-            });
+    void Drain() {
+        while (!queue.empty() || pending_write) {
+            ProcessNext();
+            if (pending_write)
+                CompleteWrite();
         }
+    }
+
+private:
+    void Complete() {
+        executing = false;
+        ProcessNext();
     }
 };
-)" << std::endl;
+
+static QueuedCommand Write(const std::string& name) {
+    return {QueuedCommand::WRITE, name, ""};
+}
+static QueuedCommand Read(const std::string& name) {
+    return {QueuedCommand::READ, name, ""};
+}
+static QueuedCommand Error(const std::string& name) {
+    return {QueuedCommand::ERROR, name, "unknown command '" + name + "'"};
+}
+
+static void TestErrorDoesNotOvertakeWrite() {
+    std::cout << "Test 1: ERROR stays behind an in-flight WRITE" << std::endl;
+    CommandQueue q;
+    q.Enqueue(Write("SET"));
+    q.Enqueue(Error("BOGUS"));
+    q.Enqueue(Read("GET"));
+    q.ProcessNext();
+    Check(q.responses.empty(), "WRITE should not reply before commit");
+    Check(q.executing, "WRITE should hold the executing flag");
+    Check(q.queue.size() == 2, "ERROR and GET should remain queued");
+    q.CompleteWrite();
+    Check(q.responses.size() == 3, "all three commands should reply once");
+    Check(q.responses[0] == "OK: SET", "SET should be first");
+    Check(q.responses[1] == "-ERR unknown command 'BOGUS'", "ERROR should not overtake SET");
+    Check(q.responses[2] == "OK: GET", "GET should be last");
+    Check(!q.executing && q.queue.empty(), "queue should be idle after drain");
+    std::cout << "  PASS" << std::endl;
+}
+
+static void TestMixedPipelineOrder() {
+    std::cout << "Test 2: mixed READ/WRITE pipeline keeps RESP order" << std::endl;
+    CommandQueue q;
+    q.Enqueue(Write("SET"));
+    q.Enqueue(Read("PING"));
+    q.Enqueue(Read("GET"));
+    q.Enqueue(Write("SET"));
+    q.Enqueue(Read("GET"));
+    q.Drain();
+    Check(q.responses.size() == 5, "pipeline should produce 5 replies");
+    Check(q.responses[0] == "OK: SET", "response 1");
+    Check(q.responses[1] == "OK: PING", "response 2");
+    Check(q.responses[2] == "OK: GET", "response 3");
+    Check(q.responses[3] == "OK: SET", "response 4");
+    Check(q.responses[4] == "OK: GET", "response 5");
+    std::cout << "  PASS" << std::endl;
+}
+
+static void TestExecutingBlocksOverlap() {
+    std::cout << "Test 3: executing flag blocks overlapping work" << std::endl;
+    CommandQueue q;
+    q.executing = true;
+    q.Enqueue(Read("GET"));
+    q.ProcessNext();
+    Check(q.responses.empty(), "must not run while executing");
+    Check(!q.queue.empty(), "command should remain queued");
+    q.executing = false;
+    q.ProcessNext();
+    Check(q.responses.size() == 1, "should run after executing clears");
+    std::cout << "  PASS" << std::endl;
+}
+
+static void TestEmptyQueueAndUnknownCommand() {
+    std::cout << "Test 4: empty queue and unknown command complete" << std::endl;
+    CommandQueue q;
+    q.ProcessNext();
+    Check(q.responses.empty() && !q.executing, "empty queue must be a no-op");
+    q.Enqueue(Error("BOGUS"));
+    q.ProcessNext();
+    Check(q.responses.size() == 1, "unknown command must reply");
+    Check(q.responses[0] == "-ERR unknown command 'BOGUS'", "unknown command text");
+    Check(!q.executing, "unknown command must release executing");
+    std::cout << "  PASS" << std::endl;
 }
 
 int main() {
     try {
         std::cout << "=== Connection Command Order Tests ===" << std::endl;
-        std::cout << "NOTE: These tests document the current limitation" << std::endl;
-        std::cout << "Same-connection command order is NOT guaranteed currently\n" << std::endl;
-
-        TestSetThenGetOnSameConnection();
-        TestSetThenPingOnSameConnection();
-        TestMultipleSetsOnSameConnection();
-        TestPipelineCommandOrder();
-        TestCommandBacklogAfterLostQuorum();
-        TestPendingRequestsOnDisconnect();
-
-        ExamplePerConnectionQueue();
-
-        std::cout << "\n=== Documentation tests completed (" << test_count << " checks) ===" << std::endl;
-        std::cout << "\nRECOMMENDATION:" << std::endl;
-        std::cout << "1. Document current limitation in README" << std::endl;
-        std::cout << "2. Add per-connection queue as medium-term improvement" << std::endl;
-        std::cout << "3. Implement connection-level backpressure" << std::endl;
-
+        TestErrorDoesNotOvertakeWrite();
+        TestMixedPipelineOrder();
+        TestExecutingBlocksOverlap();
+        TestEmptyQueueAndUnknownCommand();
+        std::cout << "\n=== All tests passed (" << check_count << " checks) ===" << std::endl;
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "\n=== Test failed: " << e.what() << " ===" << std::endl;
+        std::cerr << "Completed " << check_count << " checks before failure" << std::endl;
         return 1;
     }
 }

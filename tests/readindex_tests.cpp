@@ -1,5 +1,5 @@
-// ReadIndex 单元测试
-// 测试 ReadIndex 机制的核心逻辑
+// Standalone ReadIndex manager model. These tests do not link production
+// RaftNode; core_tests.cpp covers the real request/probe/ACK path.
 
 #include <iostream>
 #include <cassert>

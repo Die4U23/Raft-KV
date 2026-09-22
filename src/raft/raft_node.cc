@@ -43,11 +43,7 @@ std::string RaftNode::MetricsInfo() const {
     info += "read_index_not_leader:" + std::to_string(_read_index_not_leader) + "\r\n";
     info += "read_index_overload:" + std::to_string(_read_index_overload) + "\r\n";
 
-    size_t pending_count = _pending_reads.size();
-    for (const auto& round : _heartbeat_rounds) {
-        pending_count += round.requests.size();
-    }
-    info += "read_index_pending:" + std::to_string(pending_count) + "\r\n";
+    info += "read_index_pending:" + std::to_string(PendingReadIndexCount()) + "\r\n";
 
     return info;
 }
@@ -65,6 +61,8 @@ void RaftNode::Stop() {
     _state = FOLLOWER;
     _leader_id = -1;
     FailPending("-ERR server stopped; outcome unknown\r\n");
+    ClearReadIndexQueues("server stopped");
+    _can_serve_read = false;
 }
 bool RaftNode::IsRemotePeer(int id) const {
     return id != _node_id && _next_index.count(id) != 0;
@@ -293,40 +291,21 @@ void RaftNode::HandleAppendEntriesResponse(int from,
     }
     if (!IsLeader() || response.term() != _current_term) return;
 
-    // Process heartbeat ack for ReadIndex and replication responses together
     auto& flight = _inflight.at(from);
 
-    // Match response to its specific ReadIndex round using rpc_id
-    if (flight.id && response.rpc_id() == flight.id) {
-        // This response corresponds to a request we sent
-        // Add ack to the round that initiated this RPC
-        for (auto& round : _heartbeat_rounds) {
-            if (!round.confirmed && round.round_id == flight.id) {
-                round.acks.insert(from);
+    // A matching in-flight RPC may also be a ReadIndex probe, but only if this
+    // peer's rpc_id was recorded after the read round was created.
+    if (flight.id && response.rpc_id() == flight.id)
+        AckReadIndexProbe(from, flight.id);
 
-                // Check if reached quorum
-                if (static_cast<int>(round.acks.size()) >= QuorumSize()) {
-                    round.confirmed = true;
-                    ProcessConfirmedRound(round);
-                }
-                break;
-            }
-        }
-
-        // Remove all confirmed rounds from the front
-        while (!_heartbeat_rounds.empty() && _heartbeat_rounds.front().confirmed) {
-            _heartbeat_rounds.pop_front();
-        }
-
-        if (_heartbeat_rounds.empty()) {
-            _heartbeat_in_flight = false;
-        }
-    }
-
-    // Process replication response
-    if (!flight.id || response.rpc_id() != flight.id || response.last_log_index() < 0)
+    if (!flight.id || response.rpc_id() != flight.id || response.last_log_index() < 0) {
+        FinishReadIndexRounds();
         return;
-    if (response.success() && response.last_log_index() != flight.last_index) return;
+    }
+    if (response.success() && response.last_log_index() != flight.last_index) {
+        FinishReadIndexRounds();
+        return;
+    }
     // One sample per correlated successful data RPC, including buffering and
     // retries since its first send attempt. This is not pure RTT/quorum latency.
     if (response.success() && flight.entries > 0)
@@ -338,6 +317,8 @@ void RaftNode::HandleAppendEntriesResponse(int from,
         _next_index[from] = _match_index[from] + 1;
         const int64_t before = _commit_index;
         AdvanceCommitIndex();
+        // Start the next read round before sending so the new RPCs bind as probes.
+        FinishReadIndexRounds();
         if (_commit_index > before) BroadcastAppendEntries();
         if (_next_index[from] <= _log->LastIndex()) SendAppendEntries(from);
     } else {
@@ -346,6 +327,7 @@ void RaftNode::HandleAppendEntriesResponse(int from,
                             INT64_MAX : response.last_log_index() + 1;
         _next_index[from] = std::max(_match_index[from] + 1,
                                     std::min(_next_index[from] - 1, hint));
+        FinishReadIndexRounds();
         SendAppendEntries(from);
     }
 }
@@ -387,6 +369,7 @@ void RaftNode::SendAppendEntries(int peer) {
     flight.entries = static_cast<size_t>(request.entries_size());
     request.SerializeToString(&flight.payload);
     flight.first_send = SteadyClock::now();
+    BindReadIndexProbe(peer, flight.id);
     _peer_mgr->Send(peer, RaftMsgType::kAppendEntries, flight.payload);
 }
 void RaftNode::BroadcastAppendEntries() {
@@ -511,154 +494,207 @@ void RaftNode::Tick() {
             BroadcastAppendEntries();
             _heartbeat_timer_ms = kHeartbeatIntervalMs;
         }
-        // Check ReadIndex timeout
         CheckReadIndexTimeout();
+        FinishReadIndexRounds();
     }
 }
 
 // ReadIndex implementation
+//
+// A read is safe only after a majority replies to an AppendEntries RPC that
+// was allocated after the request was recorded. Pre-existing in-flight RPCs
+// and their retries are not probes. Later reads wait for a subsequent round
+// instead of joining a round whose probes have already been sent.
+
+size_t RaftNode::PendingReadIndexCount() const {
+    size_t pending = _pending_reads.size() + _unsent_reads.size();
+    for (const auto& round : _heartbeat_rounds)
+        pending += round.requests.size();
+    return pending;
+}
 
 bool RaftNode::RequestReadIndex(ReadIndexCallback callback) {
     ++_read_index_total;
 
-    // Check if running and is Leader
     if (!IsLeader()) {
         ++_read_index_not_leader;
         callback(false, -1, _leader_id == -1 ? "no leader" : "not leader");
         return false;
     }
 
-    // Check if can serve reads (no-op committed)
     if (!_can_serve_read) {
         ++_read_index_not_leader;
         callback(false, -1, "waiting for leader to commit no-op");
         return false;
     }
 
-    // Check queue depth
-    size_t total_pending = 0;
-    for (const auto& round : _heartbeat_rounds) {
-        total_pending += round.requests.size();
-    }
-    total_pending += _pending_reads.size();
-
-    if (total_pending >= kMaxPendingReadIndex) {
+    if (PendingReadIndexCount() >= kMaxPendingReadIndex) {
         ++_read_index_overload;
         callback(false, -1, "read index queue full");
         return false;
     }
 
-    // Create ReadIndex request
     ReadIndexRequest req;
     req.read_index = _commit_index;
     req.callback = std::move(callback);
     req.created_at = SteadyClock::now();
-
-    // If no in-flight heartbeat, start a new round
-    if (!_heartbeat_in_flight) {
-        StartHeartbeatRound();
-    }
-
-    // Bind request to current round
-    _heartbeat_rounds.back().requests.push_back(std::move(req));
+    _unsent_reads.push_back(std::move(req));
+    if (!_completing_reads)
+        FinishReadIndexRounds();
     return true;
 }
 
-void RaftNode::StartHeartbeatRound() {
+void RaftNode::TryStartReadRound() {
+    if (_unsent_reads.empty() || !_heartbeat_rounds.empty())
+        return;
+
     HeartbeatRound round;
     round.round_id = ++_next_round_id;
-    round.acks.insert(_node_id);  // Leader counts itself
+    round.acks.insert(_node_id);
+    round.requests.reserve(_unsent_reads.size());
+    for (auto& req : _unsent_reads)
+        round.requests.push_back(std::move(req));
+    _unsent_reads.clear();
     round.sent_at = SteadyClock::now();
     round.confirmed = false;
-
-    _heartbeat_rounds.push_back(round);
+    _heartbeat_rounds.push_back(std::move(round));
     _heartbeat_in_flight = true;
 
-    // Send heartbeat (empty AppendEntries) to all peers
-    // Responses will be matched by arriving after this round was created
-    BroadcastAppendEntries();
+    if (QuorumSize() == 1) {
+        auto& started = _heartbeat_rounds.back();
+        started.confirmed = true;
+        ProcessConfirmedRound(started);
+        _heartbeat_rounds.pop_front();
+        _heartbeat_in_flight = false;
+        TryStartReadRound();
+    }
 }
 
-void RaftNode::ProcessConfirmedRound(const HeartbeatRound& round) {
-    for (const auto& req : round.requests) {
-        // Check if already applied
+void RaftNode::BindReadIndexProbe(int peer, uint64_t rpc_id) {
+    for (auto& round : _heartbeat_rounds) {
+        if (round.confirmed || round.probe_rpc_ids.count(peer) != 0)
+            continue;
+        round.probe_rpc_ids[peer] = rpc_id;
+        return;
+    }
+}
+
+void RaftNode::AckReadIndexProbe(int from, uint64_t rpc_id) {
+    for (auto& round : _heartbeat_rounds) {
+        const auto found = round.probe_rpc_ids.find(from);
+        if (round.confirmed || found == round.probe_rpc_ids.end() || found->second != rpc_id)
+            continue;
+        round.acks.insert(from);
+        if (static_cast<int>(round.acks.size()) >= QuorumSize()) {
+            round.confirmed = true;
+            ProcessConfirmedRound(round);
+        }
+        return;
+    }
+}
+
+void RaftNode::MaybeSendReadProbes() {
+    if (_heartbeat_rounds.empty())
+        return;
+    auto& round = _heartbeat_rounds.front();
+    if (round.confirmed)
+        return;
+    for (const auto& peer : _all_peers) {
+        if (peer.id == _node_id || round.probe_rpc_ids.count(peer.id) != 0)
+            continue;
+        SendAppendEntries(peer.id);
+    }
+}
+
+void RaftNode::FinishReadIndexRounds() {
+    while (!_heartbeat_rounds.empty() && _heartbeat_rounds.front().confirmed)
+        _heartbeat_rounds.pop_front();
+    _heartbeat_in_flight = !_heartbeat_rounds.empty();
+    TryStartReadRound();
+    MaybeSendReadProbes();
+}
+
+void RaftNode::ProcessConfirmedRound(HeartbeatRound& round) {
+    auto requests = std::move(round.requests);
+    round.requests.clear();
+    const bool nested = _completing_reads;
+    _completing_reads = true;
+    for (auto& req : requests) {
         if (_last_applied >= req.read_index) {
-            // Ready to read immediately
             req.callback(true, req.read_index, "");
             ++_read_index_succeeded;
         } else {
-            // Need to wait for apply
-            _pending_reads.push_back(req);
+            _pending_reads.push_back(std::move(req));
         }
     }
+    _completing_reads = nested;
 }
 
 void RaftNode::ProcessPendingReads() {
+    const bool nested = _completing_reads;
+    _completing_reads = true;
     while (!_pending_reads.empty()) {
         auto& req = _pending_reads.front();
-
         if (_last_applied >= req.read_index) {
-            req.callback(true, req.read_index, "");
-            ++_read_index_succeeded;
+            auto done = std::move(req);
             _pending_reads.pop_front();
+            done.callback(true, done.read_index, "");
+            ++_read_index_succeeded;
         } else {
-            break;  // Queue is ordered
+            break;
         }
     }
+    _completing_reads = nested;
 }
 
 void RaftNode::CheckReadIndexTimeout() {
     const auto now = SteadyClock::now();
     const auto timeout = std::chrono::milliseconds(kReadIndexTimeoutMs);
+    const bool nested = _completing_reads;
+    _completing_reads = true;
 
-    // Check heartbeat rounds timeout
     while (!_heartbeat_rounds.empty()) {
         auto& round = _heartbeat_rounds.front();
-
-        if (now - round.sent_at > timeout) {
-            // Timeout, reject all requests in this round
-            for (auto& req : round.requests) {
-                req.callback(false, -1, "read index timeout");
-                ++_read_index_timeout;
-            }
-            _heartbeat_rounds.pop_front();
-        } else {
-            break;  // Queue is ordered
-        }
-    }
-
-    if (_heartbeat_rounds.empty()) {
-        _heartbeat_in_flight = false;
-    }
-
-    // Check pending reads timeout
-    while (!_pending_reads.empty()) {
-        auto& req = _pending_reads.front();
-
-        if (now - req.created_at > timeout) {
-            req.callback(false, -1, "apply timeout");
-            ++_read_index_timeout;
-            _pending_reads.pop_front();
-        } else {
+        if (now - round.sent_at <= timeout)
             break;
+        for (auto& req : round.requests) {
+            req.callback(false, -1, "read index timeout");
+            ++_read_index_timeout;
         }
+        _heartbeat_rounds.pop_front();
     }
+    _heartbeat_in_flight = !_heartbeat_rounds.empty();
+
+    auto timeout_queue = [&](std::deque<ReadIndexRequest>& queue, const char* reason) {
+        while (!queue.empty()) {
+            auto& req = queue.front();
+            if (now - req.created_at <= timeout)
+                break;
+            req.callback(false, -1, reason);
+            ++_read_index_timeout;
+            queue.pop_front();
+        }
+    };
+    timeout_queue(_unsent_reads, "read index timeout");
+    timeout_queue(_pending_reads, "apply timeout");
+    _completing_reads = nested;
 }
 
 void RaftNode::ClearReadIndexQueues(const std::string& reason) {
-    // Clear heartbeat rounds
-    for (auto& round : _heartbeat_rounds) {
-        for (auto& req : round.requests) {
+    const bool nested = _completing_reads;
+    _completing_reads = true;
+    auto fail = [&](std::deque<ReadIndexRequest>& queue) {
+        for (auto& req : queue)
             req.callback(false, -1, reason);
-        }
-    }
+        queue.clear();
+    };
+    for (auto& round : _heartbeat_rounds)
+        for (auto& req : round.requests)
+            req.callback(false, -1, reason);
     _heartbeat_rounds.clear();
     _heartbeat_in_flight = false;
-
-    // Clear pending reads
-    for (auto& req : _pending_reads) {
-        req.callback(false, -1, reason);
-    }
-    _pending_reads.clear();
+    fail(_unsent_reads);
+    fail(_pending_reads);
+    _completing_reads = nested;
 }
 
