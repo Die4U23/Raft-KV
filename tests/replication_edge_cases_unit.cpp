@@ -93,7 +93,7 @@ public:
             next_index_[peer_id] = conflict_index;
         } else {
             // 保守回退一步
-            next_index_[peer_id] = std::max(1L, next_index_[peer_id] - 1);
+            next_index_[peer_id] = std::max<int64_t>(1, next_index_[peer_id] - 1);
         }
 
         flight.in_flight = false;

@@ -47,10 +47,11 @@ static muduo::net::EventLoop* g_loop = nullptr;
 static NamespaceManager g_namespaces;
 // Per-connection command queue entry
 struct QueuedCommand {
-    enum Type { READ, WRITE };
+    enum Type { READ, WRITE, ERROR };
     Type type;
     std::vector<std::string> args;
     SteadyClock::time_point enqueued_at;
+    std::string error_message;  // For ERROR type commands
 };
 
 struct ClientSession {
@@ -197,18 +198,6 @@ static void ExecuteNextCommand(const muduo::net::TcpConnectionPtr& conn,
 // Called when a command finishes executing
 static void OnCommandComplete(const muduo::net::TcpConnectionPtr& conn,
                                const std::shared_ptr<ClientSession>& session) {
-    // Release queue byte accounting for completed command
-    if (!session->command_queue.empty()) {
-        const auto& completed_cmd = session->command_queue.front();
-        size_t cmd_size = 0;
-        for (const auto& arg : completed_cmd.args) {
-            cmd_size += arg.size();
-        }
-        session->queued_bytes = (session->queued_bytes > cmd_size) ?
-                                 (session->queued_bytes - cmd_size) : 0;
-        session->command_queue.pop_front();
-    }
-
     session->executing = false;
 
     // Resume reading if queue was previously full
@@ -348,13 +337,26 @@ static void ExecuteNextCommand(const muduo::net::TcpConnectionPtr& conn,
     // Mark as executing
     session->executing = true;
 
-    // Get the next command
+    // Get the next command and release its bytes from queue accounting
     auto cmd = std::move(session->command_queue.front());
     session->command_queue.pop_front();
+
+    // Release queue byte accounting for this command
+    size_t cmd_size = 0;
+    for (const auto& arg : cmd.args) {
+        cmd_size += arg.size();
+    }
+    session->queued_bytes = (session->queued_bytes > cmd_size) ?
+                             (session->queued_bytes - cmd_size) : 0;
+
     auto& args = cmd.args;
 
     // Execute the command based on type
-    if (cmd.type == QueuedCommand::READ) {
+    if (cmd.type == QueuedCommand::ERROR) {
+        // Return error for invalid commands (preserves order)
+        SendReply(conn, session, Error(cmd.error_message));
+        OnCommandComplete(conn, session);
+    } else if (cmd.type == QueuedCommand::READ) {
         // Execute read command immediately
         const std::string& op = args[0];
 
@@ -503,33 +505,39 @@ static void DrainClient(const muduo::net::TcpConnectionPtr& conn,
 
         // Validate command and determine type
         QueuedCommand::Type cmd_type = QueuedCommand::READ;
-        bool valid_command = true;
+        std::string error_msg;
 
         if (op == "SET" && args.size() == 3) {
             cmd_type = QueuedCommand::WRITE;
         } else if (op == "DEL" && args.size() == 2) {
             cmd_type = QueuedCommand::WRITE;
         } else if (op == "PING" || op == "SELECT" || op == "GET" || op == "INFO") {
-            // Valid read commands - keep as READ
+            // Valid read commands - validate argument count
             if ((op == "PING" && args.size() != 1) ||
                 (op == "SELECT" && args.size() != 2) ||
                 (op == "GET" && args.size() != 2) ||
                 (op == "INFO" && args.size() != 1)) {
-                valid_command = false;
+                cmd_type = QueuedCommand::ERROR;
+                error_msg = "ERR wrong number of arguments for '" + op + "' command";
             }
+        } else if (op == "SET" || op == "DEL") {
+            // Known commands with wrong argument count
+            cmd_type = QueuedCommand::ERROR;
+            error_msg = "ERR wrong number of arguments for '" + op + "' command";
         } else {
             // Unknown command
-            valid_command = false;
+            cmd_type = QueuedCommand::ERROR;
+            error_msg = "ERR unknown command '" + op + "'";
         }
 
-        if (!valid_command) {
-            // Invalid command - return error immediately but keep connection alive
-            SendReply(conn, session, Error("ERR unknown command or wrong number of arguments"));
-            continue;
-        }
+        // Add ALL commands to queue (including errors) to preserve order
+        QueuedCommand cmd;
+        cmd.type = cmd_type;
+        cmd.args = std::move(args);
+        cmd.enqueued_at = SteadyClock::now();
+        cmd.error_message = std::move(error_msg);
 
-        // Add command to queue with size accounting
-        session->command_queue.push_back({cmd_type, std::move(args), SteadyClock::now()});
+        session->command_queue.push_back(std::move(cmd));
         session->queued_bytes += cmd_size;
     }
 
