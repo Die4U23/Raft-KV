@@ -421,7 +421,7 @@ class RespHelperTests(unittest.TestCase):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--server", "--binary", dest="binary", type=Path,
-                        default=Path(__file__).resolve().parents[1] / "build" / "raft_kv_server")
+                        default=None)
     parser.add_argument("--timeout", type=float, default=90,
                         help="whole-cluster deadline in seconds, excluding bounded cleanup (default: 90)")
     parser.add_argument("--artifacts", type=Path, default=Path("build/cluster-smoke"),
@@ -434,7 +434,27 @@ def main():
         return 0 if result.wasSuccessful() else 1
     if sys.platform != "linux":
         parser.error("the real cluster test requires Linux; --self-test runs on other platforms")
-    binary = args.binary.resolve()
+
+    # Find server binary - try multiple common paths
+    if args.binary:
+        binary = args.binary.resolve()
+    else:
+        repo_root = Path(__file__).resolve().parents[1]
+        candidates = [
+            repo_root / "build" / "raft_kv_server",
+            repo_root / "build-ci" / "raft_kv_server",
+            repo_root / "build-linux-repro" / "server" / "raft_kv_server",
+            repo_root / "build-portable" / "server" / "raft_kv_server",
+        ]
+        binary = None
+        for candidate in candidates:
+            if candidate.is_file() and os.access(str(candidate), os.X_OK):
+                binary = candidate
+                break
+        if not binary:
+            parser.error("server binary not found in any of: {}".format(
+                ", ".join(str(c) for c in candidates)))
+
     if not binary.is_file() or not os.access(str(binary), os.X_OK):
         parser.error("server binary is missing or not executable: {}".format(binary))
     if not 0 < args.timeout <= 3600:
