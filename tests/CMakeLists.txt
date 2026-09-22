@@ -96,9 +96,19 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(replication_partition_tests PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 add_test(NAME replication_partition_tests COMMAND replication_partition_tests)
+
+# ReadIndex linearizable read tests
 add_executable(readindex_tests readindex_tests.cpp)
 target_include_directories(readindex_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(readindex_tests PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 add_test(NAME readindex_tests COMMAND readindex_tests)
+
+# Replication edge cases unit tests
+add_executable(replication_edge_cases_unit replication_edge_cases_unit.cpp)
+target_include_directories(replication_edge_cases_unit PRIVATE ${PROJECT_SOURCE_DIR}/src)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(replication_edge_cases_unit PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+add_test(NAME replication_edge_cases_unit COMMAND replication_edge_cases_unit)
