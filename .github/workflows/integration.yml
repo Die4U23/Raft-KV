@@ -57,10 +57,13 @@ jobs:
           sudo ldconfig
 
       - name: Configure with server build
-        run: >-
-          cmake -S . -B build-ci
-          -DRAFTKV_BUILD_SERVER=ON
-          -DCMAKE_BUILD_TYPE=Release
+        run: |
+          # Debug: verify glog is installed
+          dpkg -l | grep glog
+          find /usr -name "*glog*" -o -name "libglog*" 2>/dev/null | head -20
+          cmake -S . -B build-ci \
+            -DRAFTKV_BUILD_SERVER=ON \
+            -DCMAKE_BUILD_TYPE=Release
 
       - name: Build server and tests
         run: cmake --build build-ci --parallel 2
