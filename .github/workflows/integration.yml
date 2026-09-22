@@ -1,0 +1,53 @@
+name: Integration tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential
+
+      - name: Configure with server build
+        run: >-
+          cmake -S . -B build-ci
+          -DRAFTKV_BUILD_SERVER=ON
+          -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build server and tests
+        run: cmake --build build-ci --parallel 2
+
+      - name: Run C++ unit tests
+        run: ctest --test-dir build-ci --output-on-failure
+
+      - name: Run cluster smoke tests
+        run: python3 tests/cluster_smoke.py
+
+      - name: Run ReadIndex integration tests
+        run: python3 tests/test_readindex_integration.py
+
+      - name: Run linearizable read tests
+        run: python3 tests/test_linearizable_read.py
