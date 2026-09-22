@@ -48,9 +48,10 @@ jobs:
           git clone https://github.com/chenshuo/muduo.git
           cd muduo
           ./build.sh -j2
-          cd build/release-install-cpp11
-          sudo cp -r include/* /usr/local/include/
-          sudo cp -r lib/* /usr/local/lib/
+          # Copy headers from source
+          sudo cp -r muduo /usr/local/include/
+          # Copy libraries from build output (build is created at /tmp/build)
+          sudo find /tmp/build -name "*.a" -exec cp {} /usr/local/lib/ \;
           sudo ldconfig
 
       - name: Configure with server build
