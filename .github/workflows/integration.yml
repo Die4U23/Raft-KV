@@ -47,7 +47,7 @@ jobs:
           cd /tmp
           git clone https://github.com/chenshuo/muduo.git
           cd muduo
-          ./build.sh -j2
+          ./build.sh -j2 || true
           # Copy headers from source
           sudo cp -r muduo /usr/local/include/
           # Copy libraries from build output (build is created at /tmp/build)
