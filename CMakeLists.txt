@@ -32,11 +32,11 @@ find_library(MUDUO_BASE_LIB muduo_base PATHS ${LIBRARY_DIR})
 find_path(ROCKSDB_INCLUDE_DIR rocksdb/db.h PATHS ${INCLUDE_DIR})
 find_library(ROCKSDB_LIB rocksdb PATHS ${LIBRARY_DIR})
 
-find_path(GFLAGS_INCLUDE_DIR gflags/gflags.h PATHS ${INCLUDE_DIR})
-find_library(GFLAGS_LIB gflags PATHS ${LIBRARY_DIR})
+find_path(GFLAGS_INCLUDE_DIR gflags/gflags.h PATHS ${INCLUDE_DIR} /usr/include)
+find_library(GFLAGS_LIB gflags PATHS ${LIBRARY_DIR} /usr/lib /usr/lib/x86_64-linux-gnu)
 
-find_path(GLOG_INCLUDE_DIR glog/logging.h PATHS ${INCLUDE_DIR})
-find_library(GLOG_LIB glog PATHS ${LIBRARY_DIR})
+find_path(GLOG_INCLUDE_DIR glog/logging.h PATHS ${INCLUDE_DIR} /usr/include)
+find_library(GLOG_LIB glog PATHS ${LIBRARY_DIR} /usr/lib /usr/lib/x86_64-linux-gnu)
 
 find_package(OpenSSL REQUIRED)
 # Boost.System is header-only since 1.69; recent Boost has no system library.

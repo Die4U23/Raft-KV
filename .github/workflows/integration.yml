@@ -37,6 +37,7 @@ jobs:
             librocksdb-dev \
             libboost-all-dev \
             libgoogle-glog-dev \
+            libgflags-dev \
             zlib1g-dev \
             libbz2-dev \
             liblz4-dev \
