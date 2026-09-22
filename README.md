@@ -9,6 +9,7 @@
 ## 核心能力
 
 - **Raft 写路径**：Leader 选举、日志复制、多数派提交、顺序状态机应用。
+- **ReadIndex 线性一致读**：通过心跳多数派确认读屏障，等待本地应用位置追上后读取，无需日志复制即可保证线性一致性。
 - **持久化语义**：Raft 日志和硬状态同步落盘；KV 与 `lastApplied` 在同一 RocksDB WriteBatch 中提交。
 - **有界服务**：限制连接数、输入/输出缓冲、写队列、提案数及字节数，过载时拒绝而不是无限积压。
 - **批量与异步应用**：单个 EventLoop 轮次内组批，已提交 KV 批次交给串行工作线程，完成回调回到所有者线程。
@@ -79,17 +80,22 @@ python3 -m unittest discover -s tests -p '*_tests.py'
 为每个节点使用配对且独立的 KV / Raft 目录：
 
 ```bash
-BIN=./build-linux-repro/server/raft_kv_server
-
 $BIN --node_id=0 --client_port=8080 --raft_port=9080 \
-  --db_path=/tmp/kv_db_0 --raft_log_path=/tmp/raft_log_0
+  --db_path=/tmp/kv_db_0 --raft_log_path=/tmp/raft_log_0 \
+  --linearizable_reads=true
 $BIN --node_id=1 --client_port=8081 --raft_port=9081 \
-  --db_path=/tmp/kv_db_1 --raft_log_path=/tmp/raft_log_1
+  --db_path=/tmp/kv_db_1 --raft_log_path=/tmp/raft_log_1 \
+  --linearizable_reads=true
 $BIN --node_id=2 --client_port=8082 --raft_port=9082 \
-  --db_path=/tmp/kv_db_2 --raft_log_path=/tmp/raft_log_2
+  --db_path=/tmp/kv_db_2 --raft_log_path=/tmp/raft_log_2 \
+  --linearizable_reads=true
 ```
 
 三条命令需在三个终端分别运行。启动后用 `redis-cli -p 8080 INFO` 查看角色和 Leader。
+
+**可选配置**：
+- `--linearizable_reads=true`：启用 ReadIndex 线性一致读（默认 false）
+- `--leader_only_reads=true`：仅在 Leader 节点响应读请求（默认 false）
 
 ### 3. 读写
 
@@ -107,7 +113,7 @@ redis-cli -p 8080 DEL user:1
 | --- | --- |
 | `PING` | 返回 `PONG` |
 | `SET key value` | 通过 Raft 提交和状态机应用后返回 `OK` |
-| `GET key` | 读当前节点的本地状态机 |
+| `GET key` | 读当前节点的本地状态机；启用 `--linearizable_reads=true` 后使用 ReadIndex 保证线性一致性 |
 | `DEL key` | 通过 Raft 删除，返回 `0` 或 `1` |
 | `SELECT namespace` | 为当前 TCP 连接选择逻辑命名空间 |
 | `INFO` | 查看角色、任期、Leader、提交/应用位置和过载指标 |
@@ -125,7 +131,6 @@ redis-cli -p 8080 DEL user:1
 
 ## 当前边界
 
-- `GET` 是本地读；`--leader_only_reads=true` 只检查本机角色，**不是 ReadIndex，不保证线性一致读**。详见 [读一致性保证](docs/read-consistency.md)。
 - 集群是固定成员的单 Raft 组，没有动态成员变更和多分片。
 - 没有快照与日志压缩，日志和启动扫描成本会随历史增长。
 - 没有 `client_id + request_id` 去重；超时或回复丢失后重试可能重复执行。
@@ -152,8 +157,8 @@ scripts/           Linux 构建与固定 Muduo 准备流程
 
 ## 路线图
 
-1. Pre-Vote / CheckQuorum：减少隔离节点恢复后的无效任期抬升和重新选举。
-2. ReadIndex 线性一致读：多数派确认读屏障，等待本地应用位置追上后再读取。
+1. ✅ ~~ReadIndex 线性一致读~~：多数派确认读屏障，等待本地应用位置追上后再读取。**已完成**
+2. Pre-Vote / CheckQuorum：减少隔离节点恢复后的无效任期抬升和重新选举。
 3. 快照 / InstallSnapshot / 日志压缩：限制日志增长和启动恢复时间。
 4. 客户端请求去重：为超时重试提供明确语义。
 
