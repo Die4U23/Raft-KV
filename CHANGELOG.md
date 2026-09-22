@@ -2,7 +2,14 @@
 
 记录行为改动、验证状态与取舍。每次优化保留原始基线、实现和验收证据；没有实测对比时不填写性能提升比例。
 
-截至 **2026-09-22**，仓库 HEAD 为 `cb1b3f8`（`main`，已合并 PR #1–#10）。09-13 之后的条目此前未写入本文件；下文按提交与代码核对补录，不以合并说明或未归档压测数字作为收益证明。
+截至 **2026-09-22**，下文按提交与代码核对记录。09-13 之后的条目曾漏记，已补录；不以合并说明或未归档压测数字作为收益证明。
+
+## 2026-09-22 — ReadIndex 探针关联与生产路径回归
+
+- **F1**：读屏障不再把 `round_id` 和每个 peer 各自递增的 `rpc_id` 直接比较。读请求先进入未发送队列；一轮冻结后再发送的新 AppendEntries 才记入 `probe_rpc_ids`。只有这些 RPC 的 ACK 计入多数派。请求之前已在途的复制/心跳及其重试不能确认该读。后来的读进入下一轮。
+- `Stop()` 会拒绝未完成的 ReadIndex，与卸任路径一致。
+- **F6（部分）**：`core_tests` 用真实 `RaftNode` 覆盖旧 ACK 复现、不同 rpc_id 的多数派、后到读开启新轮、单节点立即确认、Follower 拒绝和停机。`connection_order_tests` 改为真实断言（ERROR 不越过未完成 WRITE）；它仍是队列模型，不链接 `main.cpp` 的 Muduo 会话。`readindex_tests.cpp` 仍是独立模型，不能替代生产路径。
+- 未新增 Linux 三进程 CI。可移植 CTest 覆盖上述生产共识路径。
 
 ## 2026-09-22 — 架构检查与 P1/P2 修补（生产路径仍有残留）
 
@@ -15,10 +22,10 @@
 - PR #10（`673fbb6`）修补 P2：
   - **F5**：非法命令以 `ERROR` 类型入队，按 RESP 顺序回复，避免错误响应越过尚未完成的写。
   - **F7**：`replication_edge_cases_unit.cpp` 使用 `std::max<int64_t>`，消除 MinGW 上 `long` / `int64_t` 推导失败。
-- 本轮核对生产代码后，**F1 仍未真正关闭**：读轮次 `round_id` 来自独立计数器 `_next_round_id`，匹配条件是 `round.round_id == flight.id`，而 `flight.id` 是每个 peer 各自递增的 `_rpc_sequence`。三节点一次 `BroadcastAppendEntries` 会给两个 Follower 分配连续 rpc_id，通常只有其中一个可能对上 round。新读请求在已有 in-flight 轮次时仍会挂到已经发出的 round 上。审查里“只用请求之前产生的旧 ACK 就通过读屏障”的场景不能视为已关闭。
-- **F6 仍未关闭**：`tests/readindex_tests.cpp` 自实现 `ReadIndexManager`，不链接生产 `RaftNode`；`tests/connection_order_tests.cpp` 主要打印说明，`Check` 未被调用，CTest 仍计为通过。CI 只跑 `RAFTKV_BUILD_SERVER=OFF` 的可移植目标与 `*_tests.py`，不含真实三节点 Linux 服务。
+- 随后核对生产代码时 **F1 仍未真正关闭**（见本条当时记录）：`round_id` 来自 `_next_round_id`，匹配条件却是 `round.round_id == flight.id`，而 `flight.id` 是每个 peer 的 `_rpc_sequence`。该缺口由上一节关闭。
+- 当时 **F6 仍未关闭**：`readindex_tests.cpp` 不链接生产 `RaftNode`；`connection_order_tests` 的 `Check` 未被调用。上一节补了生产 `RaftNode` 回归和真实断言；CI 仍只跑可移植目标，不含真实三节点 Linux 服务。
 - 提交说明称单测与冒烟通过。本轮未重新执行历史 Linux 分区 / 崩溃重启 / 过载归档，也没有针对修补后的 ReadIndex 做隔离旧 Leader 的真实集群核验。
-- 取舍：默认 `--linearizable_reads=false`，未开开关时 GET 仍是本地读。README 已把 ReadIndex 标为完成；[read-consistency.md](docs/read-consistency.md) 与 [review-status.md](docs/review-status.md) 仍写“线性一致读未实现”，文档与代码不一致。
+- 取舍：默认 `--linearizable_reads=false`，未开开关时 GET 仍是本地读。
 
 ## 2026-09-21 / 09-22 — ReadIndex 线性一致读（默认关闭；未做 Linux 证据归档）
 

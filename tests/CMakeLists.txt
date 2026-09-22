@@ -81,7 +81,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 add_test(NAME replication_logic_tests COMMAND replication_logic_tests)
 
-# Connection command order documentation tests
+# Connection command-order model. Does not link the Muduo session in main.cpp.
 add_executable(connection_order_tests connection_order_tests.cpp)
 target_include_directories(connection_order_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
@@ -97,7 +97,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 add_test(NAME replication_partition_tests COMMAND replication_partition_tests)
 
-# ReadIndex linearizable read tests
+# Standalone ReadIndex manager model. Production RaftNode coverage is in core_tests.
 add_executable(readindex_tests readindex_tests.cpp)
 target_include_directories(readindex_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")

@@ -76,20 +76,20 @@ redis-cli -p 8080 GET user:1
 
 ---
 
-### 线性一致读（未实现）
+### 线性一致读（`--linearizable_reads=true`）
 
-**计划实现：ReadIndex 协议**
+默认关闭。开启后，Leader 使用 ReadIndex：记录当时的 `commit_index`，向 peer 发送**请求之后新分配**的 AppendEntries，多数派按 `rpc_id` 确认，且 `last_applied >= read_index` 后再读本地 KV。Follower 返回 `-ERR MOVED <leader_id>`，不会静默降级为本地读。
 
-线性一致读需要以下步骤：
-1. **验证领导权**：Leader 向多数派发送心跳以确认其领导地位
-2. **记录读索引**：记录当前的 `commit_index` 作为读屏障
-3. **等待应用**：等待 `last_applied >= read_index`
-4. **执行读取**：在本地状态机上读取数据
+**保证：**
+- 读屏障只接纳该轮创建之后发出的探针 ACK；请求之前已在途的复制/心跳及其重试不能确认这次读。
+- 同一连接上 GET 仍排在前面的 SET/DEL 之后，保留读己之写。
+- 卸任或 `Stop()` 会拒绝未完成的读。
 
-**实现后的保证：**
-- ✅ **线性一致性**：读取总是返回最新已提交的数据
-- ✅ **实时性**：读取反映写入的因果关系
-- ⚠️ **性能代价**：需要一次多数派心跳往返（约 10-50ms）
+**不保证 / 已知边界：**
+- 默认 `--linearizable_reads=false` 时 GET 仍是本地读。
+- 超时 1000 ms；队列深度上限 10000。
+- 没有 CheckQuorum/PreVote。隔离旧 Leader 的真实 TCP 故障包尚未按 ReadIndex 场景单独归档。
+- `readindex_tests.cpp` 是独立模型；生产路径回归在 `core_tests`。
 
 **参考资料：**
 - [Raft 论文第 8 节](https://raft.github.io/raft.pdf)
@@ -102,17 +102,17 @@ redis-cli -p 8080 GET user:1
 ### 读路径分析
 
 1. **接收请求**：客户端通过 RESP 协议发送 GET 命令
-2. **命令解析**：`main.cpp` 中的 `DrainClient` 解析命令
-3. **权限检查**（如果启用 `--leader_only_reads`）：
-   - Follower 返回 `MOVED` 错误
-   - Leader 继续处理
-4. **直接读取**：调用 `KVStateMachine::Get()` 读取本地 RocksDB
-5. **返回结果**：将结果通过 RESP 协议返回客户端
+2. **命令解析**：`main.cpp` 中的 `DrainClient` 解析命令并入每连接队列
+3. **一致性分流**：
+   - `--linearizable_reads=true`：非 Leader 返回 `MOVED`；Leader 调用 `RequestReadIndex`，多数派确认后再读
+   - `--leader_only_reads=true`：非 Leader 返回 `MOVED`；Leader 直接读本地
+   - 默认：任意角色直接读本地
+4. **返回结果**：将结果通过 RESP 协议返回客户端
 
 **关键代码位置：**
-- 读取处理：`src/server/main.cpp:315-325`
+- 读取处理：`src/server/main.cpp`（`ExecuteNextCommand`）
+- ReadIndex：`src/raft/raft_node.cc`（`RequestReadIndex` / `probe_rpc_ids`）
 - 状态机读取：`src/raft/kv_state_machine.cc`
-- Leader 检查：`src/raft/raft_node.h:41`
 
 ### 读己之写保证
 
@@ -135,7 +135,7 @@ redis-cli -p 8080 GET user:1
 | 会话状态读取 | 默认模式 | 读己之写足够，低延迟 |
 | 缓存查询 | 默认模式 | 可容忍短暂过期 |
 | 关键业务决策 | Leader-Only | 更严格保证，重定向可接受 |
-| 金融交易查询 | 等待线性一致读 | 需要强一致性，当前不支持 |
+| 金融交易查询 | `--linearizable_reads=true` | Leader 上走 ReadIndex；Follower 返回 MOVED |
 | 监控指标 | 默认模式 | 最终一致性即可 |
 
 ### 客户端最佳实践
@@ -296,7 +296,7 @@ A: 因为 Leader 在处理读请求时不验证自己是否仍然被多数派承
 
 ### Q: 如何实现强一致性读取？
 
-A: 当前版本不支持。请等待 ReadIndex 协议实现，或者使用变通方案：通过 Raft 提交一个空操作并等待其应用后再读取。
+A: 启动时加上 `--linearizable_reads=true`。Leader 会走 ReadIndex（请求之后的探针 ACK 才计入多数派），Follower 返回 `MOVED`。默认模式和 `--leader_only_reads` 都不是线性一致读。
 
 ### Q: 同一连接的 SET 和 GET 顺序保证吗？
 
@@ -311,7 +311,7 @@ A: 不保证。不同连接的操作并发执行，可能以任意顺序完成�
 A: 在最坏情况下：
 - 默认模式：无上界（取决于网络分区持续时间）
 - Leader-Only：约 50ms（一个心跳间隔）
-- 线性一致读（未实现）：0（总是最新）
+- `--linearizable_reads=true`：多数派确认后的已提交前缀（仍受应用延迟约束，要等 `last_applied >= read_index`）
 
 ---
 
