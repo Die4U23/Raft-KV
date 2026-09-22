@@ -29,7 +29,28 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake build-essential
+          sudo apt-get install -y \
+            cmake \
+            build-essential \
+            libprotobuf-dev \
+            protobuf-compiler \
+            librocksdb-dev \
+            zlib1g-dev \
+            libbz2-dev \
+            liblz4-dev \
+            libzstd-dev \
+            libsnappy-dev
+
+      - name: Build and install Muduo
+        run: |
+          cd /tmp
+          git clone https://github.com/chenshuo/muduo.git
+          cd muduo
+          ./build.sh -j2
+          cd build/release-install-cpp11
+          sudo cp -r include/* /usr/local/include/
+          sudo cp -r lib/* /usr/local/lib/
+          sudo ldconfig
 
       - name: Configure with server build
         run: >-
