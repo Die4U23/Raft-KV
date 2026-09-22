@@ -82,13 +82,17 @@ private:
         SteadyClock::time_point created_at;     // creation time for timeout
     };
 
-    // Heartbeat round for ReadIndex
+    // One batch of reads confirmed by AppendEntries RPCs allocated after those
+    // reads were queued. rpc ids are per peer; a round is not a single rpc id.
     struct HeartbeatRound {
-        uint64_t round_id;                      // unique round ID (same as rpc_id)
-        std::set<int> acks;                     // peers that acknowledged (includes self)
-        std::vector<ReadIndexRequest> requests; // requests bound to this round
-        SteadyClock::time_point sent_at;        // when heartbeat was sent
-        bool confirmed;                         // whether quorum reached
+        uint64_t round_id = 0;
+        std::map<int, uint64_t> probe_rpc_ids;
+        std::set<int> acks;
+        std::vector<ReadIndexRequest> requests;
+        SteadyClock::time_point created_at{};
+        SteadyClock::time_point sent_at{};
+        bool closed = false;
+        bool confirmed = false;
     };
 
     void BecomeFollower(int32_t term);
@@ -107,8 +111,12 @@ private:
     int QuorumSize() const { return static_cast<int>(_all_peers.size()) / 2 + 1; }
 
     // ReadIndex internal methods
-    void StartHeartbeatRound();
-    void ProcessConfirmedRound(const HeartbeatRound& round);
+    void TryDispatchReadBarrier();
+    void BindReadProbe(int peer, uint64_t rpc_id);
+    bool OldestRoundNeedsProbe(int peer) const;
+    void ObserveReadBarrierAck(int from, uint64_t rpc_id);
+    void FinishConfirmedReadRounds();
+    void InvokeReadyReads(std::vector<ReadIndexRequest> ready);
     void ProcessPendingReads();
     void CheckReadIndexTimeout();
     void ClearReadIndexQueues(const std::string& reason);
@@ -151,8 +159,7 @@ private:
     // ReadIndex state
     bool _can_serve_read = false;                       // Can serve read after committing no-op
     uint64_t _next_round_id = 0;                        // Next heartbeat round ID
-    std::deque<HeartbeatRound> _heartbeat_rounds;       // In-flight heartbeat rounds
-    bool _heartbeat_in_flight = false;                  // Has in-flight heartbeat
+    std::deque<HeartbeatRound> _heartbeat_rounds;       // Unconfirmed read-barrier rounds, oldest first
     std::deque<ReadIndexRequest> _pending_reads;        // Waiting for lastApplied >= readIndex
 
     // ReadIndex metrics

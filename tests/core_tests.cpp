@@ -597,6 +597,113 @@ static void AsyncFollowerCommitGuard() {
           value == "original", "committed guard did not preserve pending apply content");
 }
 
+static std::vector<Message> AppendsTo(const Cluster& cluster, int peer) {
+    std::vector<Message> found;
+    for (const auto& message : cluster.messages)
+        if (message.type == RaftMsgType::kAppendEntries && message.to == peer)
+            found.push_back(message);
+    return found;
+}
+static uint64_t AppendRpcId(const Message& message) {
+    raftcore::AppendEntries rpc;
+    Check(rpc.ParseFromString(message.payload), "append decode");
+    return rpc.rpc_id();
+}
+static Message ExchangeAppend(Cluster& cluster, const Message& request) {
+    cluster.messages.clear();
+    cluster.Deliver(request);
+    Check(cluster.messages.size() == 1, "follower did not answer with one response");
+    auto response = cluster.messages.front();
+    cluster.messages.clear();
+    return response;
+}
+static void ForceHeartbeat(Cluster& cluster, int leader) {
+    cluster.messages.clear();
+    for (int tick = 0; tick < 8 && cluster.messages.empty(); ++tick)
+        cluster.Node(leader).Tick();
+    Check(!cluster.messages.empty(), "leader did not send a heartbeat");
+}
+
+static void ReadIndexRejectsPreRequestAck() {
+    Cluster cluster;
+    cluster.Elect(10);
+    ForceHeartbeat(cluster, 10);
+    const auto stale_requests = AppendsTo(cluster, 30);
+    Check(!stale_requests.empty(), "missing pre-read heartbeat");
+    const auto stale_rpc = AppendRpcId(stale_requests.front());
+    auto stale_response = ExchangeAppend(cluster, stale_requests.front());
+    int succeeded = 0;
+    Check(cluster.Node(10).RequestReadIndex([&](bool ok, int64_t, const std::string&) {
+        if (ok) ++succeeded;
+    }), "read rejected while leader");
+    Check(cluster.messages.empty(), "read barrier sent a probe while every peer was in flight");
+    cluster.Deliver(stale_response);
+    Check(succeeded == 0, "append response from before the read satisfied ReadIndex");
+    const auto probes = AppendsTo(cluster, 30);
+    Check(probes.size() == 1 && AppendRpcId(probes.front()) != stale_rpc,
+          "freed peer did not get a new post-read probe");
+    cluster.Deliver(ExchangeAppend(cluster, probes.front()));
+    Check(succeeded == 1 && Metric(cluster.Node(10), "read_index_pending") == 0,
+          "post-read probe did not confirm exactly the queued read");
+}
+
+static void ReadIndexReentrantReadNeedsItsOwnProbe() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.messages.clear();
+    int second = 0;
+    Check(cluster.Node(10).RequestReadIndex([&](bool ok, int64_t, const std::string&) {
+        Check(ok, "first read failed");
+        Check(cluster.Node(10).RequestReadIndex([&](bool nested, int64_t, const std::string&) {
+            Check(nested, "reentrant read failed");
+            ++second;
+        }), "reentrant read rejected");
+        Check(second == 0, "reentrant read reused the confirming probe");
+        Check(Metric(cluster.Node(10), "read_index_pending") == 1,
+              "reentrant read was dropped when its round was popped");
+    }), "read rejected while leader");
+    const auto probes = AppendsTo(cluster, 30);
+    Check(!probes.empty(), "first read did not probe a follower");
+    cluster.Deliver(ExchangeAppend(cluster, probes.front()));
+    Check(second == 0, "first probe confirmed the later read");
+    std::vector<Message> next;
+    for (const auto& message : cluster.messages)
+        if (message.type == RaftMsgType::kAppendEntries) next.push_back(message);
+    Check(!next.empty(), "reentrant read did not send its own probe");
+    cluster.Deliver(ExchangeAppend(cluster, next.front()));
+    Check(second == 1, "probe sent for the reentrant read did not confirm it");
+}
+
+static void ReadIndexFiveNodeQuorum() {
+    Cluster cluster({10, 30, 50, 70, 90});
+    cluster.Elect(10);
+    cluster.messages.clear();
+    int succeeded = 0;
+    Check(cluster.Node(10).RequestReadIndex([&](bool ok, int64_t, const std::string& error) {
+        Check(ok, error.empty() ? "read failed" : error.c_str());
+        ++succeeded;
+    }), "5-node read rejected");
+    const auto first = AppendsTo(cluster, 30);
+    const auto second = AppendsTo(cluster, 50);
+    Check(!first.empty() && !second.empty(), "5-node barrier contacted fewer than two followers");
+    cluster.Deliver(ExchangeAppend(cluster, first.front()));
+    Check(succeeded == 0, "one follower ack confirmed a 5-node read");
+    cluster.Deliver(ExchangeAppend(cluster, second.front()));
+    Check(succeeded == 1, "two post-read follower acks did not confirm the read");
+}
+
+static void ReadIndexSingleNode() {
+    Cluster cluster({10});
+    cluster.Elect(10);
+    int succeeded = 0;
+    Check(cluster.Node(10).RequestReadIndex([&](bool ok, int64_t index, const std::string& error) {
+        Check(ok && index == cluster.Node(10).GetCommitIndex(),
+              error.empty() ? "single-node read failed" : error.c_str());
+        ++succeeded;
+    }), "single-node read rejected");
+    Check(succeeded == 1, "single-node quorum did not confirm the read locally");
+}
+
 int main() {
     try {
         const std::pair<const char*, void(*)()> tests[] = {
@@ -612,6 +719,10 @@ int main() {
             {"async owner-thread storage failure", AsyncStorageFailure},
             {"async follower durable ack and committed conflict guard", AsyncFollowerCommitGuard},
             {"metric arithmetic and failed leader write", MetricArithmeticAndLeaderFailure},
+            {"read index rejects an ack generated before the read", ReadIndexRejectsPreRequestAck},
+            {"reentrant read index waits for a new probe", ReadIndexReentrantReadNeedsItsOwnProbe},
+            {"read index five-node quorum", ReadIndexFiveNodeQuorum},
+            {"read index single-node quorum", ReadIndexSingleNode},
         };
         for (const auto& test : tests) { test.second(); std::cout << "PASS: " << test.first << '\n'; }
         std::cout << "PASS: " << sizeof(tests) / sizeof(tests[0])
