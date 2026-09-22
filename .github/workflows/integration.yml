@@ -35,6 +35,7 @@ jobs:
             libprotobuf-dev \
             protobuf-compiler \
             librocksdb-dev \
+            libboost-all-dev \
             zlib1g-dev \
             libbz2-dev \
             liblz4-dev \
