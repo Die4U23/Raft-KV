@@ -36,6 +36,7 @@ DEFINE_string(db_path, "/tmp/kv_db", "KV data path (paired with raft_log_path)")
 DEFINE_string(raft_log_path, "/tmp/raft_log", "Raft log path");
 DEFINE_string(peers, "0:127.0.0.1:9080,1:127.0.0.1:9081,2:127.0.0.1:9082", "id:host:port,...");
 DEFINE_bool(leader_only_reads, false, "Restrict local reads to leader (NOT linearizable)");
+DEFINE_bool(linearizable_reads, false, "Use ReadIndex for linearizable reads (overrides leader_only_reads)");
 DEFINE_int32(group_commit_ms, 1, "Partial batch collection window, 0..10 ms; full batches flush next loop turn");
 DEFINE_bool(async_apply, true, "Apply committed KV batches on a serial worker; Raft log writes stay synchronous");
 DEFINE_int32(max_clients, 1024, "Maximum concurrent client connections");
@@ -346,17 +347,50 @@ static void ExecuteNextCommand(const muduo::net::TcpConnectionPtr& conn,
             }
             OnCommandComplete(conn, session);
         } else if (op == "GET") {
-            if (FLAGS_leader_only_reads && !g_raft->IsLeader()) {
-                SendReply(conn, session, Error("MOVED " + std::to_string(g_raft->GetLeaderId())));
+            if (FLAGS_linearizable_reads && g_raft->IsLeader()) {
+                // Use ReadIndex for linearizable reads
+                std::weak_ptr<muduo::net::TcpConnection> weak_conn = conn;
+                std::weak_ptr<ClientSession> weak_session = session;
+                std::string key = g_namespaces.MakeKey(conn->name(), args[1]);
+
+                g_raft->RequestReadIndex([weak_conn, weak_session, key](bool success, int64_t read_index, const std::string& error) {
+                    auto c = weak_conn.lock();
+                    auto s = weak_session.lock();
+                    if (!c || !s || !c->connected()) return;
+
+                    if (!success) {
+                        std::string err = error;
+                        if (err == "not leader" || err.find("no leader") != std::string::npos) {
+                            SendReply(c, s, Error("MOVED " + std::to_string(g_raft->GetLeaderId())));
+                        } else {
+                            SendReply(c, s, Error(err));
+                        }
+                        OnCommandComplete(c, s);
+                        return;
+                    }
+
+                    // Callback is invoked when lastApplied >= read_index
+                    // or when the read request times out
+                    // At this point, it's safe to read from state machine
+                    std::string value;
+                    bool found = g_sm->Get(key, &value);
+                    SendReply(c, s, found ? Bulk(value) : "$-1\r\n");
+                    OnCommandComplete(c, s);
+                });
             } else {
-                std::string value;
-                const auto key = g_namespaces.MakeKey(conn->name(), args[1]);
-                const auto started = SteadyClock::now();
-                const bool found = g_sm->Get(key, &value);
-                g_local_read.Observe(ElapsedMicros(started));
-                SendReply(conn, session, found ? Bulk(value) : "$-1\r\n");
+                // Local read (default or not leader)
+                if (FLAGS_leader_only_reads && !g_raft->IsLeader()) {
+                    SendReply(conn, session, Error("MOVED " + std::to_string(g_raft->GetLeaderId())));
+                } else {
+                    std::string value;
+                    const auto key = g_namespaces.MakeKey(conn->name(), args[1]);
+                    const auto started = SteadyClock::now();
+                    const bool found = g_sm->Get(key, &value);
+                    g_local_read.Observe(ElapsedMicros(started));
+                    SendReply(conn, session, found ? Bulk(value) : "$-1\r\n");
+                }
+                OnCommandComplete(conn, session);
             }
-            OnCommandComplete(conn, session);
         } else if (op == "INFO") {
             std::string info = "node_id:" + std::to_string(g_raft->GetNodeId()) + "\r\n";
             info += "state:" + std::string(g_raft->StateName()) + "\r\n";

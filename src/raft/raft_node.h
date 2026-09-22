@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
@@ -21,6 +22,10 @@ class RaftNode {
 public:
     using ProposeCallback = std::function<void(bool, const std::string&)>;
     struct Proposal { std::string command; ProposeCallback callback; };
+
+    // ReadIndex callback: (success, read_index, error_message)
+    using ReadIndexCallback = std::function<void(bool, int64_t, const std::string&)>;
+
     RaftNode(int node_id, const std::vector<PeerInfo>& peers,
              muduo::net::EventLoop* loop, const std::string& log_path,
              KVStateMachine* sm, PeerManager* peer_mgr,
@@ -54,6 +59,11 @@ public:
     bool ApplyInFlight() const { return _apply_inflight; }
     bool AsyncApplyEnabled() const { return _apply_executor != nullptr; }
     std::string MetricsInfo() const;
+
+    // ReadIndex: request a safe read_index for linearizable reads
+    // Callback will be invoked when read_index is safe to read
+    // Returns false if not leader or cannot serve reads yet
+    bool RequestReadIndex(ReadIndexCallback callback);
 private:
     enum State { FOLLOWER, CANDIDATE, LEADER };
     struct Inflight {
@@ -64,6 +74,23 @@ private:
         SteadyClock::time_point first_send;
         std::string payload;
     };
+
+    // ReadIndex request
+    struct ReadIndexRequest {
+        int64_t read_index;                     // commitIndex when request arrived
+        ReadIndexCallback callback;             // callback function
+        SteadyClock::time_point created_at;     // creation time for timeout
+    };
+
+    // Heartbeat round for ReadIndex
+    struct HeartbeatRound {
+        uint64_t round_id;                      // unique round ID (same as rpc_id)
+        std::set<int> acks;                     // peers that acknowledged (includes self)
+        std::vector<ReadIndexRequest> requests; // requests bound to this round
+        SteadyClock::time_point sent_at;        // when heartbeat was sent
+        bool confirmed;                         // whether quorum reached
+    };
+
     void BecomeFollower(int32_t term);
     void BecomeCandidate();
     void BecomeLeader();
@@ -78,6 +105,13 @@ private:
                      uint64_t work_us, size_t bytes, uint64_t dispatch_us);
     void FailPending(const std::string& result);
     int QuorumSize() const { return static_cast<int>(_all_peers.size()) / 2 + 1; }
+
+    // ReadIndex internal methods
+    void StartHeartbeatRound();
+    void ProcessConfirmedRound(const HeartbeatRound& round);
+    void ProcessPendingReads();
+    void CheckReadIndexTimeout();
+    void ClearReadIndexQueues(const std::string& reason);
 
     int _node_id;
     std::vector<PeerInfo> _all_peers;
@@ -114,6 +148,20 @@ private:
     uint64_t _replication_retry_attempts = 0;
     std::mt19937 _rng;
 
+    // ReadIndex state
+    bool _can_serve_read = false;                       // Can serve read after committing no-op
+    uint64_t _next_round_id = 0;                        // Next heartbeat round ID
+    std::deque<HeartbeatRound> _heartbeat_rounds;       // In-flight heartbeat rounds
+    bool _heartbeat_in_flight = false;                  // Has in-flight heartbeat
+    std::deque<ReadIndexRequest> _pending_reads;        // Waiting for lastApplied >= readIndex
+
+    // ReadIndex metrics
+    uint64_t _read_index_total = 0;
+    uint64_t _read_index_succeeded = 0;
+    uint64_t _read_index_timeout = 0;
+    uint64_t _read_index_not_leader = 0;
+    uint64_t _read_index_overload = 0;
+
     static constexpr int kTickIntervalMs = 10;
     static constexpr int kHeartbeatIntervalMs = 50;
     // Retry an unacknowledged heartbeat before the minimum election timeout.
@@ -122,4 +170,6 @@ private:
     static constexpr size_t kMaxPendingBytes = 16 * 1024 * 1024;
     static constexpr size_t kMaxBatchBytes = 2 * 1024 * 1024;
     static constexpr int kMaxBatchEntries = 128;
+    static constexpr size_t kMaxPendingReadIndex = 10000;  // Max pending ReadIndex requests
+    static constexpr int kReadIndexTimeoutMs = 1000;        // ReadIndex timeout
 };
