@@ -2,6 +2,53 @@
 
 记录行为改动、验证状态与取舍。每次优化保留原始基线、实现和验收证据；没有实测对比时不填写性能提升比例。
 
+截至 **2026-09-22**，仓库 HEAD 为 `cb1b3f8`（`main`，已合并 PR #1–#10）。09-13 之后的条目此前未写入本文件；下文按提交与代码核对补录，不以合并说明或未归档压测数字作为收益证明。
+
+## 2026-09-22 — 架构检查与 P1/P2 修补（生产路径仍有残留）
+
+- 对提交 `831a91c` 做了架构检查，结论写入 [architecture-review-2026-09-22.md](docs/architecture-review-2026-09-22.md)。检查指出 ReadIndex 与连接队列存在正确性和资源边界缺陷，当时不能按 README 认定线性一致读已可靠完成。
+- PR #9（`60ddf84`）修补审查中的 P1：
+  - **F1**：AppendEntries 响应用 `rpc_id` 关联读轮次，不再把任意当前任期回复计入所有未确认 round。
+  - **F2**：`--linearizable_reads=true` 时 Follower 的 GET 返回 `MOVED`，不再静默走本地读。
+  - **F3**：每连接队列上限 1000 条 / 4 MiB，满队列停止读取。
+  - **F4**：未知命令与参数错误走统一完成路径，避免连接卡住。
+- PR #10（`673fbb6`）修补 P2：
+  - **F5**：非法命令以 `ERROR` 类型入队，按 RESP 顺序回复，避免错误响应越过尚未完成的写。
+  - **F7**：`replication_edge_cases_unit.cpp` 使用 `std::max<int64_t>`，消除 MinGW 上 `long` / `int64_t` 推导失败。
+- 本轮核对生产代码后，**F1 仍未真正关闭**：读轮次 `round_id` 来自独立计数器 `_next_round_id`，匹配条件是 `round.round_id == flight.id`，而 `flight.id` 是每个 peer 各自递增的 `_rpc_sequence`。三节点一次 `BroadcastAppendEntries` 会给两个 Follower 分配连续 rpc_id，通常只有其中一个可能对上 round。新读请求在已有 in-flight 轮次时仍会挂到已经发出的 round 上。审查里“只用请求之前产生的旧 ACK 就通过读屏障”的场景不能视为已关闭。
+- **F6 仍未关闭**：`tests/readindex_tests.cpp` 自实现 `ReadIndexManager`，不链接生产 `RaftNode`；`tests/connection_order_tests.cpp` 主要打印说明，`Check` 未被调用，CTest 仍计为通过。CI 只跑 `RAFTKV_BUILD_SERVER=OFF` 的可移植目标与 `*_tests.py`，不含真实三节点 Linux 服务。
+- 提交说明称单测与冒烟通过。本轮未重新执行历史 Linux 分区 / 崩溃重启 / 过载归档，也没有针对修补后的 ReadIndex 做隔离旧 Leader 的真实集群核验。
+- 取舍：默认 `--linearizable_reads=false`，未开开关时 GET 仍是本地读。README 已把 ReadIndex 标为完成；[read-consistency.md](docs/read-consistency.md) 与 [review-status.md](docs/review-status.md) 仍写“线性一致读未实现”，文档与代码不一致。
+
+## 2026-09-21 / 09-22 — ReadIndex 线性一致读（默认关闭；未做 Linux 证据归档）
+
+- 新增 `--linearizable_reads`（默认 false）。Leader 在本任期 no-op 提交后，记录当时 `commit_index` 作为读屏障，向 peer 发空 AppendEntries，多数派确认且 `lastApplied >= read_index` 后再读本地 KV。超时 1000 ms，队列深度上限 10000。卸任时拒绝未完成读。INFO 增加 `read_index_*` 计数。
+- Server 层 GET 走 `RequestReadIndex` 回调，不再用 1 ms 轮询；连接用 `weak_ptr`，断连后不再回复。与每连接命令队列串行衔接：同连接写完成前不会开始这条 GET。
+- 实现过程中修过一轮心跳 ack 只计入最后一个 round 的错误（`1c71092`），后被 09-22 架构检查再次指出关联标识不足，见上条。
+- 验证边界：可移植单测与若干 Python 辅助脚本被报告通过；`readindex_tests` 不覆盖生产 `RaftNode`。仓库内 `benchmark-results/benchmark-summary.json` 给出混合 6261、读多 10187、纯读 11547 次/秒，这是不同读写比例下的吞吐，**不是** ReadIndex 相对本地读的对照，也没有 09-13 那种源码/二进制指纹与核验脚本。不填写性能提升比例。
+- 未改写路径的同步落盘、多数派提交或去重语义。没有快照、Pre-Vote/CheckQuorum。隔离旧 Leader 不得返回过期强一致读，这一验收场景没有对应的已核验 Linux 证据包。
+
+## 2026-09-21 — 每连接命令队列
+
+- 问题：同一 TCP 连接上 GET/PING 原先立即执行，SET/DEL 经 Raft 异步完成，pipeline 下后发的 GET 可能先于前面的 SET 提交而读到旧值，回复顺序也可能与请求顺序不一致。
+- 改动：每个 `ClientSession` 增加 FIFO `command_queue` 与 `executing` 标志。读立即执行，写提交后由完成回调驱动下一条。09-22 起非法命令也入同一队列。
+- 多连接之间仍并发；单连接变为串行。未单独测量由此带来的延迟变化，不宣称吞吐收益。
+- 验证：新增 `tests/test_connection_queue.py` 等辅助用例。`connection_order_tests.cpp` 不能当作生产调度器回归。真实 Linux 三节点未为该改动单独归档。
+
+## 2026-09-21 — 存储健康追踪、协议注释与复制边界测试
+
+- RaftNode 增加 `_storage_healthy`。Leader/Follower 日志追加与状态机应用捕获存储异常后置为不健康并重新抛出（fail-stop）；不健康时 `Propose` 返回 `-3`，拒绝新提案。不把存储失败伪装成成功或不存在。
+- 新增 `tests/storage_failure_tests.cpp`：用 RocksDB 测试替身注入写失败，覆盖 Leader/Follower 追加与单节点应用失败。这证明调用顺序与健康标志，**不证明**真实磁盘损坏或掉电。
+- 关键状态转换补了 Raft §5.1–§5.4 注释。新增 `replication_partition_tests.cpp`、`replication_edge_cases_unit.cpp` 等独立逻辑测试；它们是模型/追踪器示例或分区编排的可测部分，不能替代生产 `RaftNode` 在真实 TCP 上的行为。
+- 同步整理了代码审阅文档、构建目录约定和测试说明。无行为对比实验，不填写性能数字。
+
+## 2026-09-16 — 许可证、可移植 CI 与日志尾缓存
+
+- 根目录增加 MIT `LICENSE` 与 `NOTICE`，README 补充来源与改造范围说明。
+- 新增 GitHub Actions `portable.yml`：`RAFTKV_BUILD_SERVER=OFF` 构建可移植 C++ 回归，并运行 `tests/*_tests.py`。CI 仍不构建真实 Muduo/RocksDB 服务，也不跑三节点故障脚本。
+- Raft 日志在扫描和追加后缓存尾部 term，避免对最后一条索引反复读盘。`storage_batch_tests` 增加对应检查。没有独立吞吐对照。
+- 文档改为以可复现构建、故障证据和项目实践长文为主；去掉未跟踪的捆绑依赖。
+
 ## 2026-09-13 — 客户端回复头部合并读取（已实测，未观察到收益）
 
 - 新增可选 `combined-header` 模式，将 RESP 类型字节与头部行合并为一次 StreamReader 读取；默认 `classic` 保留。长度限制、回复校验、部分超时计数和连接清理不变。
