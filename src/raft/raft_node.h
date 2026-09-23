@@ -57,6 +57,10 @@ public:
     int64_t GetSnapshotIndex() const { return _log->SnapshotIndex(); }
     // Tests compact after this many newly applied entries. Non-positive disables it.
     void SetSnapshotDistanceForTest(int64_t entries) { _snapshot_distance = entries; }
+    // Tests split an InstallSnapshot into chunks of this many bytes.
+    void SetSnapshotChunkBytesForTest(size_t bytes) {
+        _snapshot_chunk_bytes = bytes == 0 ? kSnapshotChunkBytes : bytes;
+    }
     int64_t MatchIndexOf(int peer_id) const {
         const auto found = _match_index.find(peer_id);
         return found == _match_index.end() ? -1 : found->second;
@@ -89,8 +93,10 @@ public:
     static constexpr int kMaxElectionTimeoutMs = 300;
     // Compact after this many applied entries past the previous snapshot.
     static constexpr int64_t kSnapshotDistance = 1024;
-    // Stay under RaftCodec::kMaxFrameSize once protobuf framing is added.
+    // Whole KV image. Larger exports skip compaction and keep the log.
     static constexpr size_t kMaxSnapshotBytes = 8 * 1024 * 1024;
+    // One InstallSnapshot RPC. The receiver installs only after done.
+    static constexpr size_t kSnapshotChunkBytes = 1 * 1024 * 1024;
 private:
     enum State { FOLLOWER, PRE_CANDIDATE, CANDIDATE, LEADER };
     struct Inflight {
@@ -101,6 +107,13 @@ private:
         RaftMsgType type = RaftMsgType::kAppendEntries;
         SteadyClock::time_point first_send;
         std::string payload;
+        // Copied when a snapshot transfer starts so a newer local snapshot
+        // cannot change the bytes of a chunk sequence already in flight.
+        std::string snapshot_image;
+        size_t snapshot_offset = 0;
+        size_t snapshot_chunk = 0;
+        int32_t snapshot_term = 0;
+        bool snapshot_done = false;
     };
 
     // ReadIndex request
@@ -137,6 +150,7 @@ private:
     bool IsRemotePeer(int id) const;
     void SendAppendEntries(int peer);
     void SendInstallSnapshot(int peer);
+    void SendSnapshotChunk(int peer);
     void BroadcastAppendEntries();
     void MaybeCompact();
     void AdvanceCommitIndex();
@@ -227,5 +241,8 @@ private:
     // and a leader rejects a probe ACK at the same age.
     static constexpr int kReadIndexTimeoutMs = 1000;
     int64_t _snapshot_distance = kSnapshotDistance;
+    size_t _snapshot_chunk_bytes = kSnapshotChunkBytes;
     bool _snapshot_skip_logged = false;
+    // Chunks of the snapshot currently being received. Offset 0 replaces it.
+    std::string _snapshot_recv;
 };

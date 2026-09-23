@@ -82,6 +82,8 @@ class InstallSnapshot : public test_proto::Snapshot<InstallSnapshot> {
     TEST_PROTO_FIELD(int64_t, last_included_index)
     TEST_PROTO_FIELD(int64_t, last_included_term)
     TEST_PROTO_FIELD(uint64_t, rpc_id)
+    TEST_PROTO_FIELD(uint64_t, offset)
+    TEST_PROTO_FIELD(bool, done)
 public:
     const std::string& data() const { return data_; }
     void set_data(const std::string& value) { data_ = value; }
