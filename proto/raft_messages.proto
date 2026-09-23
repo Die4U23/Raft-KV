@@ -41,8 +41,8 @@ message LogEntry {
     bytes command = 3;
 }
 
-// One snapshot RPC. data is the KV image at last_included_index.
-// A snapshot bigger than the Raft frame limit is not compacted.
+// Snapshot transfer. data is one chunk of the KV image at last_included_index.
+// offset is the byte position of this chunk. done marks the last chunk.
 message InstallSnapshot {
     int32 term = 1;
     int32 leader_id = 2;
@@ -50,6 +50,8 @@ message InstallSnapshot {
     int64 last_included_term = 4;
     uint64 rpc_id = 5;
     bytes data = 6;
+    uint64 offset = 7;
+    bool done = 8;
 }
 
 message InstallSnapshotResponse {

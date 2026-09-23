@@ -172,6 +172,7 @@ public:
     void Heal(int id) { partitioned.erase(id); }
     void Deliver(const Message& message) {
         if (!members.count(message.to) || Dropped(message)) return;
+        delivered.push_back(message);
         auto& node = Node(message.to);
         switch (message.type) {
         case RaftMsgType::kRequestVote: {
@@ -241,6 +242,7 @@ public:
     std::map<int, std::unique_ptr<Member>> members;
     std::map<int, ApplyExecutor*> executors;
     std::deque<Message> messages;
+    std::vector<Message> delivered;
     std::set<int> partitioned;
     std::map<int, NodeClock> clocks;
     std::string prefix;

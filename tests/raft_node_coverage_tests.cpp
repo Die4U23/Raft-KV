@@ -2,6 +2,7 @@
 // existing scenario files. Homemade election/quota models are not CTest.
 #include "in_process_cluster.h"
 #include "common/resp_parser.h"
+#include <algorithm>
 #include <iostream>
 #include <vector>
 
@@ -453,6 +454,8 @@ static void MatchingSnapshotDoesNotRewindAppliedState() {
     snapshot.set_last_included_index(1);
     snapshot.set_last_included_term(term);
     snapshot.set_rpc_id(7);
+    snapshot.set_offset(0);
+    snapshot.set_done(true);
     snapshot.set_data(EmptySnapshot());
     cluster.messages.clear();
     cluster.Node(30).HandleInstallSnapshot(10, snapshot);
@@ -466,6 +469,8 @@ static void MatchingSnapshotDoesNotRewindAppliedState() {
           "a term-matched older snapshot rewound applied keys or raised the term");
 
     snapshot.set_rpc_id(8);
+    snapshot.set_offset(0);
+    snapshot.set_done(true);
     snapshot.set_data("not-a-snapshot");
     snapshot.set_last_included_index(cluster.Node(30).GetCommitIndex());
     snapshot.set_last_included_term(term);
@@ -499,12 +504,95 @@ static void SnapshotConflictWithAppliedLogStops() {
     snapshot.set_last_included_index(1);
     snapshot.set_last_included_term(term);
     snapshot.set_rpc_id(9);
+    snapshot.set_offset(0);
+    snapshot.set_done(true);
     snapshot.set_data(EmptySnapshot());
     Throws([&] { cluster.Node(follower).HandleInstallSnapshot(leader, snapshot); });
     std::string value;
     Check(cluster.Node(follower).GetSnapshotIndex() == 0 &&
           cluster.State(follower).Get("default:k", &value) && value == "v",
           "conflicting snapshot changed the applied prefix");
+}
+
+static void SnapshotChunksReassembleAndRejectAGap() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    cluster.Partition(50);
+    cluster.Node(10).SetSnapshotDistanceForTest(1);
+    Check(cluster.Node(10).Propose(Command({"SET", "default:k", "v"}), {}) > 0,
+          "leader rejected the chunked write");
+    cluster.Pump();
+    cluster.Settle();
+    const int64_t compacted = cluster.Node(10).GetSnapshotIndex();
+    const int term = cluster.Node(10).GetCurrentTerm();
+    const auto blob = rocksdb::testing::StateFor(cluster.Path(10, "/log"))
+                          ->data.at(std::string("\x01snapdata", 9));
+    const size_t chunk = 8;
+    Check(compacted >= 2 && blob.size() > chunk, "leader snapshot is too small to chunk");
+    std::string value;
+    Check(!cluster.State(50).Get("default:k", &value), "partitioned follower already had the key");
+
+    cluster.Restart(10);
+    cluster.Node(10).SetSnapshotChunkBytesForTest(chunk);
+    cluster.Elect(10);
+    cluster.delivered.clear();
+    cluster.Heal(50);
+    cluster.Settle();
+    int chunks = 0;
+    uint64_t previous = 0;
+    bool finished = false;
+    for (const auto& message : cluster.delivered) {
+        if (message.type != RaftMsgType::kInstallSnapshot || message.to != 50) continue;
+        raftcore::InstallSnapshot rpc;
+        Check(rpc.ParseFromString(message.payload), "leader chunk decode");
+        if (chunks == 0) Check(rpc.offset() == 0, "leader snapshot did not start at offset 0");
+        else Check(rpc.offset() > previous, "leader chunk offset did not advance");
+        previous = rpc.offset();
+        Check(finished == false, "leader sent a chunk after done");
+        finished = rpc.done();
+        ++chunks;
+    }
+    Check(chunks >= 2 && finished, "leader did not send the snapshot in multiple chunks");
+    Check(cluster.State(50).Get("default:k", &value) && value == "v" &&
+          cluster.Node(50).GetSnapshotIndex() >= compacted,
+          "chunked leader snapshot did not leave the key on the follower");
+
+    const int follower_term = cluster.Node(30).GetCurrentTerm();
+    auto send = [&](uint64_t offset, const std::string& data, bool done, uint64_t rpc) {
+        raftcore::InstallSnapshot request;
+        request.set_term(follower_term);
+        request.set_leader_id(10);
+        request.set_last_included_index(compacted);
+        request.set_last_included_term(term);
+        request.set_rpc_id(rpc);
+        request.set_offset(offset);
+        request.set_data(data);
+        request.set_done(done);
+        cluster.messages.clear();
+        cluster.Node(30).HandleInstallSnapshot(10, request);
+        return LastSnapshotResponse(cluster);
+    };
+    auto gap = send(chunk, std::string(chunk, 'x'), false, 1);
+    Check(!gap.success() && cluster.Node(30).GetSnapshotIndex() == 0,
+          "a gapped snapshot chunk was accepted");
+    uint64_t rpc = 2;
+    for (size_t offset = 0; offset < blob.size(); offset += chunk) {
+        const size_t n = std::min(chunk, blob.size() - offset);
+        const bool done = offset + n == blob.size();
+        auto response = send(offset, blob.substr(offset, n), done, rpc++);
+        Check(response.success(), "in-order snapshot chunk was rejected");
+        if (!done) {
+            Check(cluster.Node(30).GetSnapshotIndex() == 0,
+                  "follower installed a snapshot before the last chunk");
+            auto again = send(offset, blob.substr(offset, n), false, rpc++);
+            Check(again.success() && cluster.Node(30).GetSnapshotIndex() == 0,
+                  "retransmit of a buffered chunk was rejected");
+        }
+    }
+    Check(cluster.Node(30).GetSnapshotIndex() == compacted &&
+          cluster.State(30).Get("default:k", &value) && value == "v",
+          "reassembled snapshot did not keep the applied key");
 }
 
 static void HigherTermAppendStepsDownCandidate() {
@@ -550,6 +638,8 @@ int main() {
              MatchingSnapshotDoesNotRewindAppliedState},
             {"snapshot term conflict with applied log stops the node",
              SnapshotConflictWithAppliedLogStops},
+            {"snapshot chunks reassemble and a gap is rejected",
+             SnapshotChunksReassembleAndRejectAGap},
             {"higher-term AppendEntries steps down a candidate",
              HigherTermAppendStepsDownCandidate},
         };
