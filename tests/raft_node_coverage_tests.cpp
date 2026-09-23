@@ -487,8 +487,12 @@ static void SnapshotConflictWithAppliedLogStops() {
     cluster.Settle();
     cluster.Partition(10);
     const int leader = cluster.ElectAmong({30, 50});
-    const int term = cluster.Node(50).GetCurrentTerm();
-    Check(term > 1 && cluster.State(50).LastApplied() > 1, "follower has no applied prefix");
+    // ElectAmong may choose either survivor. A snapshot from a node to itself
+    // is ignored, so the applied-log conflict has to be delivered to the other one.
+    const int follower = leader == 50 ? 30 : 50;
+    const int term = cluster.Node(follower).GetCurrentTerm();
+    Check(term > 1 && cluster.State(follower).LastApplied() > 1,
+          "follower has no applied prefix");
     raftcore::InstallSnapshot snapshot;
     snapshot.set_term(term);
     snapshot.set_leader_id(leader);
@@ -496,10 +500,10 @@ static void SnapshotConflictWithAppliedLogStops() {
     snapshot.set_last_included_term(term);
     snapshot.set_rpc_id(9);
     snapshot.set_data(EmptySnapshot());
-    Throws([&] { cluster.Node(50).HandleInstallSnapshot(leader, snapshot); });
+    Throws([&] { cluster.Node(follower).HandleInstallSnapshot(leader, snapshot); });
     std::string value;
-    Check(cluster.Node(50).GetSnapshotIndex() == 0 &&
-          cluster.State(50).Get("default:k", &value) && value == "v",
+    Check(cluster.Node(follower).GetSnapshotIndex() == 0 &&
+          cluster.State(follower).Get("default:k", &value) && value == "v",
           "conflicting snapshot changed the applied prefix");
 }
 
