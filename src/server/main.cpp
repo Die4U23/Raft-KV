@@ -20,6 +20,8 @@
 #include <vector>
 #include "common/resp_parser.h"
 #include "common/command_buffer.h"
+#include "common/command_type.h"
+#include "common/session_queue.h"
 #include "common/batch_flush_policy.h"
 #include "common/metrics.h"
 #include "namespace/namespace_manager.h"
@@ -47,11 +49,10 @@ static muduo::net::EventLoop* g_loop = nullptr;
 static NamespaceManager g_namespaces;
 // Per-connection command queue entry
 struct QueuedCommand {
-    enum Type { READ, WRITE, ERROR };
-    Type type;
+    CommandClass::Type type = CommandClass::ERROR;
     std::vector<std::string> args;
     SteadyClock::time_point enqueued_at;
-    std::string error_message;  // For ERROR type commands
+    std::string error_message;
 };
 
 struct ClientSession {
@@ -72,8 +73,6 @@ static constexpr size_t kMaxTotalOutput = 64 * 1024 * 1024;
 static constexpr size_t kMaxClientOutput = 4 * 1024 * 1024;
 static constexpr size_t kMaxQueuedWrites = 1024;
 static constexpr size_t kMaxQueuedWriteBytes = 16 * 1024 * 1024;
-static constexpr size_t kMaxPerConnectionQueue = 1000;  // Max commands per connection
-static constexpr size_t kMaxPerConnectionQueueBytes = 4 * 1024 * 1024;  // Max bytes per connection
 static size_t g_input_bytes = 0, g_output_bytes = 0, g_queued_write_bytes = 0;
 static uint64_t g_overload_rejections = 0;
 static LatencyStats g_write_queue_wait, g_write_completed, g_local_read;
@@ -201,8 +200,7 @@ static void OnCommandComplete(const muduo::net::TcpConnectionPtr& conn,
     session->executing = false;
 
     // Resume reading if queue was previously full
-    if (session->command_queue.size() < kMaxPerConnectionQueue &&
-        session->queued_bytes < kMaxPerConnectionQueueBytes &&
+    if (!SessionQueueLimits::IsFull(session->command_queue.size(), session->queued_bytes) &&
         conn->connected() && !session->closing) {
         conn->startRead();
     }
@@ -352,11 +350,11 @@ static void ExecuteNextCommand(const muduo::net::TcpConnectionPtr& conn,
     auto& args = cmd.args;
 
     // Execute the command based on type
-    if (cmd.type == QueuedCommand::ERROR) {
+    if (cmd.type == CommandClass::ERROR) {
         // Return error for invalid commands (preserves order)
         SendReply(conn, session, Error(cmd.error_message));
         OnCommandComplete(conn, session);
-    } else if (cmd.type == QueuedCommand::READ) {
+    } else if (cmd.type == CommandClass::READ) {
         // Execute read command immediately
         const std::string& op = args[0];
 
@@ -472,8 +470,7 @@ static void DrainClient(const muduo::net::TcpConnectionPtr& conn,
          !session->closing && !session->drain_scheduled; ++handled) {
 
         // Check per-connection queue limits before parsing more
-        if (session->command_queue.size() >= kMaxPerConnectionQueue ||
-            session->queued_bytes >= kMaxPerConnectionQueueBytes) {
+        if (SessionQueueLimits::IsFull(session->command_queue.size(), session->queued_bytes)) {
             // Queue full, stop reading until commands complete
             conn->stopRead();
             break;
@@ -492,50 +489,18 @@ static void DrainClient(const muduo::net::TcpConnectionPtr& conn,
         g_input_bytes -= parsed.consumed;
         auto& args = parsed.args;
 
-        // Calculate command size for accounting
-        size_t cmd_size = parsed.consumed;
-        for (const auto& arg : args) {
-            cmd_size += arg.size();
-        }
+        const size_t cmd_size = SessionQueueLimits::AccountedBytes(parsed.consumed, args);
 
         for (char& c : args[0])
             c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
 
-        const std::string& op = args[0];
+        const auto classified = ClassifyCommand(args);
 
-        // Validate command and determine type
-        QueuedCommand::Type cmd_type = QueuedCommand::READ;
-        std::string error_msg;
-
-        if (op == "SET" && args.size() == 3) {
-            cmd_type = QueuedCommand::WRITE;
-        } else if (op == "DEL" && args.size() == 2) {
-            cmd_type = QueuedCommand::WRITE;
-        } else if (op == "PING" || op == "SELECT" || op == "GET" || op == "INFO") {
-            // Valid read commands - validate argument count
-            if ((op == "PING" && args.size() != 1) ||
-                (op == "SELECT" && args.size() != 2) ||
-                (op == "GET" && args.size() != 2) ||
-                (op == "INFO" && args.size() != 1)) {
-                cmd_type = QueuedCommand::ERROR;
-                error_msg = "ERR wrong number of arguments for '" + op + "' command";
-            }
-        } else if (op == "SET" || op == "DEL") {
-            // Known commands with wrong argument count
-            cmd_type = QueuedCommand::ERROR;
-            error_msg = "ERR wrong number of arguments for '" + op + "' command";
-        } else {
-            // Unknown command
-            cmd_type = QueuedCommand::ERROR;
-            error_msg = "ERR unknown command '" + op + "'";
-        }
-
-        // Add ALL commands to queue (including errors) to preserve order
         QueuedCommand cmd;
-        cmd.type = cmd_type;
+        cmd.type = classified.type;
         cmd.args = std::move(args);
         cmd.enqueued_at = SteadyClock::now();
-        cmd.error_message = std::move(error_msg);
+        cmd.error_message = classified.error;
 
         session->command_queue.push_back(std::move(cmd));
         session->queued_bytes += cmd_size;

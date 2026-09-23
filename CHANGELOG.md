@@ -4,12 +4,19 @@
 
 截至 **2026-09-22**，下文按提交与代码核对记录。09-13 之后的条目曾漏记，已补录；不以合并说明或未归档压测数字作为收益证明。
 
+## 2026-09-23 — 可移植全面回归（生产路径，非自制模型）
+
+- 新增 CTest 目标：`kv_state_machine_tests`（SET/DEL/GET、空命令 no-op、大小写、非法已提交命令、旧库无 lastApplied 拒绝）、`raft_log_tests`（追加/截断/硬状态往返、非连续日志拒绝）、`raft_node_coverage_tests`（Follower/停机/不健康/超限提案、选举日志新旧、非法 RequestVote、Candidate 见更高任期心跳）。
+- `readindex_tests` 增加 10000 条排队过载与隔离旧 Leader：少数派自确认不能完成 ReadIndex，多数派可继续写入。
+- `connection_order_tests` 覆盖全部命令 arity、大小写分类，以及 F3 的 1000 条 / 4 MiB 队列上限。每连接限额抽到 `src/common/session_queue.h`，与 `main.cpp` 共用。
+- `protocol_tests` 补命名空间长度、连接隔离。`cluster_smoke_tests.py` 把 RESP 自检纳入 `*_tests.py`，可移植 CI 会跑。
+- 仍不把 `replication_ack_tests.cpp`（FakeRaftNode）加入 CTest；未新增 Linux 三进程 CI。
+
 ## 2026-09-22 — ReadIndex 探针关联与生产路径回归
 
 - **F1**：读屏障不再把 `round_id` 和每个 peer 各自递增的 `rpc_id` 直接比较。读请求先进入未发送队列；一轮冻结后再发送的新 AppendEntries 才记入 `probe_rpc_ids`。只有这些 RPC 的 ACK 计入多数派。请求之前已在途的复制/心跳及其重试不能确认该读。后来的读进入下一轮。
 - `Stop()` 会拒绝未完成的 ReadIndex，与卸任路径一致。
-- **F6（部分）**：`core_tests` 用真实 `RaftNode` 覆盖旧 ACK 复现、不同 rpc_id 的多数派、后到读开启新轮、单节点立即确认、Follower 拒绝和停机。`connection_order_tests` 改为真实断言（ERROR 不越过未完成 WRITE）；它仍是队列模型，不链接 `main.cpp` 的 Muduo 会话。`readindex_tests.cpp` 仍是独立模型，不能替代生产路径。
-- 未新增 Linux 三进程 CI。可移植 CTest 覆盖上述生产共识路径。
+- **F6**：CTest 里原先用自制 tracker / ReadIndexManager / 空断言的目标改为链接生产 `RaftNode` 或生产 `ClassifyCommand`。`connection_order_tests` 断言真实分类规则；`readindex_tests` / `replication_*` 用进程内集群复现旧 ACK、分区、五节点多数派等路径。`replication_ack_tests.cpp` 仍是 FakeRaftNode，不加入 CTest。未新增 Linux 三进程 CI。
 
 ## 2026-09-22 — 架构检查与 P1/P2 修补（生产路径仍有残留）
 

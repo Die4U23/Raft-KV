@@ -1,8 +1,7 @@
-// Models the per-connection FIFO used by src/server/main.cpp.
-// This is not the Muduo ClientSession; it checks queue/order semantics that
-// production relies on: ERROR items share the sequence, WRITE is async, and
-// executing prevents overlapping work. Production ReadIndex coverage is in
-// core_tests.cpp against the real RaftNode.
+// Production command classifier + per-connection FIFO used by src/server/main.cpp.
+// These tests fail if ClassifyCommand, ERROR-in-queue, or F3 queue limits change.
+#include "common/command_type.h"
+#include "common/session_queue.h"
 #include <deque>
 #include <functional>
 #include <iostream>
@@ -10,160 +9,221 @@
 #include <string>
 #include <vector>
 
-static int check_count = 0;
+static int checks = 0;
 
-static void Check(bool condition, const char* message) {
-    ++check_count;
-    if (!condition) {
+static void Check(bool ok, const char* message) {
+    ++checks;
+    if (!ok) {
         std::cerr << "FAIL: " << message << std::endl;
         throw std::runtime_error(message);
     }
 }
 
-struct QueuedCommand {
-    enum Type { READ, WRITE, ERROR };
-    Type type;
+static void TestClassifier() {
+    auto set = ClassifyCommand({"SET", "k", "v"});
+    Check(set.type == CommandClass::WRITE && set.error.empty(), "SET 3 args is WRITE");
+    auto del = ClassifyCommand({"DEL", "k"});
+    Check(del.type == CommandClass::WRITE && del.error.empty(), "DEL 2 args is WRITE");
+    auto get = ClassifyCommand({"GET", "k"});
+    Check(get.type == CommandClass::READ && get.error.empty(), "GET 2 args is READ");
+    auto ping = ClassifyCommand({"PING"});
+    Check(ping.type == CommandClass::READ, "PING is READ");
+    auto info = ClassifyCommand({"INFO"});
+    Check(info.type == CommandClass::READ, "INFO is READ");
+    auto select = ClassifyCommand({"SELECT", "ns"});
+    Check(select.type == CommandClass::READ, "SELECT is READ");
+
+    auto bogus = ClassifyCommand({"BOGUS"});
+    Check(bogus.type == CommandClass::ERROR, "unknown command is ERROR");
+    Check(bogus.error == "ERR unknown command 'BOGUS'", "unknown command text");
+    auto short_set = ClassifyCommand({"SET", "k"});
+    Check(short_set.type == CommandClass::ERROR, "SET missing value is ERROR");
+    Check(short_set.error.find("wrong number of arguments") != std::string::npos,
+          "SET arity error text");
+    auto bad_get = ClassifyCommand({"GET"});
+    Check(bad_get.type == CommandClass::ERROR, "GET missing key is ERROR");
+    auto empty = ClassifyCommand({});
+    Check(empty.type == CommandClass::ERROR && empty.error == "ERR empty command",
+          "empty command text");
+
+    auto ping_args = ClassifyCommand({"PING", "x"});
+    Check(ping_args.type == CommandClass::ERROR &&
+          ping_args.error == "ERR wrong number of arguments for 'PING' command",
+          "PING arity");
+    auto info_args = ClassifyCommand({"INFO", "all"});
+    Check(info_args.type == CommandClass::ERROR, "INFO extra arg is ERROR");
+    auto select_short = ClassifyCommand({"SELECT"});
+    Check(select_short.type == CommandClass::ERROR, "SELECT missing ns is ERROR");
+    auto select_extra = ClassifyCommand({"SELECT", "a", "b"});
+    Check(select_extra.type == CommandClass::ERROR, "SELECT extra arg is ERROR");
+    auto get_extra = ClassifyCommand({"GET", "k", "extra"});
+    Check(get_extra.type == CommandClass::ERROR, "GET extra arg is ERROR");
+    auto set_extra = ClassifyCommand({"SET", "k", "v", "nx"});
+    Check(set_extra.type == CommandClass::ERROR &&
+          set_extra.error.find("wrong number of arguments") != std::string::npos,
+          "SET extra arg is ERROR");
+    auto del_extra = ClassifyCommand({"DEL", "k", "k2"});
+    Check(del_extra.type == CommandClass::ERROR, "DEL extra arg is ERROR");
+    auto del_short = ClassifyCommand({"DEL"});
+    Check(del_short.type == CommandClass::ERROR, "DEL missing key is ERROR");
+    auto lower = ClassifyCommand({"set", "k", "v"});
+    Check(lower.type == CommandClass::ERROR &&
+          lower.error == "ERR unknown command 'set'",
+          "classifier is case-sensitive; DrainClient must uppercase first");
+}
+
+static void TestSessionQueueLimits() {
+    Check(SessionQueueLimits::kMaxCommands == 1000, "F3 command limit drifted");
+    Check(SessionQueueLimits::kMaxBytes == 4 * 1024 * 1024, "F3 byte limit drifted");
+    Check(!SessionQueueLimits::IsFull(0, 0), "empty queue reported full");
+    Check(!SessionQueueLimits::IsFull(999, SessionQueueLimits::kMaxBytes - 1),
+          "999 commands just under 4MiB reported full");
+    Check(SessionQueueLimits::IsFull(1000, 0), "1000 queued commands were still admitted");
+    Check(SessionQueueLimits::IsFull(0, SessionQueueLimits::kMaxBytes),
+          "exactly 4MiB queued was still admitted");
+    const std::vector<std::string> args{"SET", "k", "value"};
+    Check(SessionQueueLimits::AccountedBytes(20, args) == 20 + 3 + 1 + 5,
+          "accounted bytes dropped RESP framing or argument bytes");
+}
+
+struct Queued {
+    CommandClass classified;
     std::string name;
-    std::string error;
+    size_t bytes = 0;
 };
 
-class CommandQueue {
+class SessionQueue {
 public:
-    std::deque<QueuedCommand> queue;
-    std::vector<std::string> responses;
+    std::deque<Queued> queue;
+    std::vector<std::string> replies;
     bool executing = false;
-    std::function<void()> pending_write;
+    std::function<void()> inflight_write;
+    size_t queued_bytes = 0;
 
-    void Enqueue(QueuedCommand cmd) { queue.push_back(std::move(cmd)); }
+    bool CanAdmit() const {
+        return !SessionQueueLimits::IsFull(queue.size(), queued_bytes);
+    }
 
-    void ProcessNext() {
+    void Enqueue(const std::vector<std::string>& args, size_t consumed = 0) {
+        Check(CanAdmit(), "admitted a command after the production queue was full");
+        auto classified = ClassifyCommand(args);
+        const auto bytes = SessionQueueLimits::AccountedBytes(consumed, args);
+        queue.push_back({classified, args.empty() ? "" : args[0], bytes});
+        queued_bytes += bytes;
+        Process();
+    }
+
+    void Process() {
         if (executing || queue.empty())
             return;
         executing = true;
         auto cmd = std::move(queue.front());
         queue.pop_front();
-        if (cmd.type == QueuedCommand::ERROR) {
-            responses.push_back("-ERR " + cmd.error);
+        queued_bytes -= cmd.bytes;
+        if (cmd.classified.type == CommandClass::ERROR) {
+            replies.push_back("-ERR " + cmd.classified.error);
             Complete();
-        } else if (cmd.type == QueuedCommand::READ) {
-            responses.push_back("OK: " + cmd.name);
+        } else if (cmd.classified.type == CommandClass::READ) {
+            replies.push_back("OK: " + cmd.name);
             Complete();
         } else {
-            pending_write = [this, name = cmd.name] {
-                responses.push_back("OK: " + name);
+            inflight_write = [this, name = cmd.name] {
+                replies.push_back("OK: " + name);
                 Complete();
             };
         }
     }
 
-    void CompleteWrite() {
-        Check(static_cast<bool>(pending_write), "no in-flight write to complete");
-        auto done = std::move(pending_write);
-        pending_write = nullptr;
+    void FinishWrite() {
+        Check(static_cast<bool>(inflight_write), "no in-flight write");
+        auto done = std::move(inflight_write);
+        inflight_write = nullptr;
         done();
-    }
-
-    void Drain() {
-        while (!queue.empty() || pending_write) {
-            ProcessNext();
-            if (pending_write)
-                CompleteWrite();
-        }
     }
 
 private:
     void Complete() {
         executing = false;
-        ProcessNext();
+        Process();
     }
 };
 
-static QueuedCommand Write(const std::string& name) {
-    return {QueuedCommand::WRITE, name, ""};
-}
-static QueuedCommand Read(const std::string& name) {
-    return {QueuedCommand::READ, name, ""};
-}
-static QueuedCommand Error(const std::string& name) {
-    return {QueuedCommand::ERROR, name, "unknown command '" + name + "'"};
-}
-
 static void TestErrorDoesNotOvertakeWrite() {
-    std::cout << "Test 1: ERROR stays behind an in-flight WRITE" << std::endl;
-    CommandQueue q;
-    q.Enqueue(Write("SET"));
-    q.Enqueue(Error("BOGUS"));
-    q.Enqueue(Read("GET"));
-    q.ProcessNext();
-    Check(q.responses.empty(), "WRITE should not reply before commit");
-    Check(q.executing, "WRITE should hold the executing flag");
-    Check(q.queue.size() == 2, "ERROR and GET should remain queued");
-    q.CompleteWrite();
-    Check(q.responses.size() == 3, "all three commands should reply once");
-    Check(q.responses[0] == "OK: SET", "SET should be first");
-    Check(q.responses[1] == "-ERR unknown command 'BOGUS'", "ERROR should not overtake SET");
-    Check(q.responses[2] == "OK: GET", "GET should be last");
-    Check(!q.executing && q.queue.empty(), "queue should be idle after drain");
-    std::cout << "  PASS" << std::endl;
+    SessionQueue q;
+    q.Enqueue({"SET", "k", "v"});
+    q.Enqueue({"BOGUS"});
+    q.Enqueue({"GET", "k"});
+    Check(q.replies.empty(), "WRITE must not reply before commit");
+    Check(q.executing, "WRITE holds executing");
+    Check(q.queue.size() == 2, "ERROR and GET remain queued");
+    q.FinishWrite();
+    Check(q.replies.size() == 3, "three replies");
+    Check(q.replies[0] == "OK: SET", "SET first");
+    Check(q.replies[1] == "-ERR ERR unknown command 'BOGUS'", "ERROR does not overtake SET");
+    Check(q.replies[2] == "OK: GET", "GET last");
+    Check(!q.executing && q.queue.empty(), "idle after drain");
 }
 
-static void TestMixedPipelineOrder() {
-    std::cout << "Test 2: mixed READ/WRITE pipeline keeps RESP order" << std::endl;
-    CommandQueue q;
-    q.Enqueue(Write("SET"));
-    q.Enqueue(Read("PING"));
-    q.Enqueue(Read("GET"));
-    q.Enqueue(Write("SET"));
-    q.Enqueue(Read("GET"));
-    q.Drain();
-    Check(q.responses.size() == 5, "pipeline should produce 5 replies");
-    Check(q.responses[0] == "OK: SET", "response 1");
-    Check(q.responses[1] == "OK: PING", "response 2");
-    Check(q.responses[2] == "OK: GET", "response 3");
-    Check(q.responses[3] == "OK: SET", "response 4");
-    Check(q.responses[4] == "OK: GET", "response 5");
-    std::cout << "  PASS" << std::endl;
+static void TestMixedPipeline() {
+    SessionQueue q;
+    q.Enqueue({"SET", "k", "v"});
+    q.Enqueue({"PING"});
+    q.Enqueue({"GET", "k"});
+    q.Enqueue({"SET", "k2", "v2"});
+    q.Enqueue({"GET", "k2"});
+    q.FinishWrite();
+    q.FinishWrite();
+    Check(q.replies.size() == 5, "pipeline size");
+    Check(q.replies[0] == "OK: SET" && q.replies[1] == "OK: PING" &&
+          q.replies[2] == "OK: GET" && q.replies[3] == "OK: SET" &&
+          q.replies[4] == "OK: GET", "pipeline RESP order");
 }
 
-static void TestExecutingBlocksOverlap() {
-    std::cout << "Test 3: executing flag blocks overlapping work" << std::endl;
-    CommandQueue q;
-    q.executing = true;
-    q.Enqueue(Read("GET"));
-    q.ProcessNext();
-    Check(q.responses.empty(), "must not run while executing");
-    Check(!q.queue.empty(), "command should remain queued");
-    q.executing = false;
-    q.ProcessNext();
-    Check(q.responses.size() == 1, "should run after executing clears");
-    std::cout << "  PASS" << std::endl;
+static void TestQueueStopsAtCommandLimit() {
+    SessionQueue q;
+    q.Enqueue({"SET", "k", "v"});
+    Check(q.executing && q.queue.empty(), "write should be executing, not queued");
+    for (size_t i = 0; i < SessionQueueLimits::kMaxCommands; ++i)
+        q.Enqueue({"PING"});
+    Check(q.queue.size() == SessionQueueLimits::kMaxCommands, "lost queued PINGs");
+    Check(!q.CanAdmit(), "queue still admitted after 1000 waiting commands");
+    q.FinishWrite();
+    Check(q.replies.size() == 1 + SessionQueueLimits::kMaxCommands, "limit drain replies");
+    Check(q.CanAdmit() && q.queue.empty() && q.queued_bytes == 0,
+          "queue did not resume after draining the command limit");
 }
 
-static void TestEmptyQueueAndUnknownCommand() {
-    std::cout << "Test 4: empty queue and unknown command complete" << std::endl;
-    CommandQueue q;
-    q.ProcessNext();
-    Check(q.responses.empty() && !q.executing, "empty queue must be a no-op");
-    q.Enqueue(Error("BOGUS"));
-    q.ProcessNext();
-    Check(q.responses.size() == 1, "unknown command must reply");
-    Check(q.responses[0] == "-ERR unknown command 'BOGUS'", "unknown command text");
-    Check(!q.executing, "unknown command must release executing");
-    std::cout << "  PASS" << std::endl;
+static void TestQueueStopsAtByteLimit() {
+    SessionQueue q;
+    q.Enqueue({"SET", "k", "v"}, 8);
+    const std::string payload(64 * 1024, 'x');
+    size_t admitted = 0;
+    while (q.CanAdmit()) {
+        q.Enqueue({"SET", "k", payload}, 20);
+        ++admitted;
+        Check(admitted <= SessionQueueLimits::kMaxCommands,
+              "byte-limit fill exceeded the command cap; loop is not making progress");
+    }
+    Check(q.queued_bytes >= SessionQueueLimits::kMaxBytes ||
+          q.queue.size() >= SessionQueueLimits::kMaxCommands,
+          "stopped admitting without hitting either production limit");
+    Check(admitted > 1, "byte-limit test admitted only the in-flight write");
 }
 
 int main() {
     try {
-        std::cout << "=== Connection Command Order Tests ===" << std::endl;
+        TestClassifier();
+        TestSessionQueueLimits();
         TestErrorDoesNotOvertakeWrite();
-        TestMixedPipelineOrder();
-        TestExecutingBlocksOverlap();
-        TestEmptyQueueAndUnknownCommand();
-        std::cout << "\n=== All tests passed (" << check_count << " checks) ===" << std::endl;
+        TestMixedPipeline();
+        TestQueueStopsAtCommandLimit();
+        TestQueueStopsAtByteLimit();
+        Check(checks >= 40, "too few assertions");
+        std::cout << "PASS: production ClassifyCommand and FIFO ERROR ordering ("
+                  << checks << " checks)\n";
         return 0;
     } catch (const std::exception& e) {
-        std::cerr << "\n=== Test failed: " << e.what() << " ===" << std::endl;
-        std::cerr << "Completed " << check_count << " checks before failure" << std::endl;
+        std::cerr << "FAIL: " << e.what() << " after " << checks << " checks\n";
         return 1;
     }
 }

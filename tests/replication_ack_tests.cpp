@@ -1,5 +1,5 @@
-// 测试 Raft 复制确认位置的正确性
-// 验证 matchIndex 更新逻辑、延迟响应处理和冲突日志回退
+// Not part of CTest: this file uses FakeRaftNode, which cannot fail the
+// production RaftNode. Strict ACK tests live in replication_logic_tests.cpp.
 
 #include "raft/raft_node.h"
 #include "test_support/raft_test_support.h"

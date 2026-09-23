@@ -9,18 +9,43 @@ add_test(NAME protocol_tests COMMAND protocol_tests)
 # Run the production consensus/storage sources without Linux-only dependencies.
 # These test doubles model API behavior; they do not certify real transport,
 # protobuf interoperability, or RocksDB crash/power-loss durability.
-add_executable(core_tests core_tests.cpp
+# Replication ACK tests that compile the production RaftNode.
+set(RAFT_PORTABLE_SRCS
     ${PROJECT_SOURCE_DIR}/src/raft/raft_node.cc
     ${PROJECT_SOURCE_DIR}/src/raft/kv_state_machine.cc
     ${PROJECT_SOURCE_DIR}/src/raftcore/raft_log.cc
     ${PROJECT_SOURCE_DIR}/src/storage/rocksdb_store.cpp)
-target_include_directories(core_tests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_support
-    ${PROJECT_SOURCE_DIR}/src)
+
+function(add_portable_raft_test name)
+    add_executable(${name} ${name}.cpp ${RAFT_PORTABLE_SRCS})
+    target_include_directories(${name} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/test_support
+        ${PROJECT_SOURCE_DIR}/src)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(${name} PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME ${name} COMMAND ${name})
+endfunction()
+
+add_portable_raft_test(core_tests)
+add_portable_raft_test(storage_failure_tests)
+add_portable_raft_test(replication_logic_tests)
+add_portable_raft_test(replication_partition_tests)
+add_portable_raft_test(readindex_tests)
+add_portable_raft_test(replication_edge_cases_unit)
+add_portable_raft_test(kv_state_machine_tests)
+add_portable_raft_test(raft_log_tests)
+add_portable_raft_test(raft_node_coverage_tests)
+set_tests_properties(readindex_tests PROPERTIES TIMEOUT 20)
+set_tests_properties(raft_node_coverage_tests PROPERTIES TIMEOUT 20)
+
+# Production ClassifyCommand and FIFO ERROR ordering (no RaftNode).
+add_executable(connection_order_tests connection_order_tests.cpp)
+target_include_directories(connection_order_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(core_tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(connection_order_tests PRIVATE -Wall -Wextra -Wpedantic)
 endif()
-add_test(NAME core_tests COMMAND core_tests)
+add_test(NAME connection_order_tests COMMAND connection_order_tests)
 
 add_executable(storage_batch_tests storage_batch_tests.cpp
     ${PROJECT_SOURCE_DIR}/src/raft/kv_state_machine.cc
@@ -60,55 +85,3 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 add_test(NAME peer_retry_tests COMMAND peer_retry_tests)
 
-add_executable(storage_failure_tests storage_failure_tests.cpp
-    ${PROJECT_SOURCE_DIR}/src/raft/raft_node.cc
-    ${PROJECT_SOURCE_DIR}/src/raft/kv_state_machine.cc
-    ${PROJECT_SOURCE_DIR}/src/raftcore/raft_log.cc
-    ${PROJECT_SOURCE_DIR}/src/storage/rocksdb_store.cpp)
-target_include_directories(storage_failure_tests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_support
-    ${PROJECT_SOURCE_DIR}/src)
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(storage_failure_tests PRIVATE -Wall -Wextra -Wpedantic)
-endif()
-add_test(NAME storage_failure_tests COMMAND storage_failure_tests)
-
-# Replication acknowledgment logic tests (standalone, no external deps)
-add_executable(replication_logic_tests replication_logic_tests.cpp)
-target_include_directories(replication_logic_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(replication_logic_tests PRIVATE -Wall -Wextra -Wpedantic)
-endif()
-add_test(NAME replication_logic_tests COMMAND replication_logic_tests)
-
-# Connection command-order model. Does not link the Muduo session in main.cpp.
-add_executable(connection_order_tests connection_order_tests.cpp)
-target_include_directories(connection_order_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(connection_order_tests PRIVATE -Wall -Wextra -Wpedantic)
-endif()
-add_test(NAME connection_order_tests COMMAND connection_order_tests)
-
-# Extended replication partition tests
-add_executable(replication_partition_tests replication_partition_tests.cpp)
-target_include_directories(replication_partition_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(replication_partition_tests PRIVATE -Wall -Wextra -Wpedantic)
-endif()
-add_test(NAME replication_partition_tests COMMAND replication_partition_tests)
-
-# Standalone ReadIndex manager model. Production RaftNode coverage is in core_tests.
-add_executable(readindex_tests readindex_tests.cpp)
-target_include_directories(readindex_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(readindex_tests PRIVATE -Wall -Wextra -Wpedantic)
-endif()
-add_test(NAME readindex_tests COMMAND readindex_tests)
-
-# Replication edge cases unit tests
-add_executable(replication_edge_cases_unit replication_edge_cases_unit.cpp)
-target_include_directories(replication_edge_cases_unit PRIVATE ${PROJECT_SOURCE_DIR}/src)
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(replication_edge_cases_unit PRIVATE -Wall -Wextra -Wpedantic)
-endif()
-add_test(NAME replication_edge_cases_unit COMMAND replication_edge_cases_unit)

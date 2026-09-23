@@ -41,7 +41,7 @@ ctest --test-dir build-portable --output-on-failure
 
 以上核心测试使用进程内存储、消息队列和 Protobuf 对象快照替身，验证状态转换与调用顺序，**不证明真实磁盘持久性、Protobuf 编码兼容或 TCP 行为**。测试替身仅加入核心和批量存储测试，服务目标不使用它们。
 
-最新 CTest 结果：`protocol_tests`、`core_tests`、`storage_batch_tests`、`async_executor_tests`、`batch_flush_tests` 均通过（5/5）。批量存储测试覆盖 64 条操作一次同步写调用、批内删除语义、整批校验、故障与恢复。执行器测试使用真实标准库线程，检查有界接收、owner 派发、异常传递和停机等待；异步 Raft 测试使用手动执行器，分别推进工作与完成，不让非线程安全的存储替身跨线程运行。批量调度测试使用真实策略与可控事件队列，检查满批升格、旧回调和重复回调失效、分轮处理与尾批等待，不验证真实 Muduo 定时器。Python 集成测试客户端的 3 项自检和并发压测客户端的 4 项自检也已通过；后者包含模拟多连接请求配额与结果计数检查。真实三节点脚本已提供，支持分片命令、同连接顺序、跨轮流水线、命名空间、Leader 强制退出及原目录重启。
+最新 CTest 结果：`protocol_tests`、`core_tests`、`kv_state_machine_tests`、`raft_log_tests`、`raft_node_coverage_tests`、`readindex_tests`、`replication_*`、`connection_order_tests`、`storage_batch_tests`、`async_executor_tests`、`batch_flush_tests`、`peer_retry_tests` 均应通过。批量存储测试覆盖 64 条操作一次同步写调用、批内删除语义、整批校验、故障与恢复。执行器测试使用真实标准库线程，检查有界接收、owner 派发、异常传递和停机等待；异步 Raft 测试使用手动执行器，分别推进工作与完成，不让非线程安全的存储替身跨线程运行。批量调度测试使用真实策略与可控事件队列，检查满批升格、旧回调和重复回调失效、分轮处理与尾批等待，不验证真实 Muduo 定时器。Python 集成测试客户端的 3 项自检和并发压测客户端的 4 项自检也已通过；后者包含模拟多连接请求配额与结果计数检查。真实三节点脚本已提供，支持分片命令、同连接顺序、跨轮流水线、命名空间、Leader 强制退出及原目录重启。
 
 ## 用户回传的真实环境验证与剩余缺口
 

@@ -1,281 +1,106 @@
-// 简化版的复制确认测试（不依赖完整的 RaftNode）
-// 测试 matchIndex 更新逻辑的关键场景
-
+// Production RaftNode replication ACK rules. Homemade trackers are not CTest.
+#include "in_process_cluster.h"
 #include <iostream>
-#include <map>
-#include <vector>
-#include <algorithm>
-#include <cassert>
-#include <cstdint>
 
-static int test_count = 0;
-
-static void Check(bool condition, const char* message) {
-    ++test_count;
-    if (!condition) {
-        std::cerr << "FAIL: " << message << std::endl;
-        throw std::runtime_error(message);
-    }
+static void StaleRpcDoesNotCommit() {
+    Cluster cluster;
+    cluster.Candidate(10);
+    raftcore::RequestVoteResponse vote;
+    vote.set_term(cluster.Node(10).GetCurrentTerm());
+    vote.set_vote_granted(true);
+    cluster.messages.clear();
+    cluster.Node(10).HandleRequestVoteResponse(30, vote);
+    Message request{};
+    for (const auto& message : cluster.messages)
+        if (message.to == 30) request = message;
+    cluster.messages.clear();
+    cluster.Deliver(request);
+    auto reply = LastResponse(cluster);
+    raftcore::AppendEntriesResponse stale = reply;
+    stale.set_rpc_id(reply.rpc_id() + 100);
+    cluster.Node(10).HandleAppendEntriesResponse(30, stale);
+    Check(cluster.Node(10).GetCommitIndex() == 0, "uncorrelated RPC committed");
+    cluster.Node(10).HandleAppendEntriesResponse(30, reply);
+    Check(cluster.Node(10).GetCommitIndex() == 1, "matching ACK did not commit no-op");
 }
 
-// 模拟 Leader 的 matchIndex 和 nextIndex 管理
-class ReplicationTracker {
-public:
-    ReplicationTracker(int node_id, const std::vector<int>& peer_ids)
-        : node_id_(node_id), quorum_size_((peer_ids.size() + 1) / 2 + 1) {
-        for (int peer : peer_ids) {
-            match_index_[peer] = 0;
-            next_index_[peer] = 1;
-            inflight_[peer] = {};
-        }
-        match_index_[node_id_] = 0;
-    }
-
-    // Leader 发送 AppendEntries
-    bool SendAppendEntries(int peer_id, int64_t last_index) {
-        if (inflight_[peer_id].in_flight) {
-            return false;  // 已有在途请求
-        }
-
-        Inflight flight;
-        flight.in_flight = true;
-        flight.rpc_id = ++rpc_id_;
-        flight.last_index = last_index;
-        inflight_[peer_id] = flight;
-        return true;
-    }
-
-    // 处理成功响应
-    bool HandleSuccessResponse(int peer_id, uint64_t rpc_id, int64_t matched) {
-        auto& flight = inflight_[peer_id];
-
-        // 验证 RPC ID
-        if (!flight.in_flight || flight.rpc_id != rpc_id) {
-            return false;  // 过期或无效的响应
-        }
-
-        // 验证匹配位置与请求对应
-        if (matched != flight.last_index) {
-            return false;  // 不匹配
-        }
-
-        // 更新 matchIndex（不允许倒退）
-        match_index_[peer_id] = std::max(match_index_[peer_id], matched);
-        next_index_[peer_id] = match_index_[peer_id] + 1;
-
-        flight.in_flight = false;
-        return true;
-    }
-
-    // 推进 commitIndex
-    int64_t AdvanceCommitIndex(int64_t current_commit) {
-        std::vector<int64_t> matches;
-        for (auto& pair : match_index_) {
-            matches.push_back(pair.second);
-        }
-        std::sort(matches.begin(), matches.end(), std::greater<int64_t>());
-
-        int64_t candidate = matches[quorum_size_ - 1];
-        return std::max(current_commit, candidate);
-    }
-
-    int64_t GetMatchIndex(int peer_id) const {
-        auto it = match_index_.find(peer_id);
-        return it != match_index_.end() ? it->second : 0;
-    }
-
-    bool HasInflight(int peer_id) const {
-        auto it = inflight_.find(peer_id);
-        return it != inflight_.end() && it->second.in_flight;
-    }
-
-private:
-    struct Inflight {
-        bool in_flight = false;
-        uint64_t rpc_id = 0;
-        int64_t last_index = 0;
-    };
-
-    int node_id_;
-    int quorum_size_;
-    uint64_t rpc_id_ = 0;
-    std::map<int, int64_t> match_index_;
-    std::map<int, int64_t> next_index_;
-    std::map<int, Inflight> inflight_;
-};
-
-// 测试 1: 基本的 matchIndex 更新
-static void TestBasicMatchIndexUpdate() {
-    std::cout << "Test 1: Basic matchIndex update" << std::endl;
-
-    ReplicationTracker tracker(0, {1, 2});
-
-    // Leader 在索引 5
-    tracker.SendAppendEntries(1, 5);
-    tracker.SendAppendEntries(2, 5);
-
-    // 收到响应
-    Check(tracker.HandleSuccessResponse(1, 1, 5), "should accept valid response");
-    Check(tracker.HandleSuccessResponse(2, 2, 5), "should accept valid response");
-
-    Check(tracker.GetMatchIndex(1) == 5, "matchIndex[1] should be 5");
-    Check(tracker.GetMatchIndex(2) == 5, "matchIndex[2] should be 5");
-
-    // 推进 commitIndex
-    int64_t commit = tracker.AdvanceCommitIndex(0);
-    Check(commit == 5, "commitIndex should advance to 5");
+static void OneInflightPerPeer() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    cluster.messages.clear();
+    Check(cluster.Node(10).Propose(Command({"SET", "default:a", "1"}), {}) > 0, "first write");
+    Check(cluster.Node(10).HasInflightRpc(30) && cluster.Node(10).HasInflightRpc(50),
+          "write did not create per-peer inflight");
+    const auto first = TakeAppendsFrom(cluster, 10);
+    Check(first.size() >= 2, "missing first-round appends");
+    Check(cluster.Node(10).Propose(Command({"SET", "default:b", "2"}), {}) > 0, "second write");
+    auto extra = TakeAppendsFrom(cluster, 10);
+    Check(extra.empty(), "second write replaced or resent a new rpc_id while inflight");
+    Check(cluster.Node(10).HasInflightRpc(30), "inflight cleared before ACK");
 }
 
-// 测试 2: matchIndex 不应倒退
-static void TestMatchIndexNoRewind() {
-    std::cout << "Test 2: matchIndex should not rewind" << std::endl;
-
-    ReplicationTracker tracker(0, {1, 2});
-
-    // 发送索引 10
-    tracker.SendAppendEntries(1, 10);
-    tracker.HandleSuccessResponse(1, 1, 10);
-    Check(tracker.GetMatchIndex(1) == 10, "matchIndex should be 10");
-
-    // 发送索引 15
-    tracker.SendAppendEntries(1, 15);
-    tracker.HandleSuccessResponse(1, 2, 15);
-    Check(tracker.GetMatchIndex(1) == 15, "matchIndex should advance to 15");
-
-    // 延迟的索引 12 响应到达（旧的 RPC ID）
-    bool accepted = tracker.HandleSuccessResponse(1, 1, 12);
-    Check(!accepted, "stale response should be rejected");
-    Check(tracker.GetMatchIndex(1) == 15, "matchIndex should remain 15");
+static void FiveNodeQuorumNeedsTwoFollowers() {
+    Cluster cluster({10, 30, 50, 70, 90});
+    cluster.Elect(10);
+    cluster.Settle();
+    const int64_t before = cluster.Node(10).GetCommitIndex();
+    cluster.messages.clear();
+    bool ok = false;
+    Check(cluster.Node(10).Propose(Command({"SET", "default:k", "v"}),
+        [&](bool success, const std::string&) { ok = success; }) > 0, "propose");
+    auto appends = TakeAppendsFrom(cluster, 10);
+    Check(appends.size() >= 4, "leader did not replicate to all followers");
+    cluster.Deliver(appends.front());
+    auto ack = LastResponse(cluster);
+    cluster.Node(10).HandleAppendEntriesResponse(appends.front().to, ack);
+    Check(!ok && cluster.Node(10).GetCommitIndex() == before,
+          "one follower ACK formed a 5-node majority");
+    cluster.Deliver(appends[1]);
+    ack = LastResponse(cluster);
+    cluster.Node(10).HandleAppendEntriesResponse(appends[1].to, ack);
+    Check(ok && cluster.Node(10).GetCommitIndex() > before,
+          "two follower ACKs did not commit");
 }
 
-// 测试 3: 过期 RPC ID 应被拒绝
-static void TestStaleRpcIdRejection() {
-    std::cout << "Test 3: Stale RPC ID rejection" << std::endl;
-
-    ReplicationTracker tracker(0, {1, 2});
-
-    // 第一个请求
-    tracker.SendAppendEntries(1, 5);
-    const uint64_t first_rpc_id = 1;
-
-    // 第二个请求（覆盖在途状态）
-    tracker.HandleSuccessResponse(1, first_rpc_id, 5);
-    tracker.SendAppendEntries(1, 10);
-
-    // 第一个请求的延迟响应到达
-    bool accepted = tracker.HandleSuccessResponse(1, first_rpc_id, 5);
-    Check(!accepted, "response with stale RPC ID should be rejected");
-}
-
-// 测试 4: 响应的 matched 位置验证
-static void TestMatchedPositionValidation() {
-    std::cout << "Test 4: Matched position validation" << std::endl;
-
-    ReplicationTracker tracker(0, {1, 2});
-
-    tracker.SendAppendEntries(1, 10);
-
-    // 尝试响应不匹配的位置
-    bool accepted = tracker.HandleSuccessResponse(1, 1, 8);
-    Check(!accepted, "response with mismatched position should be rejected");
-
-    // 正确的位置
-    accepted = tracker.HandleSuccessResponse(1, 1, 10);
-    Check(accepted, "response with correct position should be accepted");
-}
-
-// 测试 5: 多数派确认推进 commitIndex
-static void TestQuorumCommit() {
-    std::cout << "Test 5: Quorum commit advancement" << std::endl;
-
-    ReplicationTracker tracker(0, {1, 2});
-
-    // Leader 自己在索引 10
-    tracker.SendAppendEntries(1, 10);
-    tracker.SendAppendEntries(2, 10);
-
-    // 只有 peer 1 响应（加上 Leader 自己，还差一个）
-    tracker.HandleSuccessResponse(1, 1, 10);
-    int64_t commit = tracker.AdvanceCommitIndex(0);
-    Check(commit == 0, "commitIndex should not advance without quorum");
-
-    // peer 2 也响应（达到多数派）
-    tracker.HandleSuccessResponse(2, 2, 10);
-    commit = tracker.AdvanceCommitIndex(0);
-    Check(commit == 10, "commitIndex should advance with quorum");
-}
-
-// 测试 6: 单个在途请求限制
-static void TestSingleInflightLimit() {
-    std::cout << "Test 6: Single inflight request per peer" << std::endl;
-
-    ReplicationTracker tracker(0, {1, 2});
-
-    // 发送第一个请求
-    bool sent = tracker.SendAppendEntries(1, 5);
-    Check(sent, "first request should be sent");
-    Check(tracker.HasInflight(1), "should have inflight request");
-
-    // 尝试发送第二个请求（应该失败）
-    sent = tracker.SendAppendEntries(1, 10);
-    Check(!sent, "second request should be blocked");
-
-    // 完成第一个请求
-    tracker.HandleSuccessResponse(1, 1, 5);
-    Check(!tracker.HasInflight(1), "inflight should be cleared");
-
-    // 现在可以发送第二个请求
-    sent = tracker.SendAppendEntries(1, 10);
-    Check(sent, "should be able to send after completion");
-}
-
-// 测试 7: 不同步的副本
-static void TestOutOfSyncReplicas() {
-    std::cout << "Test 7: Out-of-sync replicas" << std::endl;
-
-    ReplicationTracker tracker(0, {1, 2});
-
-    // peer 1 同步到 10
-    tracker.SendAppendEntries(1, 10);
-    tracker.HandleSuccessResponse(1, 1, 10);
-
-    // peer 2 只同步到 5
-    tracker.SendAppendEntries(2, 5);
-    tracker.HandleSuccessResponse(2, 2, 5);
-
-    Check(tracker.GetMatchIndex(1) == 10, "peer 1 at index 10");
-    Check(tracker.GetMatchIndex(2) == 5, "peer 2 at index 5");
-
-    // commitIndex 应该是多数派确认的最小值
-    // 三个节点：leader(假设10), peer1(10), peer2(5)
-    // 多数派的最小值取决于排序后的中位数
-    (void)tracker.AdvanceCommitIndex(0);  // 验证不会崩溃
+static void MatchIndexDoesNotRewind() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    cluster.messages.clear();
+    Check(cluster.Node(10).Propose(Command({"SET", "default:a", "1"}), {}) > 0, "first");
+    auto first = TakeAppendsFrom(cluster, 10);
+    std::vector<Message> first_acks;
+    for (const auto& append : first)
+        first_acks.push_back(DeliverAppendAndTakeAck(cluster, append));
+    for (const auto& ack : first_acks) cluster.Deliver(ack);
+    const int64_t match = cluster.Node(10).MatchIndexOf(30);
+    Check(match > 0, "matchIndex was not advanced");
+    cluster.messages.clear();
+    Check(cluster.Node(10).Propose(Command({"SET", "default:b", "2"}), {}) > 0, "second");
+    auto second = TakeAppendsFrom(cluster, 10);
+    for (const auto& append : second) {
+        auto ack = DeliverAppendAndTakeAck(cluster, append);
+        cluster.Deliver(ack);
+    }
+    const int64_t after = cluster.Node(10).MatchIndexOf(30);
+    Check(after >= match, "matchIndex rewound after the second write");
+    raftcore::AppendEntriesResponse stale;
+    Check(stale.ParseFromString(first_acks.front().payload), "stale ack decode");
+    cluster.Node(10).HandleAppendEntriesResponse(first_acks.front().from, stale);
+    Check(cluster.Node(10).MatchIndexOf(30) >= after, "delayed old ACK rewound matchIndex");
 }
 
 int main() {
     try {
-        std::cout << "=== Replication Acknowledgment Logic Tests ===" << std::endl;
-
-        TestBasicMatchIndexUpdate();
-        TestMatchIndexNoRewind();
-        TestStaleRpcIdRejection();
-        TestMatchedPositionValidation();
-        TestQuorumCommit();
-        TestSingleInflightLimit();
-        TestOutOfSyncReplicas();
-
-        std::cout << "\n=== All tests passed! (" << test_count << " checks) ===" << std::endl;
-        std::cout << "\nThese tests verify the key properties of replication tracking:" << std::endl;
-        std::cout << "  ✓ matchIndex advances correctly" << std::endl;
-        std::cout << "  ✓ matchIndex never rewinds" << std::endl;
-        std::cout << "  ✓ Stale RPC IDs are rejected" << std::endl;
-        std::cout << "  ✓ Response positions are validated" << std::endl;
-        std::cout << "  ✓ Quorum logic works correctly" << std::endl;
-        std::cout << "  ✓ Single inflight request per peer" << std::endl;
-
+        StaleRpcDoesNotCommit();
+        OneInflightPerPeer();
+        FiveNodeQuorumNeedsTwoFollowers();
+        MatchIndexDoesNotRewind();
+        std::cout << "PASS: production replication ACK correlation\n";
         return 0;
     } catch (const std::exception& e) {
-        std::cerr << "\n=== Test failed: " << e.what() << " ===" << std::endl;
+        std::cerr << "FAIL: " << e.what() << '\n';
         return 1;
     }
 }

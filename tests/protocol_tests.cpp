@@ -192,6 +192,20 @@ static void MembershipTests() {
           "non-ASCII namespace accepted");
     Check(!NamespaceManager::IsValidName("a:b"), "separator accepted in namespace");
     Check(NamespaceManager::IsValidName("Ab_0-9"), "valid namespace rejected");
+    Check(!NamespaceManager::IsValidName(""), "empty namespace accepted");
+    Check(!NamespaceManager::IsValidName(std::string(64, 'a')), "64-char namespace accepted");
+    Check(NamespaceManager::IsValidName(std::string(63, 'a')), "63-char namespace rejected");
+    Check(!NamespaceManager::IsValidName("has space"), "whitespace namespace accepted");
+    manager.SetNs("a", "tenant_a");
+    manager.SetNs("c", "tenant_c");
+    Check(manager.MakeKey("a", "k") == "tenant_a:k" &&
+          manager.MakeKey("c", "k") == "tenant_c:k",
+          "two connections did not isolate the same raw key");
+    manager.Remove("c");
+    Check(manager.GetNs("c") == "default" && manager.GetNs("a") == "tenant_a",
+          "removing one connection reset another");
+    Check(manager.MakeKey("missing", "k") == "default:k",
+          "unset connection did not use the default namespace");
 }
 int main() {
     try {
