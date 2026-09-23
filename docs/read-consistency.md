@@ -202,7 +202,7 @@ redis-cli -p 8080 GET user:1
 
 ### 短期（下个版本）
 
-ReadIndex、Pre-Vote 和快照 / InstallSnapshot / 日志压缩已经在当前代码里。接下来是 `client_id + request_id` 去重。Lease read 仍未做：它需要时钟同步假设，用来省掉每次读取的多数派往返。
+ReadIndex、Pre-Vote、快照 / InstallSnapshot / 日志压缩，以及 `client_id + request_id` 去重已经在当前代码里。Lease read 仍未做：它需要时钟同步假设，用来省掉每次读取的多数派往返。
 
 ### 长期
 

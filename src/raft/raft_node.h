@@ -93,8 +93,6 @@ public:
     static constexpr int kMaxElectionTimeoutMs = 300;
     // Compact after this many applied entries past the previous snapshot.
     static constexpr int64_t kSnapshotDistance = 1024;
-    // Whole KV image. Larger exports skip compaction and keep the log.
-    static constexpr size_t kMaxSnapshotBytes = 8 * 1024 * 1024;
     // One InstallSnapshot RPC. The receiver installs only after done.
     static constexpr size_t kSnapshotChunkBytes = 1 * 1024 * 1024;
 private:
@@ -242,7 +240,6 @@ private:
     static constexpr int kReadIndexTimeoutMs = 1000;
     int64_t _snapshot_distance = kSnapshotDistance;
     size_t _snapshot_chunk_bytes = kSnapshotChunkBytes;
-    bool _snapshot_skip_logged = false;
     // Chunks of the snapshot currently being received. Offset 0 replaces it.
     std::string _snapshot_recv;
 };
