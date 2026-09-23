@@ -34,3 +34,9 @@ inline CommandClass ClassifyCommand(const std::vector<std::string>& args) {
     }
     return {CommandClass::ERROR, "ERR unknown command '" + op + "'"};
 }
+
+// GET linearizable-read failures that mean "try the current leader".
+inline bool IsReadIndexRedirectError(const std::string& error) {
+    return error == "not leader" || error == "no leader" ||
+           error == "leadership lost" || error == "server stopped";
+}

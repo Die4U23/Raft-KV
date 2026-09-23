@@ -1,6 +1,7 @@
 # Raft-KV
 
 [![Portable checks](https://github.com/Die4U23/Raft-KV/actions/workflows/portable.yml/badge.svg)](https://github.com/Die4U23/Raft-KV/actions/workflows/portable.yml)
+[![Linux cluster](https://github.com/Die4U23/Raft-KV/actions/workflows/linux-cluster.yml/badge.svg)](https://github.com/Die4U23/Raft-KV/actions/workflows/linux-cluster.yml)
 
 一个用 C++17 实现的三节点 Raft KV 存储学习项目，把 Muduo 网络接入、Raft 共识、RocksDB 持久化、有界并发与真实故障验证放进同一条请求链路。
 
@@ -157,7 +158,7 @@ scripts/           Linux 构建与固定 Muduo 准备流程
 
 ## 路线图
 
-1. ✅ ~~ReadIndex 线性一致读~~：多数派确认读屏障，等待本地应用位置追上后再读取。**已完成**
+1. ✅ ~~ReadIndex 线性一致读~~：多数派确认读屏障，等待本地应用位置追上后再读取。默认关闭；没有 CheckQuorum/PreVote，隔离旧 Leader 上的线性一致 GET 失败而不是返回过期值。
 2. Pre-Vote / CheckQuorum：减少隔离节点恢复后的无效任期抬升和重新选举。
 3. 快照 / InstallSnapshot / 日志压缩：限制日志增长和启动恢复时间。
 4. 客户端请求去重：为超时重试提供明确语义。

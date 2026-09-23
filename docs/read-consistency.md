@@ -82,14 +82,15 @@ redis-cli -p 8080 GET user:1
 
 **保证：**
 - 读屏障只接纳该轮创建之后发出的探针 ACK；请求之前已在途的复制/心跳及其重试不能确认这次读。
+- 探针 ACK 必须在最短选举超时（150 ms）内到达。更晚的同任期 ACK 不能确认读：多数派此时可能已经选出新 Leader 并提交新值。
 - 同一连接上 GET 仍排在前面的 SET/DEL 之后，保留读己之写。
-- 卸任或 `Stop()` 会拒绝未完成的读。
+- 卸任或 `Stop()` 会拒绝未完成的读；这些失败在 `--linearizable_reads=true` 时映射为 `MOVED`。
 
 **不保证 / 已知边界：**
 - 默认 `--linearizable_reads=false` 时 GET 仍是本地读。
-- 超时 1000 ms；队列深度上限 10000。
-- 没有 CheckQuorum/PreVote。隔离旧 Leader 的真实 TCP 故障包尚未按 ReadIndex 场景单独归档。
-- `readindex_tests.cpp` 是独立模型；生产路径回归在 `core_tests`。
+- 应用落后与未发送队列的超时是 1000 ms；探针轮次本身在 150 ms 失败。队列深度上限 10000。
+- 没有 CheckQuorum/PreVote。隔离旧 Leader 仍保持 `IsLeader()`，线性一致 GET 会超时或 `MOVED`，不会成功返回过期值。进程内回归在 `readindex_tests`；Linux 三节点在 `tests/cluster_linearizable.py`。
+- 这不是租约读：时钟不同步或 RTT 接近选举超时会使 ReadIndex 失败，而不是放宽确认窗口。
 
 **参考资料：**
 - [Raft 论文第 8 节](https://raft.github.io/raft.pdf)

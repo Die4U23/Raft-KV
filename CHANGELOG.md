@@ -2,7 +2,22 @@
 
 记录行为改动、验证状态与取舍。每次优化保留原始基线、实现和验收证据；没有实测对比时不填写性能提升比例。
 
-截至 **2026-09-22**，下文按提交与代码核对记录。09-13 之后的条目曾漏记，已补录；不以合并说明或未归档压测数字作为收益证明。
+截至 **2026-09-23**，下文按提交与代码核对记录。09-13 之后的条目曾漏记，已补录；不以合并说明或未归档压测数字作为收益证明。
+
+## 2026-09-23 — ReadIndex 剩余缺口：过期探针 ACK 与 GET 重定向
+
+- 探针轮次只在最短选举超时（150 ms）内接受 ACK。超过该窗口的同任期 ACK 不能确认读，避免多数派已经另选 Leader 并提交新值之后，旧 Leader 仍凭延迟回复返回过期 GET。应用落后与未发送队列仍用 1000 ms。
+- 请求之前已在途的 AppendEntries 在超时后重试同一 `rpc_id` 时仍然不能绑定为探针；`readindex_tests` 覆盖这条路径。
+- `--linearizable_reads=true` 时，`leadership lost` / `server stopped` 与 `not leader` 一样映射为 `MOVED`。`IsReadIndexRedirectError` 与 `ClassifyCommand` 一样由 CTest 驱动。
+- 应用追上后若回调里又排队了下一条 ReadIndex，立即开启下一轮，不再等到下一次 Tick。
+- Linux `cluster_linearizable.py` 的读断言在上一轮 CI 已通过；job 失败是 `RaftProxyMesh.close()` 在 Raft 仍连着时 `wait_closed` 超时，随后关掉 event loop，残留 `_relay` 再 `Task.cancel()` 报 `Event loop is closed`。关闭改为 `abort` 传输、取消任务，loop 已关闭时不再 cancel；脚本在拆代理前先停服务进程。
+
+## 2026-09-23 — F6 剩余缺口：生产连接调度器与 Linux 三节点 CI
+
+- 每连接 DrainClient 解析/准入/记账抽到 `src/common/session_queue.h` 的 `SessionCommandQueue` / `DrainCommands`，`main.cpp` 共用。弹出时减去入队时的完整记账字节，不再只减参数长度（此前已完成命令的 RESP 帧会残留在 `queued_bytes`）。
+- `connection_order_tests` 直接驱动该生产调度器：FIFO ERROR、小写动词、128 条/轮、1000 条与 4 MiB 停读、非法 RESP 不入队。
+- 新增独立 CI 工作流 `.github/workflows/linux-cluster.yml`：安装系统依赖，`scripts/build_linux.py --smoke` 构建真实 Muduo/RocksDB 服务并跑三节点冒烟，再跑 `tests/cluster_linearizable.py`（Follower `MOVED`、Leader 写后读、隔离旧 Leader 不得成功返回过期 GET）。
+- `cluster_linearizable_tests.py` 只检查判定器，不启动服务；`test_linearizable_read.py` 仍是手工脚本，不进入 `*_tests.py`。
 
 ## 2026-09-23 — 可移植全面回归（生产路径，非自制模型）
 
@@ -30,7 +45,7 @@
   - **F5**：非法命令以 `ERROR` 类型入队，按 RESP 顺序回复，避免错误响应越过尚未完成的写。
   - **F7**：`replication_edge_cases_unit.cpp` 使用 `std::max<int64_t>`，消除 MinGW 上 `long` / `int64_t` 推导失败。
 - 随后核对生产代码时 **F1 仍未真正关闭**（见本条当时记录）：`round_id` 来自 `_next_round_id`，匹配条件却是 `round.round_id == flight.id`，而 `flight.id` 是每个 peer 的 `_rpc_sequence`。该缺口由上一节关闭。
-- 当时 **F6 仍未关闭**：`readindex_tests.cpp` 不链接生产 `RaftNode`；`connection_order_tests` 的 `Check` 未被调用。上一节补了生产 `RaftNode` 回归和真实断言；CI 仍只跑可移植目标，不含真实三节点 Linux 服务。
+- 当时 **F6 仍未关闭**：`readindex_tests.cpp` 不链接生产 `RaftNode`；`connection_order_tests` 的 `Check` 未被调用。上一节补了生产 `RaftNode` 回归和真实断言。2026-09-23 又把 DrainClient 调度器抽到 `session_queue.h` 并由 CTest 驱动，且增加独立 Linux 三节点 CI（冒烟 + 隔离旧 Leader 线性一致读）。
 - 提交说明称单测与冒烟通过。本轮未重新执行历史 Linux 分区 / 崩溃重启 / 过载归档，也没有针对修补后的 ReadIndex 做隔离旧 Leader 的真实集群核验。
 - 取舍：默认 `--linearizable_reads=false`，未开开关时 GET 仍是本地读。
 

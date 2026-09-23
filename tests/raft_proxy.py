@@ -25,13 +25,34 @@ class RaftProxyMesh:
             self.close()
             raise
 
-    def call(self, coroutine):
+    def call(self, coroutine, timeout=5):
         future = asyncio.run_coroutine_threadsafe(coroutine, self.loop)
         try:
-            return future.result(timeout=5)
+            return future.result(timeout=timeout)
         except BaseException:
             future.cancel()
             raise
+
+    @staticmethod
+    def _abort(stream):
+        transport = getattr(stream, 'transport', None)
+        if transport is not None:
+            try:
+                transport.abort()
+            except Exception:
+                pass
+        try:
+            stream.close()
+        except Exception:
+            pass
+
+    def _cancel_task(self, task):
+        if task is None or task.done() or self.loop.is_closed():
+            return
+        try:
+            task.cancel()
+        except RuntimeError:
+            pass
 
     async def _start(self):
         ports = {}
@@ -90,18 +111,16 @@ class RaftProxyMesh:
         except Exception as error:
             self.errors.append(repr(error))
         finally:
-            for pump_task in pumps:
-                pump_task.cancel()
-            for stream in writers:
-                stream.close()
-            if pumps:
-                await asyncio.gather(*pumps, return_exceptions=True)
-            for stream in writers:
-                try:
-                    await asyncio.wait_for(stream.wait_closed(), timeout=1)
-                except (OSError, asyncio.TimeoutError):
-                    pass
             self.active.pop(task, None)
+            for pump_task in pumps:
+                self._cancel_task(pump_task)
+            for stream in writers:
+                self._abort(stream)
+            if pumps and not self.loop.is_closed():
+                try:
+                    await asyncio.gather(*pumps, return_exceptions=True)
+                except RuntimeError:
+                    pass
 
     async def _partition(self, groups):
         flattened = [node for group in groups for node in group]
@@ -114,8 +133,8 @@ class RaftProxyMesh:
             if not self.allowed(edge):
                 self.stats[edge]['cut'] += 1
                 for writer in writers:
-                    writer.close()
-                task.cancel()
+                    self._abort(writer)
+                self._cancel_task(task)
                 closing.append(task)
         if closing:
             await asyncio.gather(*closing, return_exceptions=True)
@@ -139,23 +158,36 @@ class RaftProxyMesh:
     async def _close(self):
         for server in self.servers.values():
             server.close()
-        for server in self.servers.values():
-            await server.wait_closed()
-        tasks = list(self.active)
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        for task, (_, writers) in list(self.active.items()):
+            for writer in writers:
+                self._abort(writer)
+            self._cancel_task(task)
+        pending = [task for task in asyncio.all_tasks(self.loop)
+                   if task is not asyncio.current_task()]
+        for task in pending:
+            self._cancel_task(task)
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     def close(self):
         if self.closed:
             return
         self.closed = True
         try:
-            self.call(self._close())
+            if self.loop.is_running():
+                try:
+                    self.call(self._close(), timeout=2)
+                except (TimeoutError, RuntimeError):
+                    # Shutdown is best-effort: live Raft peers must not fail the test.
+                    pass
         finally:
-            self.loop.call_soon_threadsafe(self.loop.stop)
+            if self.loop.is_running():
+                try:
+                    self.loop.call_soon_threadsafe(self.loop.stop)
+                except RuntimeError:
+                    pass
             self.thread.join(timeout=3)
             if self.thread.is_alive():
                 raise RuntimeError('Proxy thread did not stop')
-            self.loop.close()
+            if not self.loop.is_closed():
+                self.loop.close()

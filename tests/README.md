@@ -18,9 +18,9 @@ ctest --test-dir build-protocol --output-on-failure
 - `kv_state_machine_tests` 检查 SET/覆盖/DEL 回复、空命令 no-op、已提交命令大小写、非法日志命令拒绝，以及缺少 lastApplied 标记的旧库拒绝启动。
 - `raft_log_tests` 检查追加、截断、硬状态往返、GetTerm 边界，以及非连续日志在打开时失败。
 - `raft_node_coverage_tests` 检查 Follower/停机/不健康/超限提案返回值、选举日志新旧与一任一次性投票、非法 RequestVote 忽略，以及 Candidate 收到更高任期心跳后转为 Follower。
-- `readindex_tests` 用生产 RaftNode 检查探针 rpc_id、请求前 ACK 无效、应用落后等待、超时、10000 条过载，以及隔离旧 Leader 不能仅凭自身确认完成线性一致读。
+- `readindex_tests` 用生产 RaftNode 检查探针 rpc_id、请求前 ACK 及其重试无效、超过最短选举超时的探针 ACK 无效、应用落后等待、超时、10000 条过载，以及隔离旧 Leader 不能仅凭自身确认完成线性一致读。
 - `replication_logic_tests` / `replication_partition_tests` / `replication_edge_cases_unit` 用生产 RaftNode 检查复制 ACK、分区多数派与日志冲突边界。
-- `connection_order_tests` 使用生产 `ClassifyCommand` 与 `SessionQueueLimits`（1000 条 / 4 MiB），检查非法命令 FIFO 回复与队列满停止准入。
+- `connection_order_tests` 使用生产 `DrainCommands` / `SessionCommandQueue`（与 `main.cpp` 共用），检查非法命令 FIFO 回复、小写动词、每轮 128 条、F3 的 1000 条 / 4 MiB 停读，以及弹出后 `queued_bytes` 归零。
 - `storage_batch_tests` 检查批量同步写调用次数、批内删除语义、整批校验、故障和恢复；核心测试还检查批量复制顺序与条数/字节配额。
 - `async_executor_tests` 使用实际 `SerialApplyExecutor` 与真实 `std::thread`，检查串行任务、owner 线程完成通知、异常传递和停止时 join；没有数据库或真实网络。
 - `batch_flush_tests` 使用实际 `BatchFlushPolicy` 和显式假事件队列，检查满条数/字节数或已到期时升格、保留初始窗口、取消竞态下的旧 token 与重复回调、多批分轮处理、尾批剩余期限及零延迟；不调用 Muduo 定时器。
@@ -38,6 +38,8 @@ python3 tests/cluster_smoke.py --self-test
 ```
 
 ## Linux 真实三节点 smoke test
+
+GitHub Actions 工作流 `.github/workflows/linux-cluster.yml` 在独立 job 中安装系统依赖、构建真实 Muduo/RocksDB 服务、运行 CTest 与 `cluster_smoke.py`，再运行 `tests/cluster_linearizable.py`：Leader 写后读、Follower `MOVED`、隔离旧 Leader 的线性一致 GET 不得成功返回过期值。该 job 不替代下面已归档的分区/重启/过载证据包。
 
 当前重连优化另增加真实 `peer_manager_transport_tests`，仅在服务依赖可用的构建中启用。新版 Linux 构建、CTest 7/7（含该测试）、冒烟 10 项与分区 5 个阶段已完成并[归档核验](../docs/benchmarks/reconnect-validation.md)；见[优化验收说明](../docs/optimizations/peer-reconnect-backoff.md)。下述归档结果属于优化前版本。
 

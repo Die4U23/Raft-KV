@@ -1,9 +1,6 @@
-// Production command classifier + per-connection FIFO used by src/server/main.cpp.
-// These tests fail if ClassifyCommand, ERROR-in-queue, or F3 queue limits change.
+// Production DrainClient/ExecuteNextCommand queue. Homemade FIFO is not CTest.
 #include "common/command_type.h"
 #include "common/session_queue.h"
-#include <deque>
-#include <functional>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -17,6 +14,13 @@ static void Check(bool ok, const char* message) {
         std::cerr << "FAIL: " << message << std::endl;
         throw std::runtime_error(message);
     }
+}
+
+static std::string Resp(std::initializer_list<std::string> args) {
+    std::string out = "*" + std::to_string(args.size()) + "\r\n";
+    for (const auto& arg : args)
+        out += "$" + std::to_string(arg.size()) + "\r\n" + arg + "\r\n";
+    return out;
 }
 
 static void TestClassifier() {
@@ -72,87 +76,78 @@ static void TestClassifier() {
           "classifier is case-sensitive; DrainClient must uppercase first");
 }
 
+static void TestReadIndexRedirectErrors() {
+    Check(IsReadIndexRedirectError("not leader"), "not leader is a redirect");
+    Check(IsReadIndexRedirectError("no leader"), "no leader is a redirect");
+    Check(IsReadIndexRedirectError("leadership lost"), "step-down is a redirect");
+    Check(IsReadIndexRedirectError("server stopped"), "stop is a redirect");
+    Check(!IsReadIndexRedirectError("read index timeout"), "timeout stays a local error");
+    Check(!IsReadIndexRedirectError("read index queue full"), "overload stays a local error");
+    Check(!IsReadIndexRedirectError("waiting for leader to commit no-op"),
+          "pre-noop wait is not MOVED");
+}
+
 static void TestSessionQueueLimits() {
     Check(SessionQueueLimits::kMaxCommands == 1000, "F3 command limit drifted");
     Check(SessionQueueLimits::kMaxBytes == 4 * 1024 * 1024, "F3 byte limit drifted");
+    Check(SessionQueueLimits::kMaxCommandsPerTurn == 128, "drain turn limit drifted");
     Check(!SessionQueueLimits::IsFull(0, 0), "empty queue reported full");
     Check(!SessionQueueLimits::IsFull(999, SessionQueueLimits::kMaxBytes - 1),
           "999 commands just under 4MiB reported full");
     Check(SessionQueueLimits::IsFull(1000, 0), "1000 queued commands were still admitted");
     Check(SessionQueueLimits::IsFull(0, SessionQueueLimits::kMaxBytes),
           "exactly 4MiB queued was still admitted");
-    const std::vector<std::string> args{"SET", "k", "value"};
-    Check(SessionQueueLimits::AccountedBytes(20, args) == 20 + 3 + 1 + 5,
-          "accounted bytes dropped RESP framing or argument bytes");
 }
 
-struct Queued {
-    CommandClass classified;
-    std::string name;
-    size_t bytes = 0;
-};
+static DrainOutcome Feed(SessionCommandQueue& queue, const std::string& wire,
+                         size_t max_per_turn = SessionQueueLimits::kMaxCommandsPerTurn) {
+    CommandBuffer buffer;
+    Check(buffer.Append(wire), "RESP append rejected");
+    return DrainCommands(buffer, queue, max_per_turn, true);
+}
 
-class SessionQueue {
-public:
-    std::deque<Queued> queue;
+struct SessionDriver {
+    SessionCommandQueue queue;
     std::vector<std::string> replies;
     bool executing = false;
-    std::function<void()> inflight_write;
-    size_t queued_bytes = 0;
+    QueuedCommand inflight;
 
-    bool CanAdmit() const {
-        return !SessionQueueLimits::IsFull(queue.size(), queued_bytes);
-    }
-
-    void Enqueue(const std::vector<std::string>& args, size_t consumed = 0) {
-        Check(CanAdmit(), "admitted a command after the production queue was full");
-        auto classified = ClassifyCommand(args);
-        const auto bytes = SessionQueueLimits::AccountedBytes(consumed, args);
-        queue.push_back({classified, args.empty() ? "" : args[0], bytes});
-        queued_bytes += bytes;
+    void Drain(const std::string& wire) {
+        const auto drained = Feed(queue, wire);
+        Check(!drained.invalid, drained.invalid_error);
         Process();
     }
 
     void Process() {
-        if (executing || queue.empty())
+        if (executing || queue.Empty())
             return;
         executing = true;
-        auto cmd = std::move(queue.front());
-        queue.pop_front();
-        queued_bytes -= cmd.bytes;
-        if (cmd.classified.type == CommandClass::ERROR) {
-            replies.push_back("-ERR " + cmd.classified.error);
+        inflight = queue.PopFront();
+        if (inflight.type == CommandClass::ERROR) {
+            replies.push_back("-ERR " + inflight.error_message);
             Complete();
-        } else if (cmd.classified.type == CommandClass::READ) {
-            replies.push_back("OK: " + cmd.name);
+        } else if (inflight.type == CommandClass::READ) {
+            replies.push_back("OK: " + inflight.args[0]);
             Complete();
-        } else {
-            inflight_write = [this, name = cmd.name] {
-                replies.push_back("OK: " + name);
-                Complete();
-            };
         }
     }
 
     void FinishWrite() {
-        Check(static_cast<bool>(inflight_write), "no in-flight write");
-        auto done = std::move(inflight_write);
-        inflight_write = nullptr;
-        done();
+        Check(executing && inflight.type == CommandClass::WRITE, "no in-flight write");
+        replies.push_back("OK: " + inflight.args[0]);
+        Complete();
     }
 
-private:
     void Complete() {
         executing = false;
+        inflight = {};
         Process();
     }
 };
 
 static void TestErrorDoesNotOvertakeWrite() {
-    SessionQueue q;
-    q.Enqueue({"SET", "k", "v"});
-    q.Enqueue({"BOGUS"});
-    q.Enqueue({"GET", "k"});
+    SessionDriver q;
+    q.Drain(Resp({"SET", "k", "v"}) + Resp({"BOGUS"}) + Resp({"GET", "k"}));
     Check(q.replies.empty(), "WRITE must not reply before commit");
     Check(q.executing, "WRITE holds executing");
     Check(q.queue.size() == 2, "ERROR and GET remain queued");
@@ -161,16 +156,15 @@ static void TestErrorDoesNotOvertakeWrite() {
     Check(q.replies[0] == "OK: SET", "SET first");
     Check(q.replies[1] == "-ERR ERR unknown command 'BOGUS'", "ERROR does not overtake SET");
     Check(q.replies[2] == "OK: GET", "GET last");
-    Check(!q.executing && q.queue.empty(), "idle after drain");
+    Check(!q.executing && q.queue.Empty() && q.queue.queued_bytes == 0,
+          "idle after drain leaked accounting");
 }
 
-static void TestMixedPipeline() {
-    SessionQueue q;
-    q.Enqueue({"SET", "k", "v"});
-    q.Enqueue({"PING"});
-    q.Enqueue({"GET", "k"});
-    q.Enqueue({"SET", "k2", "v2"});
-    q.Enqueue({"GET", "k2"});
+static void TestMixedPipelineAndLowercase() {
+    SessionDriver q;
+    q.Drain(Resp({"set", "k", "v"}) + Resp({"PING"}) + Resp({"GET", "k"}) +
+            Resp({"SET", "k2", "v2"}) + Resp({"GET", "k2"}));
+    Check(q.inflight.args[0] == "SET", "DrainClient did not uppercase SET");
     q.FinishWrite();
     q.FinishWrite();
     Check(q.replies.size() == 5, "pipeline size");
@@ -180,47 +174,89 @@ static void TestMixedPipeline() {
 }
 
 static void TestQueueStopsAtCommandLimit() {
-    SessionQueue q;
-    q.Enqueue({"SET", "k", "v"});
-    Check(q.executing && q.queue.empty(), "write should be executing, not queued");
+    SessionCommandQueue queue;
+    Check(queue.Enqueue({"SET", "k", "v"}, 14), "first write rejected");
+    Check(!queue.Empty() && queue.PopFront().type == CommandClass::WRITE, "write pop");
     for (size_t i = 0; i < SessionQueueLimits::kMaxCommands; ++i)
-        q.Enqueue({"PING"});
-    Check(q.queue.size() == SessionQueueLimits::kMaxCommands, "lost queued PINGs");
-    Check(!q.CanAdmit(), "queue still admitted after 1000 waiting commands");
-    q.FinishWrite();
-    Check(q.replies.size() == 1 + SessionQueueLimits::kMaxCommands, "limit drain replies");
-    Check(q.CanAdmit() && q.queue.empty() && q.queued_bytes == 0,
-          "queue did not resume after draining the command limit");
+        Check(queue.Enqueue({"PING"}, 14), "PING rejected before the production cap");
+    Check(queue.IsFull() && !queue.Enqueue({"PING"}, 14),
+          "queue still admitted after 1000 waiting commands");
+    while (!queue.Empty())
+        queue.PopFront();
+    Check(!queue.IsFull() && queue.queued_bytes == 0, "pop did not restore admission");
 }
 
-static void TestQueueStopsAtByteLimit() {
-    SessionQueue q;
-    q.Enqueue({"SET", "k", "v"}, 8);
+static void TestQueueStopsAtByteLimitAndDoesNotLeak() {
+    SessionDriver q;
+    const auto ping = Resp({"PING"});
+    std::string many;
+    for (int i = 0; i < 32; ++i)
+        many += ping;
+    q.Drain(many);
+    Check(q.replies.size() == 32 && q.queue.Empty() && q.queue.queued_bytes == 0,
+          "completed reads leaked queued_bytes");
+
+    SessionCommandQueue queue;
     const std::string payload(64 * 1024, 'x');
     size_t admitted = 0;
-    while (q.CanAdmit()) {
-        q.Enqueue({"SET", "k", payload}, 20);
+    while (!queue.IsFull()) {
+        Check(queue.Enqueue({"SET", "k", payload}, 20), "byte-limit fill rejected a command");
         ++admitted;
-        Check(admitted <= SessionQueueLimits::kMaxCommands,
-              "byte-limit fill exceeded the command cap; loop is not making progress");
+        Check(admitted <= SessionQueueLimits::kMaxCommands, "byte fill made no progress");
     }
-    Check(q.queued_bytes >= SessionQueueLimits::kMaxBytes ||
-          q.queue.size() >= SessionQueueLimits::kMaxCommands,
-          "stopped admitting without hitting either production limit");
-    Check(admitted > 1, "byte-limit test admitted only the in-flight write");
+    Check(queue.queued_bytes >= SessionQueueLimits::kMaxBytes, "byte limit was not reached");
+    Check(admitted > 1, "byte-limit test admitted only one command");
+    const auto held = queue.queued_bytes;
+    auto first = queue.PopFront();
+    Check(queue.queued_bytes == held - first.bytes, "pop subtracted the wrong accounted size");
+}
+
+static void TestDrainTurnLimitAndStopRead() {
+    std::string wire;
+    for (int i = 0; i < 129; ++i)
+        wire += Resp({"PING"});
+    CommandBuffer buffer;
+    Check(buffer.Append(wire), "129 PINGs rejected");
+    SessionCommandQueue queue;
+    const auto first = DrainCommands(buffer, queue, SessionQueueLimits::kMaxCommandsPerTurn, true);
+    Check(first.enqueued == 128 && !first.stop_read && !first.invalid,
+          "first drain turn did not stop at 128");
+    Check(buffer.UnreadBytes() == Resp({"PING"}).size(), "turn limit consumed the 129th command");
+    const auto second = DrainCommands(buffer, queue, SessionQueueLimits::kMaxCommandsPerTurn, true);
+    Check(second.enqueued == 1 && queue.size() == 129, "leftover command was dropped");
+
+    SessionCommandQueue full;
+    for (size_t i = 0; i < SessionQueueLimits::kMaxCommands; ++i)
+        Check(full.Enqueue({"PING"}, 14), "fill");
+    CommandBuffer extra;
+    extra.Append(Resp({"PING"}));
+    const auto blocked = DrainCommands(extra, full, SessionQueueLimits::kMaxCommandsPerTurn, true);
+    Check(blocked.stop_read && blocked.enqueued == 0 && extra.UnreadBytes() == Resp({"PING"}).size(),
+          "full queue consumed more input instead of stopping reads");
+}
+
+static void TestInvalidStopsWithoutEnqueue() {
+    SessionCommandQueue queue;
+    CommandBuffer buffer;
+    buffer.Append("*0\r\n" + Resp({"PING"}));
+    const auto drained = DrainCommands(buffer, queue, SessionQueueLimits::kMaxCommandsPerTurn, true);
+    Check(drained.invalid && drained.stop_read && drained.enqueued == 0 && queue.Empty(),
+          "invalid RESP was enqueued or skipped");
 }
 
 int main() {
     try {
         TestClassifier();
+        TestReadIndexRedirectErrors();
         TestSessionQueueLimits();
         TestErrorDoesNotOvertakeWrite();
-        TestMixedPipeline();
+        TestMixedPipelineAndLowercase();
         TestQueueStopsAtCommandLimit();
-        TestQueueStopsAtByteLimit();
-        Check(checks >= 40, "too few assertions");
-        std::cout << "PASS: production ClassifyCommand and FIFO ERROR ordering ("
-                  << checks << " checks)\n";
+        TestQueueStopsAtByteLimitAndDoesNotLeak();
+        TestDrainTurnLimitAndStopRead();
+        TestInvalidStopsWithoutEnqueue();
+        Check(checks >= 50, "too few assertions");
+        std::cout << "PASS: production DrainClient queue (" << checks << " checks)\n";
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "FAIL: " << e.what() << " after " << checks << " checks\n";
