@@ -137,15 +137,18 @@ class RaftProxyMesh:
         return self.call(self._get_snapshot())
 
     async def _close(self):
-        for server in self.servers.values():
-            server.close()
-        for server in self.servers.values():
-            await server.wait_closed()
         tasks = list(self.active)
         for task in tasks:
             task.cancel()
+        for server in self.servers.values():
+            server.close()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        for server in self.servers.values():
+            try:
+                await asyncio.wait_for(server.wait_closed(), timeout=1)
+            except (OSError, asyncio.TimeoutError):
+                pass
 
     def close(self):
         if self.closed:

@@ -18,7 +18,7 @@ ctest --test-dir build-protocol --output-on-failure
 - `kv_state_machine_tests` 检查 SET/覆盖/DEL 回复、空命令 no-op、已提交命令大小写、非法日志命令拒绝，以及缺少 lastApplied 标记的旧库拒绝启动。
 - `raft_log_tests` 检查追加、截断、硬状态往返、GetTerm 边界，以及非连续日志在打开时失败。
 - `raft_node_coverage_tests` 检查 Follower/停机/不健康/超限提案返回值、选举日志新旧与一任一次性投票、非法 RequestVote 忽略，以及 Candidate 收到更高任期心跳后转为 Follower。
-- `readindex_tests` 用生产 RaftNode 检查探针 rpc_id、请求前 ACK 无效、应用落后等待、超时、10000 条过载，以及隔离旧 Leader 不能仅凭自身确认完成线性一致读。
+- `readindex_tests` 用生产 RaftNode 检查探针 rpc_id、请求前 ACK 及其重试无效、超过最短选举超时的探针 ACK 无效、应用落后等待、超时、10000 条过载，以及隔离旧 Leader 不能仅凭自身确认完成线性一致读。
 - `replication_logic_tests` / `replication_partition_tests` / `replication_edge_cases_unit` 用生产 RaftNode 检查复制 ACK、分区多数派与日志冲突边界。
 - `connection_order_tests` 使用生产 `DrainCommands` / `SessionCommandQueue`（与 `main.cpp` 共用），检查非法命令 FIFO 回复、小写动词、每轮 128 条、F3 的 1000 条 / 4 MiB 停读，以及弹出后 `queued_bytes` 归零。
 - `storage_batch_tests` 检查批量同步写调用次数、批内删除语义、整批校验、故障和恢复；核心测试还检查批量复制顺序与条数/字节配额。

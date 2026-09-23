@@ -177,7 +177,8 @@ void RaftNode::BecomeLeader() {
     Propose("", {});
 }
 void RaftNode::ResetElectionTimer() {
-    _election_timeout_ms = std::uniform_int_distribution<int>(150, 300)(_rng);
+    _election_timeout_ms = std::uniform_int_distribution<int>(
+        kMinElectionTimeoutMs, kMaxElectionTimeoutMs)(_rng);
 }
 bool RaftNode::IsLogUpToDate(int64_t index, int64_t term) const {
     return term != _log->LastTerm() ? term > _log->LastTerm() : index >= _log->LastIndex();
@@ -580,10 +581,17 @@ void RaftNode::BindReadIndexProbe(int peer, uint64_t rpc_id) {
 }
 
 void RaftNode::AckReadIndexProbe(int from, uint64_t rpc_id) {
+    const auto now = SteadyClock::now();
+    const auto lease = std::chrono::milliseconds(kMinElectionTimeoutMs);
     for (auto& round : _heartbeat_rounds) {
         const auto found = round.probe_rpc_ids.find(from);
         if (round.confirmed || found == round.probe_rpc_ids.end() || found->second != rpc_id)
             continue;
+        // A delayed same-term ACK can arrive after a majority already elected a
+        // new leader. It must not confirm a read whose client-visible time is
+        // after that write.
+        if (now - round.sent_at > lease)
+            return;
         round.acks.insert(from);
         if (static_cast<int>(round.acks.size()) >= QuorumSize()) {
             round.confirmed = true;
@@ -645,17 +653,22 @@ void RaftNode::ProcessPendingReads() {
         }
     }
     _completing_reads = nested;
+    // A completing GET may have queued the next ReadIndex. Start its round now
+    // instead of waiting for the next tick or AppendEntries response.
+    if (!nested)
+        FinishReadIndexRounds();
 }
 
 void RaftNode::CheckReadIndexTimeout() {
     const auto now = SteadyClock::now();
+    const auto round_timeout = std::chrono::milliseconds(kMinElectionTimeoutMs);
     const auto timeout = std::chrono::milliseconds(kReadIndexTimeoutMs);
     const bool nested = _completing_reads;
     _completing_reads = true;
 
     while (!_heartbeat_rounds.empty()) {
         auto& round = _heartbeat_rounds.front();
-        if (now - round.sent_at <= timeout)
+        if (now - round.sent_at <= round_timeout)
             break;
         for (auto& req : round.requests) {
             req.callback(false, -1, "read index timeout");

@@ -76,6 +76,17 @@ static void TestClassifier() {
           "classifier is case-sensitive; DrainClient must uppercase first");
 }
 
+static void TestReadIndexRedirectErrors() {
+    Check(IsReadIndexRedirectError("not leader"), "not leader is a redirect");
+    Check(IsReadIndexRedirectError("no leader"), "no leader is a redirect");
+    Check(IsReadIndexRedirectError("leadership lost"), "step-down is a redirect");
+    Check(IsReadIndexRedirectError("server stopped"), "stop is a redirect");
+    Check(!IsReadIndexRedirectError("read index timeout"), "timeout stays a local error");
+    Check(!IsReadIndexRedirectError("read index queue full"), "overload stays a local error");
+    Check(!IsReadIndexRedirectError("waiting for leader to commit no-op"),
+          "pre-noop wait is not MOVED");
+}
+
 static void TestSessionQueueLimits() {
     Check(SessionQueueLimits::kMaxCommands == 1000, "F3 command limit drifted");
     Check(SessionQueueLimits::kMaxBytes == 4 * 1024 * 1024, "F3 byte limit drifted");
@@ -236,6 +247,7 @@ static void TestInvalidStopsWithoutEnqueue() {
 int main() {
     try {
         TestClassifier();
+        TestReadIndexRedirectErrors();
         TestSessionQueueLimits();
         TestErrorDoesNotOvertakeWrite();
         TestMixedPipelineAndLowercase();

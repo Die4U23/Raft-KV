@@ -365,14 +365,13 @@ static void ExecuteNextCommand(const muduo::net::TcpConnectionPtr& conn,
                 g_raft->RequestReadIndex([weak_conn, weak_session, key](bool success, int64_t read_index, const std::string& error) {
                     auto c = weak_conn.lock();
                     auto s = weak_session.lock();
-                    if (!c || !s || !c->connected()) return;
+                    if (!c || !s || !c->connected() || s->closing) return;
 
                     if (!success) {
-                        std::string err = error;
-                        if (err == "not leader" || err.find("no leader") != std::string::npos) {
+                        if (IsReadIndexRedirectError(error)) {
                             SendReply(c, s, Error("MOVED " + std::to_string(g_raft->GetLeaderId())));
                         } else {
-                            SendReply(c, s, Error(err));
+                            SendReply(c, s, Error(error));
                         }
                         OnCommandComplete(c, s);
                         return;

@@ -183,6 +183,8 @@ private:
 
     static constexpr int kTickIntervalMs = 10;
     static constexpr int kHeartbeatIntervalMs = 50;
+    static constexpr int kMinElectionTimeoutMs = 150;
+    static constexpr int kMaxElectionTimeoutMs = 300;
     // Retry an unacknowledged heartbeat before the minimum election timeout.
     static constexpr int kRpcRetryMs = kHeartbeatIntervalMs;
     static constexpr size_t kMaxPending = 1024;
@@ -190,5 +192,8 @@ private:
     static constexpr size_t kMaxBatchBytes = 2 * 1024 * 1024;
     static constexpr int kMaxBatchEntries = 128;
     static constexpr size_t kMaxPendingReadIndex = 10000;  // Max pending ReadIndex requests
-    static constexpr int kReadIndexTimeoutMs = 1000;        // ReadIndex timeout
+    // Apply-lag and unsent-queue bound. Probe rounds themselves expire at
+    // kMinElectionTimeoutMs: a later ACK cannot prove exclusive leadership
+    // after a follower could already have started an election.
+    static constexpr int kReadIndexTimeoutMs = 1000;
 };

@@ -2,7 +2,15 @@
 
 记录行为改动、验证状态与取舍。每次优化保留原始基线、实现和验收证据；没有实测对比时不填写性能提升比例。
 
-截至 **2026-09-22**，下文按提交与代码核对记录。09-13 之后的条目曾漏记，已补录；不以合并说明或未归档压测数字作为收益证明。
+截至 **2026-09-23**，下文按提交与代码核对记录。09-13 之后的条目曾漏记，已补录；不以合并说明或未归档压测数字作为收益证明。
+
+## 2026-09-23 — ReadIndex 剩余缺口：过期探针 ACK 与 GET 重定向
+
+- 探针轮次只在最短选举超时（150 ms）内接受 ACK。超过该窗口的同任期 ACK 不能确认读，避免多数派已经另选 Leader 并提交新值之后，旧 Leader 仍凭延迟回复返回过期 GET。应用落后与未发送队列仍用 1000 ms。
+- 请求之前已在途的 AppendEntries 在超时后重试同一 `rpc_id` 时仍然不能绑定为探针；`readindex_tests` 覆盖这条路径。
+- `--linearizable_reads=true` 时，`leadership lost` / `server stopped` 与 `not leader` 一样映射为 `MOVED`。`IsReadIndexRedirectError` 与 `ClassifyCommand` 一样由 CTest 驱动。
+- 应用追上后若回调里又排队了下一条 ReadIndex，立即开启下一轮，不再等到下一次 Tick。
+- Linux `cluster_linearizable.py` 在 CI 中全部读路径已通过；先前失败是 `RaftProxyMesh.close()` 在仍有中继时先 `wait_closed` 服务器导致超时。关闭顺序改为先取消中继。
 
 ## 2026-09-23 — F6 剩余缺口：生产连接调度器与 Linux 三节点 CI
 

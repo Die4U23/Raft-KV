@@ -110,6 +110,17 @@ class RelayTests(unittest.TestCase):
         with self.connect(0, 1) as stream:
             self.echo(stream)
 
+    def test_close_returns_while_relays_are_still_reading(self):
+        held = [self.connect(src, dst) for src, dst in self.mesh.ports]
+        try:
+            started = time.monotonic()
+            self.mesh.close()
+            self.assertLess(time.monotonic() - started, 4)
+            self.assertFalse(self.mesh.thread.is_alive())
+        finally:
+            for stream in held:
+                stream.close()
+
 
 class SafetyOracleTests(unittest.TestCase):
     def test_success_and_unexpected_replies_fail(self):
