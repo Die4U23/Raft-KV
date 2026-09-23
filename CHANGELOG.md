@@ -8,7 +8,8 @@
 
 - 选举超时进入 pre-candidate。`RequestVote.prevote` 为真，`term` 是当前任期加一。接收方不改自己的任期，也不把这一票写入 `votedFor`。Leader，以及选举截止时间还没到、并且认识 Leader 的 Follower，拒绝预投票。
 - 预投票达到多数派之后，才走原来的 `BecomeCandidate()`：任期加一，发出真正的 `RequestVote`。预投票没凑齐，或者 Candidate 再次超时，回到 pre-candidate，任期不变。单节点集群仍然在同一次超时里成为 Leader。
-- 应答带上同样的 `prevote`，避免过期的正式投票被当成预投票。同意预投票时，应答里的任期是接收方自己的当前任期；比自己更高的任期仍然会让预候选卸任。当前 Leader 的心跳也会把 pre-candidate 拉回 Follower。
+- 应答带上同样的 `prevote`，避免过期的正式投票被当成预投票。同意预投票时，应答里的任期是接收方自己的当前任期；比自己更高的任期仍然会让预候选卸任。当前 Leader 的心跳也会把 pre-candidate 拉回 Follower。落后节点会从拒绝应答里学到更高任期，分区恢复后仍能完成选举。
+- 进程内回归覆盖：隔离节点多次超时不抬任期、恢复后原 Leader 任期不变且写入仍能在三副本提交、错过一轮任期的节点在 Leader 消失后能和存活节点选出行的 Leader。
 
 ## 2026-09-23 — 选举时钟与 ReadIndex 租约对齐，并补上检查日志
 

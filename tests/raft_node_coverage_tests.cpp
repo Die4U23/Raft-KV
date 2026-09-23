@@ -170,6 +170,85 @@ static void PreVoteDoesNotRaiseTermWithoutAQuorum() {
           "leader term changed while a peer was only pre-voting");
 }
 
+static void PartitionedPreVoteRejoinsWithoutDisturbingLeader() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    const int term = cluster.Node(10).GetCurrentTerm();
+    cluster.Partition(50);
+    cluster.messages.clear();
+    for (int i = 0; i < 8; ++i) {
+        cluster.Advance(50, RaftNode::kMaxElectionTimeoutMs);
+        cluster.Node(50).Tick();
+    }
+    Check(cluster.Node(50).GetCurrentTerm() == term, "isolated pre-vote raised the term");
+    cluster.Heal(50);
+    cluster.Pump();
+    cluster.Settle();
+    Check(cluster.Node(10).IsLeader() && cluster.Node(10).GetCurrentTerm() == term,
+          "rejoining pre-votes disturbed the leader");
+    Check(std::string(cluster.Node(50).StateName()) == "follower" &&
+          cluster.Node(50).GetLeaderId() == 10 &&
+          cluster.Node(50).GetCurrentTerm() == term,
+          "rejoining node did not return to the same leader");
+    bool ok = false;
+    Check(cluster.Node(10).Propose(Command({"SET", "default:rejoin", "v"}),
+        [&](bool success, const std::string&) { ok = success; }) > 0,
+          "write after rejoin rejected");
+    cluster.Pump();
+    cluster.Settle();
+    Check(ok, "write after rejoin was not committed");
+    for (int id : {10, 30, 50}) {
+        std::string value;
+        Check(cluster.State(id).Get("default:rejoin", &value) && value == "v",
+              "replica missed the write after pre-vote rejoin");
+    }
+}
+
+// A node that missed a term must still be able to complete pre-vote once the
+// leader is gone. Replying with the receiver's own term lets it learn the
+// higher term from a rejection instead of ignoring the round.
+static void LaggingNodeCompletesPreVoteElection() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    const int old_term = cluster.Node(50).GetCurrentTerm();
+    cluster.Partition(50);
+    cluster.messages.clear();
+    cluster.Advance(30, RaftNode::kMaxElectionTimeoutMs);
+    cluster.Advance(10, RaftNode::kMinElectionTimeoutMs);
+    cluster.Node(10).Tick();
+    Check(!cluster.Node(10).IsLeader(), "leader with a stale quorum did not step down");
+    cluster.Advance(10, RaftNode::kMaxElectionTimeoutMs);
+    cluster.Node(10).Tick();
+    cluster.Pump();
+    cluster.Settle();
+    Check(cluster.Node(10).IsLeader() && cluster.Node(10).GetCurrentTerm() == old_term + 1,
+          "majority did not elect exactly one new term");
+    Check(cluster.Node(50).GetCurrentTerm() == old_term,
+          "partitioned node adopted the new term");
+
+    cluster.members.erase(10);
+    cluster.messages.clear();
+    cluster.Heal(50);
+    const int elected = cluster.ElectAmong({30, 50});
+    Check(cluster.Node(30).GetCurrentTerm() == cluster.Node(50).GetCurrentTerm() &&
+          cluster.Node(elected).IsLeader(),
+          "lagging node could not finish a pre-vote election");
+    bool ok = false;
+    Check(cluster.Node(elected).Propose(Command({"SET", "default:lag", "v"}),
+        [&](bool success, const std::string&) { ok = success; }) > 0,
+          "write after lagging election rejected");
+    cluster.Pump();
+    cluster.Settle();
+    Check(ok, "lagging majority could not commit");
+    for (int id : {30, 50}) {
+        std::string value;
+        Check(cluster.State(id).Get("default:lag", &value) && value == "v",
+              "replica missing the value after a lagging pre-vote election");
+    }
+}
+
 static void PreVoteGrantDoesNotPersistVote() {
     Cluster cluster;
     cluster.messages.clear();
@@ -310,6 +389,10 @@ int main() {
             {"invalid RequestVote is ignored", InvalidVoteRequestsAreIgnored},
             {"partitioned pre-vote does not raise the term",
              PreVoteDoesNotRaiseTermWithoutAQuorum},
+            {"rejoining pre-vote leaves the leader in place",
+             PartitionedPreVoteRejoinsWithoutDisturbingLeader},
+            {"lagging node can finish a pre-vote election",
+             LaggingNodeCompletesPreVoteElection},
             {"pre-vote grants are not persisted", PreVoteGrantDoesNotPersistVote},
             {"leader rejects pre-vote", LeaderRejectsPreVote},
             {"lost election retries with pre-vote", CandidateTimeoutReturnsToPreVote},
