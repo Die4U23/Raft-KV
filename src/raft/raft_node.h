@@ -83,7 +83,7 @@ public:
     static constexpr int kMinElectionTimeoutMs = 150;
     static constexpr int kMaxElectionTimeoutMs = 300;
 private:
-    enum State { FOLLOWER, CANDIDATE, LEADER };
+    enum State { FOLLOWER, PRE_CANDIDATE, CANDIDATE, LEADER };
     struct Inflight {
         uint64_t id = 0;
         int64_t last_index = 0;
@@ -114,6 +114,9 @@ private:
     };
 
     void BecomeFollower(int32_t term);
+    // Election timeout enters pre-vote. The term and votedFor stay unchanged
+    // until a majority of pre-votes allows BecomeCandidate().
+    void BecomePreCandidate();
     void BecomeCandidate();
     void BecomeLeader();
     void ResetElectionTimer();

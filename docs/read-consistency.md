@@ -91,7 +91,7 @@ redis-cli -p 8080 GET user:1
 **不保证 / 已知边界：**
 - 默认 `--linearizable_reads=false` 时 GET 仍是本地读。
 - 应用落后与未发送队列的超时是 1000 ms；探针轮次本身在 150 ms 失败。队列深度上限 10000。
-- 没有 PreVote。隔离旧 Leader 会在 CheckQuorum 到期后卸任；在此之前线性一致 GET 超时或 `MOVED`，不会成功返回过期值。刚听过心跳的 Follower 在选举截止时间之前不给其他候选投票。进程内回归在 `readindex_tests`；Linux 三节点在 `tests/cluster_linearizable.py`。
+- 选举超时先走 Pre-Vote。得不到多数派预投票就不会抬任期，隔离节点不能靠连续竞选打断仍有多数派的 Leader。CheckQuorum 仍会让隔离旧 Leader 卸任；在此之前线性一致 GET 超时或 `MOVED`，不会成功返回过期值。刚听过心跳的 Follower 在选举截止时间之前不给预投票，也不给正式投票。进程内回归在 `readindex_tests` 和 `raft_node_coverage_tests`；Linux 三节点在 `tests/cluster_linearizable.py`。
 - 共识检查日志写到 stderr（`INFO` / `WARNING` / `ERROR`），不进入 Raft 日志。
 - 这不是租约读：时钟不同步或 RTT 接近选举超时会使 ReadIndex 失败，而不是放宽确认窗口。
 
@@ -202,15 +202,7 @@ redis-cli -p 8080 GET user:1
 
 ### 短期（下个版本）
 
-1. **实现 ReadIndex 协议**
-   - 为 GET 命令添加 `--consistent` 标志
-   - Leader 验证领导权后执行读取
-   - 提供真正的线性一致性保证
-
-2. **Lease-based Reads（可选）**
-   - 使用时间租约优化 Leader 读取
-   - 避免每次读取的多数派往返
-   - 需要时钟同步假设
+ReadIndex 与 Pre-Vote 已经在当前代码里。接下来是快照 / InstallSnapshot / 日志压缩，以及 `client_id + request_id` 去重。Lease read 仍未做：它需要时钟同步假设，用来省掉每次读取的多数派往返。
 
 ### 长期
 

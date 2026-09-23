@@ -251,13 +251,22 @@ static void FreshHeartbeatBlocksVoteSoDelayedProbeAckStaysWithLiveLeader() {
     const int term_before = cluster.Node(10).GetCurrentTerm();
 
     cluster.messages.clear();
-    cluster.Candidate(50);
-    Check(std::string(cluster.Node(50).StateName()) == "candidate",
-          "node 50 did not become candidate");
+    cluster.Campaign(50);
+    Check(std::string(cluster.Node(50).StateName()) == "pre-candidate",
+          "node 50 started a real election instead of pre-vote");
+    Check(cluster.Node(50).GetCurrentTerm() == term_before,
+          "pre-vote raised the term before a majority agreed");
     std::vector<Message> votes;
     for (const auto& message : cluster.messages) {
         if (message.type == RaftMsgType::kRequestVote && message.from == 50)
             votes.push_back(message);
+    }
+    Check(!votes.empty(), "pre-candidate did not send RequestVote");
+    for (const auto& vote : votes) {
+        raftcore::RequestVote rpc;
+        Check(rpc.ParseFromString(vote.payload) && rpc.prevote() &&
+              rpc.term() == term_before + 1,
+              "disruptive campaign sent a real vote or the wrong term");
     }
     cluster.messages.clear();
     for (const auto& vote : votes) {
@@ -267,14 +276,14 @@ static void FreshHeartbeatBlocksVoteSoDelayedProbeAckStaysWithLiveLeader() {
           "follower 30 bumped term despite a fresh leader heartbeat");
     Check(!cluster.messages.empty() &&
           cluster.messages.back().type == RaftMsgType::kRequestVoteResponse,
-          "follower 30 did not answer the disruptive vote");
+          "follower 30 did not answer the disruptive pre-vote");
     raftcore::RequestVoteResponse reply;
     Check(reply.ParseFromString(cluster.messages.back().payload), "vote reply decode");
-    Check(!reply.vote_granted() && reply.term() == term_before,
-          "follower 30 granted a vote or advertised a newer term");
+    Check(reply.prevote() && !reply.vote_granted() && reply.term() == term_before,
+          "follower 30 granted a pre-vote or advertised a newer term");
     cluster.Deliver(cluster.messages.back());
-    Check(!cluster.Node(50).IsLeader(),
-          "candidate won an election that a live majority heartbeat should block");
+    Check(!cluster.Node(50).IsLeader() && cluster.Node(50).GetCurrentTerm() == term_before,
+          "rejected pre-vote raised the term or elected a leader");
     Check(cluster.Node(10).IsLeader() && cluster.Node(10).GetCurrentTerm() == term_before,
           "old leader stepped down without seeing a higher term");
 
@@ -307,6 +316,14 @@ static void ElectionClockMatchesReadIndexLease() {
     auto early = LastVoteResponse(cluster);
     Check(!early.vote_granted() && early.term() == term,
           "follower voted before the minimum election timeout");
+    auto early_prevote = Vote(term + 1, 50, last, term);
+    early_prevote.set_prevote(true);
+    cluster.messages.clear();
+    cluster.Node(30).HandleRequestVote(50, early_prevote);
+    auto early_pre = LastVoteResponse(cluster);
+    Check(early_pre.prevote() && !early_pre.vote_granted() && early_pre.term() == term &&
+          cluster.Node(30).GetCurrentTerm() == term,
+          "follower granted a pre-vote or bumped term inside the election lease");
 
     cluster.messages.clear();
     bool done = false, ok = false;

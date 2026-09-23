@@ -51,7 +51,10 @@ std::string RaftNode::MetricsInfo() const {
 }
 const char* RaftNode::StateName() const {
     if (!_running) return "stopped";
-    return _state == LEADER ? "leader" : (_state == CANDIDATE ? "candidate" : "follower");
+    if (_state == LEADER) return "leader";
+    if (_state == CANDIDATE) return "candidate";
+    if (_state == PRE_CANDIDATE) return "pre-candidate";
+    return "follower";
 }
 void RaftNode::Start() {
     _running = true;
@@ -149,6 +152,30 @@ void RaftNode::BecomeFollower(int32_t term) {
                                 << _current_term;
     }
 }
+void RaftNode::BecomePreCandidate() {
+    // A single node is already a quorum of one. Skip the extra round trip.
+    if (QuorumSize() == 1) {
+        BecomeCandidate();
+        return;
+    }
+    if (_current_term == INT32_MAX) throw std::runtime_error("Raft term exhausted");
+    _state = PRE_CANDIDATE;
+    _leader_id = -1;
+    _votes.clear();
+    _votes.insert(_node_id);
+    ResetElectionTimer();
+    EventLog(LogLevel::Info) << "RaftNode[" << _node_id << "] becomes pre-candidate term="
+                            << _current_term;
+    raftcore::RequestVote request;
+    request.set_term(_current_term + 1);
+    request.set_candidate_id(_node_id);
+    request.set_last_log_index(_log->LastIndex());
+    request.set_last_log_term(_log->LastTerm());
+    request.set_prevote(true);
+    std::string payload;
+    request.SerializeToString(&payload);
+    _peer_mgr->Broadcast(RaftMsgType::kRequestVote, payload);
+}
 void RaftNode::BecomeCandidate() {
     if (_current_term == INT32_MAX) throw std::runtime_error("Raft term exhausted");
     _log->SaveHardState(_current_term + 1, _node_id);
@@ -231,23 +258,53 @@ void RaftNode::HandleRequestVote(int from, const raftcore::RequestVote& request)
     if (!_running || !IsRemotePeer(from) || request.candidate_id() != from ||
         request.term() <= 0 || request.last_log_index() < 0 || request.last_log_term() < 0 ||
         request.last_log_term() > request.term()) return;
-    // Raft thesis §4.2.3: a follower that has heard from a leader recently must
-    // not bump its term or grant a vote. Otherwise a delayed ReadIndex probe ACK
-    // from this node can confirm a read after it has already voted in a newer
-    // term, and the intersecting majority can commit a later write.
-    if (_state == FOLLOWER && _leader_id != -1 && _leader_id != from &&
-        Now() < _election_deadline) {
-        EventLog(LogLevel::Info) << "RaftNode[" << _node_id
-                                << "] rejected disruptive vote from " << from
-                                << " term=" << request.term()
-                                << " current=" << _current_term
-                                << " leader=" << _leader_id;
+    const bool prevote = request.prevote();
+    auto reply = [&](bool granted) {
         raftcore::RequestVoteResponse response;
         response.set_term(_current_term);
-        response.set_vote_granted(false);
+        response.set_vote_granted(granted);
+        response.set_prevote(prevote);
         std::string payload;
         response.SerializeToString(&payload);
         _peer_mgr->Send(from, RaftMsgType::kRequestVoteResponse, payload);
+    };
+    // The leader has heard from itself. Granting a pre-vote would let a peer
+    // that can still reach this leader start a disruptive election.
+    if (prevote && _state == LEADER) {
+        EventLog(LogLevel::Info) << "RaftNode[" << _node_id
+                                << "] rejected pre-vote from " << from
+                                << " term=" << request.term()
+                                << " current=" << _current_term;
+        reply(false);
+        return;
+    }
+    // Raft thesis §4.2.3 / §9.6: a follower that has heard from a leader recently
+    // must not bump its term or grant a vote or a pre-vote. Otherwise a delayed
+    // ReadIndex probe ACK can confirm a read after a newer term has already won.
+    if (_state == FOLLOWER && _leader_id != -1 && _leader_id != from &&
+        Now() < _election_deadline) {
+        EventLog(LogLevel::Info) << "RaftNode[" << _node_id
+                                << "] rejected disruptive " << (prevote ? "pre-vote" : "vote")
+                                << " from " << from
+                                << " term=" << request.term()
+                                << " current=" << _current_term
+                                << " leader=" << _leader_id;
+        reply(false);
+        return;
+    }
+    if (prevote) {
+        // Do not adopt request.term or persist votedFor. A grant means this
+        // node would vote in the next term; the caller raises the term only
+        // after a majority of such grants.
+        const bool grant = request.term() > _current_term &&
+            IsLogUpToDate(request.last_log_index(), request.last_log_term());
+        if (!grant) {
+            EventLog(LogLevel::Info) << "RaftNode[" << _node_id
+                                    << "] rejected pre-vote from " << from
+                                    << " term=" << request.term()
+                                    << " current=" << _current_term;
+        }
+        reply(grant);
         return;
     }
     // Raft §5.1: If RPC contains term T > currentTerm, set currentTerm = T, convert to Follower
@@ -261,12 +318,7 @@ void RaftNode::HandleRequestVote(int from, const raftcore::RequestVote& request)
         _voted_for = from;
         ResetElectionTimer();
     }
-    raftcore::RequestVoteResponse response;
-    response.set_term(_current_term);
-    response.set_vote_granted(grant);
-    std::string payload;
-    response.SerializeToString(&payload);
-    _peer_mgr->Send(from, RaftMsgType::kRequestVoteResponse, payload);
+    reply(grant);
 }
 void RaftNode::HandleRequestVoteResponse(int from, const raftcore::RequestVoteResponse& response) {
     if (!_running || !IsRemotePeer(from)) return;
@@ -274,7 +326,16 @@ void RaftNode::HandleRequestVoteResponse(int from, const raftcore::RequestVoteRe
         BecomeFollower(response.term());
         return;
     }
-    if (_state != CANDIDATE || response.term() != _current_term) return;
+    if (_state == PRE_CANDIDATE) {
+        // Grants carry the receiver's current term, which may be behind ours.
+        // A peer that is already ahead took the branch above and stepped us down.
+        if (response.prevote() && response.vote_granted() && response.term() <= _current_term) {
+            _votes.insert(from);
+            if (static_cast<int>(_votes.size()) >= QuorumSize()) BecomeCandidate();
+        }
+        return;
+    }
+    if (_state != CANDIDATE || response.prevote() || response.term() != _current_term) return;
     if (response.vote_granted()) {
         _votes.insert(from);
         if (static_cast<int>(_votes.size()) >= QuorumSize()) BecomeLeader();
@@ -298,9 +359,8 @@ void RaftNode::HandleAppendEntries(int from, const raftcore::AppendEntries& requ
     }
     raftcore::AppendEntriesResponse response;
     response.set_rpc_id(request.rpc_id());
-    // Raft §5.1: If RPC request contains term T > currentTerm, set currentTerm = T
-    // Raft §5.2: Candidate receiving AppendEntries from valid leader in current term
-    // converts to Follower (implicit leader recognition)
+    // Raft §5.1: If RPC request contains term T > currentTerm, set currentTerm = T.
+    // A candidate or pre-candidate that hears the current leader reverts to follower.
     if (request.term() > _current_term ||
         (request.term() == _current_term && _state != FOLLOWER))
         BecomeFollower(request.term());
@@ -554,7 +614,7 @@ void RaftNode::FinishApply(int64_t first, size_t count, const ApplyExecutor::Res
 void RaftNode::Tick() {
     if (!_running) return;
     if (_state != LEADER) {
-        if (Now() >= _election_deadline) BecomeCandidate();
+        if (Now() >= _election_deadline) BecomePreCandidate();
     }
     if (_state == LEADER) {
         for (auto& item : _inflight)

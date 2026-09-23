@@ -130,13 +130,40 @@ public:
     // Move only this node's clock. Other nodes keep their own elapsed time,
     // matching production where each process measures steady_clock locally.
     void Advance(int id, int ms) { clocks.at(id).Advance(ms); }
-    void Candidate(int id) {
+    // Advance this node's clock until it leaves follower. Pre-Vote stops in
+    // pre-candidate and leaves the pre-vote RPCs queued. A single node becomes
+    // leader inside the same tick.
+    void Campaign(int id) {
         for (int ticks = 0; ticks < 31 && std::string(Node(id).StateName()) == "follower"; ++ticks) {
             Advance(id, RaftNode::kTickIntervalMs);
             Node(id).Tick();
         }
+        const std::string state(Node(id).StateName());
+        Check(state == "pre-candidate" || state == "candidate" || Node(id).IsLeader(),
+              "campaign did not start within bounded ticks");
+    }
+    // Finish the pre-vote round so the node is a real candidate, without
+    // delivering that election's RequestVote RPCs. Elect() and tests that
+    // inject votes still observe the candidate before it wins.
+    void Candidate(int id) {
+        Campaign(id);
+        for (int steps = 0; steps < 64 && std::string(Node(id).StateName()) == "pre-candidate"; ++steps) {
+            if (messages.empty()) break;
+            auto message = messages.front();
+            messages.pop_front();
+            if (Dropped(message)) continue;
+            if (message.type == RaftMsgType::kRequestVote) {
+                raftcore::RequestVote rpc;
+                Check(rpc.ParseFromString(message.payload), "vote decode");
+                if (!rpc.prevote()) {
+                    messages.push_front(std::move(message));
+                    break;
+                }
+            }
+            Deliver(message);
+        }
         Check(std::string(Node(id).StateName()) == "candidate" || Node(id).IsLeader(),
-              "election did not start within bounded ticks");
+              "pre-vote did not reach a real election within bounded messages");
     }
     bool Dropped(const Message& message) const {
         return partitioned.count(message.from) || partitioned.count(message.to);
@@ -181,9 +208,9 @@ public:
         }
     }
     void Elect(int id) { Candidate(id); Pump(); Settle(); Check(Node(id).IsLeader(), "leader election failed"); }
-    // Tick the given followers/candidates until one of them is leader. Use this
-    // after isolating a live leader: followers ignore RequestVote until their
-    // election timer expires, so Elect(id) would stall.
+    // Tick the given followers until one of them is leader. Use this after
+    // isolating a live leader: followers ignore pre-votes and RequestVotes
+    // until their election timer expires, so Elect(id) would stall.
     int ElectAmong(std::initializer_list<int> ids) {
         for (int round = 0; round < 80; ++round) {
             for (int id : ids) {
