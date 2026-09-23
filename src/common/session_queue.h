@@ -15,11 +15,13 @@ struct SessionQueueLimits {
     static constexpr size_t kMaxBytes = 4 * 1024 * 1024;
     static constexpr size_t kMaxCommandsPerTurn = 128;
 
+    // One count of the bytes this command contributes to the queue. The wire
+    // frame already contains the arguments; adding both charged the payload twice.
     static size_t AccountedBytes(size_t consumed, const std::vector<std::string>& args) {
-        size_t bytes = consumed;
+        size_t retained = 0;
         for (const auto& arg : args)
-            bytes += arg.size();
-        return bytes;
+            retained += arg.size();
+        return consumed > retained ? consumed : retained;
     }
 
     static bool IsFull(size_t queued_commands, size_t queued_bytes) {
@@ -73,6 +75,17 @@ struct SessionCommandQueue {
         return cmd;
     }
 };
+
+// A broken RESP frame is not a queued command. Replying while another command
+// is executing, waiting on Raft, or still queued makes the client treat this
+// error as that command's response.
+inline bool ShouldReplyInvalidFrame(bool executing, bool waiting, bool queue_empty) {
+    return !executing && !waiting && queue_empty;
+}
+
+inline bool CanDeliverClientReply(bool connected, bool closing) {
+    return connected && !closing;
+}
 
 struct DrainOutcome {
     bool stop_read = false;

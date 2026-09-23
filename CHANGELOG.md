@@ -4,6 +4,14 @@
 
 截至 **2026-09-23**，下文按提交与代码核对记录。09-13 之后的条目曾漏记，已补录；不以合并说明或未归档压测数字作为收益证明。
 
+## 2026-09-23 — 收紧读路径检查：坏帧、记账、过期探针与隔离 GET
+
+- 非法 RESP 帧在已有执行中、等待 Raft 或队列非空时只关连接，不再插入一条错误回复，避免客户端把它当成前面 SET/GET 的应答。空闲连接仍回复该帧错误。断连或 `closing` 时丢掉在途回复并清掉 `executing`，不再把会话留在执行中。
+- 线性一致 GET 在多数派确认之后、读状态机之前再看一次 `IsLeader()`。已经卸任则 `MOVED`，不再返回本地值。仍是 Leader 时的 `read index timeout` / 队列满保持本地错误。判定在 `DecideLinearizableGet`，由 `connection_order_tests` 覆盖。
+- 每连接队列按线帧与参数中较大者记一次字节。此前线帧和参数相加，value 被算进 4 MiB 两次。`DrainCommands` 用真实 RESP 打到上限。
+- 过期探针 ACK 到达时立刻失败该轮，不再等到下一次 `Tick`。
+- Linux 隔离旧 Leader 的 GET 必须在 1 秒内收到 `read index timeout` / `MOVED` / 卸任错误。套接字超时不再算通过。
+
 ## 2026-09-23 — ReadIndex：刚听过心跳的 Follower 不得给其他候选投票
 
 - Follower 在选举时钟尚未到期、且已知当前 Leader 时，对其他节点的 `RequestVote` **既不抬任期也不给票**（Raft thesis §4.2.3）。否则同一节点可以先给探针 ACK，再在更高任期投票；延迟 ACK 仍落在 150 ms 窗口内时，旧 Leader 会确认读，新 Leader 已经提交新值。
