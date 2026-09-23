@@ -145,13 +145,13 @@ static void IsolatedOldLeaderCannotConfirmRead() {
     Check(!done && cluster.Node(10).IsLeader(),
           "isolated leader confirmed a read with only its self-ack");
 
-    cluster.Elect(50);
-    Check(cluster.Node(50).Propose(Command({"SET", "default:k", "new"}), {}) > 0,
+    const int majority_leader = cluster.ElectAmong({30, 50});
+    Check(cluster.Node(majority_leader).Propose(Command({"SET", "default:k", "new"}), {}) > 0,
           "majority could not write while the old leader was isolated");
     cluster.Pump();
     cluster.Settle();
     std::string majority, isolated;
-    Check(cluster.State(50).Get("default:k", &majority) && majority == "new",
+    Check(cluster.State(majority_leader).Get("default:k", &majority) && majority == "new",
           "new leader missing the post-partition write");
     Check(cluster.State(10).Get("default:k", &isolated) && isolated == "old",
           "isolated leader applied a majority write");
@@ -228,6 +228,61 @@ static void LateProbeAckPastElectionTimeoutDoesNotConfirm() {
     Check(done && !ok, "expired probe round was left hanging");
 }
 
+// A probe ACK held in the network must not be paired with a later vote from
+// the same follower: that intersection would let a new leader commit while
+// the old leader still confirms the read. Followers that just heard a
+// heartbeat therefore reject RequestVote without bumping term.
+static void FreshHeartbeatBlocksVoteSoDelayedProbeAckStaysWithLiveLeader() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    cluster.messages.clear();
+
+    bool done = false, ok = false;
+    Check(cluster.Node(10).RequestReadIndex(
+        [&](bool success, int64_t, const std::string&) { done = true; ok = success; }),
+          "ReadIndex rejected");
+    auto probes = TakeAppendsFrom(cluster, 10);
+    Check(probes.size() >= 2, "did not probe both followers");
+    Message probe_30;
+    for (const auto& probe : probes)
+        if (probe.to == 30) probe_30 = probe;
+    Check(probe_30.to == 30, "missing probe to follower 30");
+    auto ack_30 = DeliverAppendAndTakeAck(cluster, probe_30);
+    const int term_before = cluster.Node(10).GetCurrentTerm();
+
+    cluster.messages.clear();
+    cluster.Candidate(50);
+    Check(std::string(cluster.Node(50).StateName()) == "candidate",
+          "node 50 did not become candidate");
+    std::vector<Message> votes;
+    for (const auto& message : cluster.messages) {
+        if (message.type == RaftMsgType::kRequestVote && message.from == 50)
+            votes.push_back(message);
+    }
+    cluster.messages.clear();
+    for (const auto& vote : votes) {
+        if (vote.to == 30) cluster.Deliver(vote);
+    }
+    Check(cluster.Node(30).GetCurrentTerm() == term_before,
+          "follower 30 bumped term despite a fresh leader heartbeat");
+    Check(!cluster.messages.empty() &&
+          cluster.messages.back().type == RaftMsgType::kRequestVoteResponse,
+          "follower 30 did not answer the disruptive vote");
+    raftcore::RequestVoteResponse reply;
+    Check(reply.ParseFromString(cluster.messages.back().payload), "vote reply decode");
+    Check(!reply.vote_granted() && reply.term() == term_before,
+          "follower 30 granted a vote or advertised a newer term");
+    cluster.Deliver(cluster.messages.back());
+    Check(!cluster.Node(50).IsLeader(),
+          "candidate won an election that a live majority heartbeat should block");
+    Check(cluster.Node(10).IsLeader() && cluster.Node(10).GetCurrentTerm() == term_before,
+          "old leader stepped down without seeing a higher term");
+
+    cluster.Deliver(ack_30);
+    Check(done && ok, "live leader ReadIndex failed after a blocked disruptive vote");
+}
+
 int main() {
     try {
         DistinctRpcIdsReachQuorum();
@@ -238,6 +293,7 @@ int main() {
         IsolatedOldLeaderCannotConfirmRead();
         InflightRetryDoesNotConfirm();
         LateProbeAckPastElectionTimeoutDoesNotConfirm();
+        FreshHeartbeatBlocksVoteSoDelayedProbeAckStaysWithLiveLeader();
         std::cout << "PASS: production RaftNode ReadIndex\n";
         return 0;
     } catch (const std::exception& e) {

@@ -49,9 +49,9 @@ static void ReplicationAndRecovery() {
     cluster.Pump(); cluster.Settle();
     Check(result == ":0\r\n", "missing DEL returned one");
     cluster.members.erase(10); cluster.messages.clear();
-    cluster.Elect(50);
+    const int successor = cluster.ElectAmong({30, 50});
     bool acknowledged = false;
-    cluster.Node(50).Propose(Command({"SET", "default:after", "restart"}),
+    cluster.Node(successor).Propose(Command({"SET", "default:after", "restart"}),
         [&](bool ok, const std::string&) { acknowledged = ok; });
     cluster.Pump(); cluster.Settle();
     Check(acknowledged, "survivors could not commit");
