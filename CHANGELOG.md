@@ -4,6 +4,12 @@
 
 截至 **2026-09-23**，下文按提交与代码核对记录。09-13 之后的条目曾漏记，已补录；不以合并说明或未归档压测数字作为收益证明。
 
+## 2026-09-23 — ReadIndex：刚听过心跳的 Follower 不得给其他候选投票
+
+- Follower 在选举时钟尚未到期、且已知当前 Leader 时，对其他节点的 `RequestVote` **既不抬任期也不给票**（Raft thesis §4.2.3）。否则同一节点可以先给探针 ACK，再在更高任期投票；延迟 ACK 仍落在 150 ms 窗口内时，旧 Leader 会确认读，新 Leader 已经提交新值。
+- `readindex_tests` 覆盖：探针之后的 disruptive vote 被拒绝、延迟 ACK 仍由原 Leader 合法确认。隔离旧 Leader 的多数派选举改为先让 Follower 超时再选（`ElectAmong`）。
+- 这不是完整 CheckQuorum：隔离旧 Leader 仍保持 `IsLeader()`，线性一致 GET 靠探针超时失败，不会因失去多数派而卸任。没有 PreVote。
+
 ## 2026-09-23 — ReadIndex 剩余缺口：过期探针 ACK 与 GET 重定向
 
 - 探针轮次只在最短选举超时（150 ms）内接受 ACK。超过该窗口的同任期 ACK 不能确认读，避免多数派已经另选 Leader 并提交新值之后，旧 Leader 仍凭延迟回复返回过期 GET。应用落后与未发送队列仍用 1000 ms。

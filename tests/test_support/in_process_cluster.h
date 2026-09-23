@@ -168,6 +168,26 @@ public:
         }
     }
     void Elect(int id) { Candidate(id); Pump(); Settle(); Check(Node(id).IsLeader(), "leader election failed"); }
+    // Tick the given followers/candidates until one of them is leader. Use this
+    // after isolating a live leader: followers ignore RequestVote until their
+    // election timer expires, so Elect(id) would stall.
+    int ElectAmong(std::initializer_list<int> ids) {
+        for (int round = 0; round < 80; ++round) {
+            for (int id : ids) {
+                if (!members.count(id) || Node(id).IsLeader()) continue;
+                Node(id).Tick();
+            }
+            Pump();
+            for (int id : ids) {
+                if (members.count(id) && Node(id).IsLeader()) {
+                    Settle();
+                    return id;
+                }
+            }
+        }
+        Check(false, "majority did not elect a leader");
+        return -1;
+    }
     std::vector<PeerInfo> peers;
     std::map<int, std::unique_ptr<Member>> members;
     std::map<int, ApplyExecutor*> executors;

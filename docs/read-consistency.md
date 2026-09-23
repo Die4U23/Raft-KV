@@ -89,7 +89,7 @@ redis-cli -p 8080 GET user:1
 **不保证 / 已知边界：**
 - 默认 `--linearizable_reads=false` 时 GET 仍是本地读。
 - 应用落后与未发送队列的超时是 1000 ms；探针轮次本身在 150 ms 失败。队列深度上限 10000。
-- 没有 CheckQuorum/PreVote。隔离旧 Leader 仍保持 `IsLeader()`，线性一致 GET 会超时或 `MOVED`，不会成功返回过期值。进程内回归在 `readindex_tests`；Linux 三节点在 `tests/cluster_linearizable.py`。
+- 没有 CheckQuorum/PreVote。隔离旧 Leader 仍保持 `IsLeader()`，线性一致 GET 会超时或 `MOVED`，不会成功返回过期值。刚听过心跳的 Follower 在选举时钟到期前不给其他候选投票，避免延迟探针 ACK 与事后投票的交集破坏读屏障。进程内回归在 `readindex_tests`；Linux 三节点在 `tests/cluster_linearizable.py`。
 - 这不是租约读：时钟不同步或 RTT 接近选举超时会使 ReadIndex 失败，而不是放宽确认窗口。
 
 **参考资料：**

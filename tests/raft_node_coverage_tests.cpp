@@ -95,6 +95,14 @@ static void VotesFollowLogUpToDateAndOneVotePerTerm() {
     Check(last >= 2, "follower did not commit the seed write");
 
     cluster.messages.clear();
+    cluster.Node(30).HandleRequestVote(50, Vote(term + 1, 50, last, term));
+    auto live = LastVoteResponse(cluster);
+    Check(!live.vote_granted() && live.term() == term,
+          "follower with a live heartbeat granted a vote or bumped term");
+
+    cluster.Restart(30);
+    Check(cluster.Node(30).GetLeaderId() == -1, "restarted follower still has a leader");
+    cluster.messages.clear();
     cluster.Node(30).HandleRequestVote(50, Vote(term + 1, 50, 0, 0));
     auto reply = LastVoteResponse(cluster);
     Check(!reply.vote_granted() && reply.term() == term + 1,

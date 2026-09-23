@@ -187,6 +187,20 @@ void RaftNode::HandleRequestVote(int from, const raftcore::RequestVote& request)
     if (!_running || !IsRemotePeer(from) || request.candidate_id() != from ||
         request.term() <= 0 || request.last_log_index() < 0 || request.last_log_term() < 0 ||
         request.last_log_term() > request.term()) return;
+    // Raft thesis §4.2.3: a follower that has heard from a leader recently must
+    // not bump its term or grant a vote. Otherwise a delayed ReadIndex probe ACK
+    // from this node can confirm a read after it has already voted in a newer
+    // term, and the intersecting majority can commit a later write.
+    if (_state == FOLLOWER && _leader_id != -1 && _leader_id != from &&
+        _election_timeout_ms > 0) {
+        raftcore::RequestVoteResponse response;
+        response.set_term(_current_term);
+        response.set_vote_granted(false);
+        std::string payload;
+        response.SerializeToString(&payload);
+        _peer_mgr->Send(from, RaftMsgType::kRequestVoteResponse, payload);
+        return;
+    }
     // Raft §5.1: If RPC contains term T > currentTerm, set currentTerm = T, convert to Follower
     if (request.term() > _current_term) BecomeFollower(request.term());
     // Raft §5.2, §5.4: Grant vote if candidate's log is at least as up-to-date as ours
