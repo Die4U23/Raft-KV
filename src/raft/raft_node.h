@@ -43,6 +43,8 @@ public:
     void HandleRequestVoteResponse(int from, const raftcore::RequestVoteResponse& response);
     void HandleAppendEntries(int from, const raftcore::AppendEntries& request);
     void HandleAppendEntriesResponse(int from, const raftcore::AppendEntriesResponse& response);
+    void HandleInstallSnapshot(int from, const raftcore::InstallSnapshot& request);
+    void HandleInstallSnapshotResponse(int from, const raftcore::InstallSnapshotResponse& response);
     void Tick();
     bool IsLeader() const { return _running && _state == LEADER; }
     bool IsHealthy() const { return _storage_healthy; }
@@ -52,6 +54,9 @@ public:
     int GetCurrentTerm() const { return _current_term; }
     int64_t GetCommitIndex() const { return _commit_index; }
     int64_t GetLastApplied() const { return _last_applied; }
+    int64_t GetSnapshotIndex() const { return _log->SnapshotIndex(); }
+    // Tests compact after this many newly applied entries. Non-positive disables it.
+    void SetSnapshotDistanceForTest(int64_t entries) { _snapshot_distance = entries; }
     int64_t MatchIndexOf(int peer_id) const {
         const auto found = _match_index.find(peer_id);
         return found == _match_index.end() ? -1 : found->second;
@@ -82,6 +87,10 @@ public:
     static constexpr int kHeartbeatIntervalMs = 50;
     static constexpr int kMinElectionTimeoutMs = 150;
     static constexpr int kMaxElectionTimeoutMs = 300;
+    // Compact after this many applied entries past the previous snapshot.
+    static constexpr int64_t kSnapshotDistance = 1024;
+    // Stay under RaftCodec::kMaxFrameSize once protobuf framing is added.
+    static constexpr size_t kMaxSnapshotBytes = 8 * 1024 * 1024;
 private:
     enum State { FOLLOWER, PRE_CANDIDATE, CANDIDATE, LEADER };
     struct Inflight {
@@ -89,6 +98,7 @@ private:
         int64_t last_index = 0;
         int elapsed_ms = 0;
         size_t entries = 0;
+        RaftMsgType type = RaftMsgType::kAppendEntries;
         SteadyClock::time_point first_send;
         std::string payload;
     };
@@ -126,7 +136,9 @@ private:
     bool IsLogUpToDate(int64_t index, int64_t term) const;
     bool IsRemotePeer(int id) const;
     void SendAppendEntries(int peer);
+    void SendInstallSnapshot(int peer);
     void BroadcastAppendEntries();
+    void MaybeCompact();
     void AdvanceCommitIndex();
     void ApplyCommitted();
     void FinishApply(int64_t first, size_t count, const ApplyExecutor::Results& results,
@@ -214,4 +226,6 @@ private:
     // follower cannot campaign until at least that long after a heartbeat,
     // and a leader rejects a probe ACK at the same age.
     static constexpr int kReadIndexTimeoutMs = 1000;
+    int64_t _snapshot_distance = kSnapshotDistance;
+    bool _snapshot_skip_logged = false;
 };

@@ -190,6 +190,14 @@ public:
             raftcore::AppendEntriesResponse rpc; Check(rpc.ParseFromString(message.payload), "append reply decode");
             node.HandleAppendEntriesResponse(message.from, rpc); break;
         }
+        case RaftMsgType::kInstallSnapshot: {
+            raftcore::InstallSnapshot rpc; Check(rpc.ParseFromString(message.payload), "snapshot decode");
+            node.HandleInstallSnapshot(message.from, rpc); break;
+        }
+        case RaftMsgType::kInstallSnapshotResponse: {
+            raftcore::InstallSnapshotResponse rpc; Check(rpc.ParseFromString(message.payload), "snapshot reply decode");
+            node.HandleInstallSnapshotResponse(message.from, rpc); break;
+        }
         }
     }
     void Pump() {

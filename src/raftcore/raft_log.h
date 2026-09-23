@@ -24,9 +24,21 @@ public:
     void TruncateSuffix(int64_t start_index);
     void SaveHardState(int32_t term, int32_t voted_for);
     bool LoadHardState(int32_t* term, int32_t* voted_for);
+    // Drop the log prefix through index. A matching entry keeps the suffix.
+    // A missing or conflicting index discards the suffix as well.
+    void SaveSnapshot(int64_t index, int32_t term, const std::string& data);
+    int64_t SnapshotIndex() const { return _snapshot_index; }
+    int32_t SnapshotTerm() const { return _snapshot_term; }
+    const std::string& SnapshotData() const { return _snapshot_data; }
 private:
     static std::string IndexToKey(int64_t index);
+    static std::string SnapshotMetaKey();
+    static std::string SnapshotDataKey();
+    void LoadSnapshot();
     std::unique_ptr<rocksdb::DB> _db;
     int64_t _last_index = 0;
     int64_t _last_term = 0;
+    int64_t _snapshot_index = 0;
+    int32_t _snapshot_term = 0;
+    std::string _snapshot_data;
 };

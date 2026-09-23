@@ -361,6 +361,152 @@ static void SameTermAppendStepsDownPreCandidate() {
           "current leader heartbeat did not end pre-vote");
 }
 
+static std::string IndexKey(int64_t index) {
+    std::string key(8, '\0');
+    auto value = static_cast<uint64_t>(index);
+    for (int i = 7; i >= 0; --i) {
+        key[static_cast<size_t>(i)] = static_cast<char>(value & 0xff);
+        value >>= 8;
+    }
+    return key;
+}
+static std::string EmptySnapshot() { return std::string("\x01\x00\x00\x00\x00", 5); }
+static raftcore::InstallSnapshotResponse LastSnapshotResponse(Cluster& cluster) {
+    Check(!cluster.messages.empty(), "missing snapshot response");
+    raftcore::InstallSnapshotResponse response;
+    Check(cluster.messages.back().type == RaftMsgType::kInstallSnapshotResponse &&
+          response.ParseFromString(cluster.messages.back().payload),
+          "invalid snapshot response");
+    cluster.messages.clear();
+    return response;
+}
+
+static void SnapshotCatchesUpLaggingFollower() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    cluster.Partition(50);
+    cluster.Node(10).SetSnapshotDistanceForTest(1);
+    Check(cluster.Node(10).Propose(Command({"SET", "default:k", "v"}), {}) > 0,
+          "leader rejected the compacted write");
+    cluster.Pump();
+    cluster.Settle();
+    const int64_t compacted = cluster.Node(10).GetSnapshotIndex();
+    Check(compacted >= 2 && compacted == cluster.Node(10).GetCommitIndex(),
+          "leader did not compact through the applied index");
+    const auto& log = rocksdb::testing::StateFor(cluster.Path(10, "/log"))->data;
+    for (int64_t index = 1; index <= compacted; ++index)
+        Check(log.count(IndexKey(index)) == 0, "compacted log index is still stored");
+    Check(log.count(IndexKey(0)) == 1 && log.count(std::string("\x01snapmeta", 9)) == 1 &&
+          log.count(std::string("\x01snapdata", 9)) == 1,
+          "compaction removed hard state or skipped the snapshot keys");
+    std::string value;
+    Check(cluster.State(30).Get("default:k", &value) && value == "v" &&
+          cluster.Node(30).GetSnapshotIndex() == 0,
+          "in-sync follower did not apply the write through AppendEntries");
+    Check(!cluster.State(50).Get("default:k", &value) && cluster.Node(50).GetSnapshotIndex() == 0,
+          "partitioned follower already had the compacted write");
+
+    // Restart drops the AppendEntries that still carried the now-deleted prefix.
+    // The next catch-up has to install the snapshot, then replicate the suffix.
+    cluster.Restart(10);
+    cluster.Elect(10);
+    Check(cluster.Node(10).GetSnapshotIndex() == compacted &&
+          cluster.Node(10).GetCommitIndex() > compacted,
+          "restarted leader lost its snapshot or did not commit a suffix entry");
+    cluster.Heal(50);
+    cluster.Settle();
+    Check(cluster.Node(50).GetSnapshotIndex() == compacted &&
+          cluster.State(50).Get("default:k", &value) && value == "v",
+          "lagging follower did not install the leader snapshot");
+    Check(cluster.Node(10).Propose(Command({"SET", "default:more", "x"}), {}) > 0,
+          "leader rejected a write after compaction");
+    cluster.Pump();
+    cluster.Settle();
+    Check(cluster.Node(10).GetSnapshotIndex() == compacted &&
+          cluster.Node(10).GetCommitIndex() > compacted, "suffix write compacted the log again");
+    for (int id : {10, 30, 50})
+        Check(cluster.State(id).Get("default:more", &value) && value == "x",
+              "suffix entry after the snapshot did not reach every replica");
+
+    rocksdb::testing::StateFor(cluster.Path(10, "/kv"))->data.clear();
+    cluster.Restart(10);
+    Check(cluster.Node(10).GetSnapshotIndex() == compacted &&
+          cluster.State(10).LastApplied() == compacted &&
+          cluster.State(10).Get("default:k", &value) && value == "v",
+          "restart did not rebuild KV from the log snapshot");
+    Check(cluster.Node(10).MetricsInfo().find("snapshot_index:" + std::to_string(compacted)) !=
+          std::string::npos, "INFO omitted snapshot_index");
+}
+
+static void MatchingSnapshotDoesNotRewindAppliedState() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    Check(cluster.Node(10).Propose(Command({"SET", "default:k", "v"}), {}) > 0, "seed write");
+    cluster.Pump();
+    cluster.Settle();
+    const int term = cluster.Node(30).GetCurrentTerm();
+    raftcore::InstallSnapshot snapshot;
+    snapshot.set_term(term);
+    snapshot.set_leader_id(10);
+    snapshot.set_last_included_index(1);
+    snapshot.set_last_included_term(term);
+    snapshot.set_rpc_id(7);
+    snapshot.set_data(EmptySnapshot());
+    cluster.messages.clear();
+    cluster.Node(30).HandleInstallSnapshot(10, snapshot);
+    auto applied = LastSnapshotResponse(cluster);
+    std::string value;
+    Check(applied.success() && applied.term() == term &&
+          cluster.Node(30).GetSnapshotIndex() == 1 &&
+          cluster.Node(30).GetCurrentTerm() == term &&
+          cluster.State(30).Get("default:k", &value) && value == "v" &&
+          cluster.State(30).LastApplied() >= 2,
+          "a term-matched older snapshot rewound applied keys or raised the term");
+
+    snapshot.set_rpc_id(8);
+    snapshot.set_data("not-a-snapshot");
+    snapshot.set_last_included_index(cluster.Node(30).GetCommitIndex());
+    snapshot.set_last_included_term(term);
+    cluster.Node(30).HandleInstallSnapshot(10, snapshot);
+    auto rejected = LastSnapshotResponse(cluster);
+    Check(!rejected.success() && rejected.term() == term &&
+          cluster.Node(30).GetCurrentTerm() == term &&
+          cluster.Node(30).GetSnapshotIndex() == 1 &&
+          cluster.State(30).Get("default:k", &value) && value == "v",
+          "malformed snapshot was stored or changed the term");
+}
+
+static void SnapshotConflictWithAppliedLogStops() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    Check(cluster.Node(10).Propose(Command({"SET", "default:k", "v"}), {}) > 0, "seed write");
+    cluster.Pump();
+    cluster.Settle();
+    cluster.Partition(10);
+    const int leader = cluster.ElectAmong({30, 50});
+    // ElectAmong may choose either survivor. A snapshot from a node to itself
+    // is ignored, so the applied-log conflict has to be delivered to the other one.
+    const int follower = leader == 50 ? 30 : 50;
+    const int term = cluster.Node(follower).GetCurrentTerm();
+    Check(term > 1 && cluster.State(follower).LastApplied() > 1,
+          "follower has no applied prefix");
+    raftcore::InstallSnapshot snapshot;
+    snapshot.set_term(term);
+    snapshot.set_leader_id(leader);
+    snapshot.set_last_included_index(1);
+    snapshot.set_last_included_term(term);
+    snapshot.set_rpc_id(9);
+    snapshot.set_data(EmptySnapshot());
+    Throws([&] { cluster.Node(follower).HandleInstallSnapshot(leader, snapshot); });
+    std::string value;
+    Check(cluster.Node(follower).GetSnapshotIndex() == 0 &&
+          cluster.State(follower).Get("default:k", &value) && value == "v",
+          "conflicting snapshot changed the applied prefix");
+}
+
 static void HigherTermAppendStepsDownCandidate() {
     Cluster cluster;
     cluster.Candidate(10);
@@ -398,6 +544,12 @@ int main() {
             {"lost election retries with pre-vote", CandidateTimeoutReturnsToPreVote},
             {"higher-term pre-vote response steps down", HigherTermPreVoteResponseStepsDown},
             {"current leader heartbeat ends pre-vote", SameTermAppendStepsDownPreCandidate},
+            {"snapshot installs on a lagging follower and restores KV",
+             SnapshotCatchesUpLaggingFollower},
+            {"matching snapshot does not rewind applied keys",
+             MatchingSnapshotDoesNotRewindAppliedState},
+            {"snapshot term conflict with applied log stops the node",
+             SnapshotConflictWithAppliedLogStops},
             {"higher-term AppendEntries steps down a candidate",
              HigherTermAppendStepsDownCandidate},
         };

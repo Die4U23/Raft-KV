@@ -97,6 +97,59 @@ static void ApplyMatchesApplyBatchAndReopen() {
           "reopened machine lost applied keys");
 }
 
+static std::string SnapshotWithKey(const std::string& key, const std::string& value) {
+    std::string out(1, '\x01');
+    auto append_u32 = [&](uint32_t n) {
+        for (int i = 3; i >= 0; --i) out.push_back(static_cast<char>((n >> (8 * i)) & 0xff));
+    };
+    append_u32(1);
+    append_u32(static_cast<uint32_t>(key.size()));
+    out += key;
+    append_u32(static_cast<uint32_t>(value.size()));
+    out += value;
+    return out;
+}
+
+static void SnapshotExportInstallRoundTrip() {
+    KVStateMachine source("kv-sm/snap-src");
+    Check(source.Apply(1, Command({"SET", "default:a", "1"})) == "+OK\r\n", "snapshot seed");
+    const std::string binary("x\0y", 3);
+    Check(source.Apply(2, Command({"SET", std::string("default:b\0c", 11), binary})) == "+OK\r\n",
+          "binary snapshot seed");
+    Check(source.Apply(3, Command({"DEL", "default:a"})) == ":1\r\n", "snapshot delete");
+    std::string blob;
+    Check(source.TryExportSnapshot(&blob) && source.IsSnapshot(blob) && blob.size() >= 5 &&
+          blob[0] == 1, "export did not produce a versioned snapshot");
+    KVStateMachine empty("kv-sm/snap-empty");
+    std::string empty_blob;
+    Check(empty.TryExportSnapshot(&empty_blob) && empty_blob.size() == 5 &&
+          empty.IsSnapshot(empty_blob), "empty user-key snapshot is not 5 bytes");
+
+    KVStateMachine restored("kv-sm/snap-dst");
+    Check(restored.Apply(1, Command({"SET", "default:stale", "x"})) == "+OK\r\n", "stale seed");
+    Check(restored.TryInstallSnapshot(3, blob), "install rejected a snapshot just exported");
+    std::string value;
+    Check(restored.LastApplied() == 3 && !restored.Get("default:stale", &value) &&
+          !restored.Get("default:a", &value) &&
+          restored.Get(std::string("default:b\0c", 11), &value) && value == binary,
+          "install did not replace user keys or dropped a binary value");
+    KVStateMachine reopened("kv-sm/snap-dst");
+    Check(reopened.LastApplied() == 3 && reopened.Get(std::string("default:b\0c", 11), &value) &&
+          value == binary, "reopened store lost the installed snapshot");
+
+    Check(!restored.IsSnapshot("junk") && !restored.IsSnapshot(empty_blob + "x") &&
+          !restored.TryInstallSnapshot(4, "junk"), "malformed snapshot was accepted");
+    Check(restored.LastApplied() == 3, "malformed snapshot advanced lastApplied");
+    Throws([&] { restored.InstallSnapshot(4, "junk"); });
+    const auto reserved = SnapshotWithKey(std::string("\0secret", 7), "v");
+    Check(!restored.IsSnapshot(reserved) && !restored.TryInstallSnapshot(4, reserved),
+          "reserved key was accepted in a snapshot");
+    Throws([&] { restored.TryInstallSnapshot(2, blob); });
+    Throws([&] { restored.TryInstallSnapshot(0, empty_blob); });
+    Check(restored.LastApplied() == 3 && restored.Get(std::string("default:b\0c", 11), &value) &&
+          value == binary, "rejected snapshot rewound applied state");
+}
+
 static void LegacyStoreWithoutMarkerIsRejected() {
     const std::string path = "kv-sm/legacy";
     auto state = rocksdb::testing::StateFor(path);
@@ -111,6 +164,7 @@ int main() {
         BinaryAndNamespacedKeys();
         RejectUnsupportedCommittedCommands();
         ApplyMatchesApplyBatchAndReopen();
+        SnapshotExportInstallRoundTrip();
         LegacyStoreWithoutMarkerIsRejected();
         Check(checks >= 20, "too few KV assertions");
         std::cout << "PASS: production KVStateMachine (" << checks << " checks)\n";

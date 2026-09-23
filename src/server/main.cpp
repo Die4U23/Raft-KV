@@ -160,6 +160,16 @@ static void OnRaftMessage(int from, RaftMsgType type, const std::string& payload
         if (response.ParseFromString(payload)) g_raft->HandleAppendEntriesResponse(from, response);
         break;
     }
+    case RaftMsgType::kInstallSnapshot: {
+        raftcore::InstallSnapshot request;
+        if (request.ParseFromString(payload)) g_raft->HandleInstallSnapshot(from, request);
+        break;
+    }
+    case RaftMsgType::kInstallSnapshotResponse: {
+        raftcore::InstallSnapshotResponse response;
+        if (response.ParseFromString(payload)) g_raft->HandleInstallSnapshotResponse(from, response);
+        break;
+    }
     }
 }
 static void DrainClient(const muduo::net::TcpConnectionPtr& conn,

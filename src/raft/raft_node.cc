@@ -18,6 +18,12 @@ RaftNode::RaftNode(int id, const std::vector<PeerInfo>& peers,
     _log = std::make_unique<RaftLog>(log_path);
     _log->LoadHardState(&_current_term, &_voted_for);
     _last_applied = _sm->LastApplied();
+    // The log snapshot is written before the KV install. A crash in between
+    // leaves the image in the log and a KV that still ends at an older index.
+    if (_log->SnapshotIndex() > _last_applied) {
+        _sm->InstallSnapshot(_log->SnapshotIndex(), _log->SnapshotData());
+        _last_applied = _sm->LastApplied();
+    }
     _commit_index = _last_applied;
     if (_last_applied > _log->LastIndex() || _current_term < _log->LastTerm())
         throw std::runtime_error("inconsistent KV/log recovery state");
@@ -46,6 +52,7 @@ std::string RaftNode::MetricsInfo() const {
     info += "read_index_overload:" + std::to_string(_read_index_overload) + "\r\n";
 
     info += "read_index_pending:" + std::to_string(PendingReadIndexCount()) + "\r\n";
+    info += "snapshot_index:" + std::to_string(_log->SnapshotIndex()) + "\r\n";
 
     return info;
 }
@@ -456,11 +463,131 @@ void RaftNode::HandleAppendEntriesResponse(int from,
         // Hints are bounded by known matches; a stale response cannot rewind progress.
         const int64_t hint = response.last_log_index() == INT64_MAX ?
                             INT64_MAX : response.last_log_index() + 1;
-        _next_index[from] = std::max(_match_index[from] + 1,
-                                    std::min(_next_index[from] - 1, hint));
+        int64_t next = std::max(_match_index[from] + 1,
+                               std::min(_next_index[from] - 1, hint));
+        // The compacted prefix cannot be repaired one entry at a time.
+        if (_log->SnapshotIndex() > 0 && next <= _log->SnapshotIndex())
+            next = _log->SnapshotIndex();
+        _next_index[from] = next;
         FinishReadIndexRounds();
         SendAppendEntries(from);
     }
+}
+void RaftNode::HandleInstallSnapshot(int from, const raftcore::InstallSnapshot& request) {
+    if (!_running || !IsRemotePeer(from) || request.leader_id() != from ||
+        request.term() <= 0 || request.rpc_id() == 0 ||
+        request.last_included_index() <= 0 || request.last_included_term() <= 0 ||
+        request.last_included_term() > request.term()) return;
+    auto reply = [&](bool success) {
+        raftcore::InstallSnapshotResponse response;
+        response.set_term(_current_term);
+        response.set_rpc_id(request.rpc_id());
+        response.set_success(success);
+        std::string payload;
+        response.SerializeToString(&payload);
+        _peer_mgr->Send(from, RaftMsgType::kInstallSnapshotResponse, payload);
+    };
+    if (request.term() > _current_term ||
+        (request.term() == _current_term && _state != FOLLOWER))
+        BecomeFollower(request.term());
+    if (request.term() < _current_term) {
+        reply(false);
+        return;
+    }
+    _leader_id = from;
+    ResetElectionTimer();
+    const int64_t index = request.last_included_index();
+    const int32_t snap_term = request.last_included_term();
+    if (_log->SnapshotIndex() > index ||
+        (_log->SnapshotIndex() == index && _log->SnapshotTerm() == snap_term &&
+         _last_applied >= index)) {
+        reply(true);
+        return;
+    }
+    if (_log->SnapshotIndex() == index && _log->SnapshotTerm() != snap_term) {
+        EventLog(LogLevel::Error) << "RaftNode[" << _node_id
+                                 << "] rejected conflicting snapshot index=" << index;
+        reply(false);
+        return;
+    }
+    const bool matches = _log->GetTerm(index) == snap_term;
+    if (_last_applied > index && !matches) {
+        EventLog(LogLevel::Error) << "RaftNode[" << _node_id
+                                 << "] snapshot conflicts with applied index " << _last_applied;
+        throw std::runtime_error("snapshot conflicts with applied log");
+    }
+    if (!_sm->IsSnapshot(request.data())) {
+        EventLog(LogLevel::Warning) << "RaftNode[" << _node_id
+                                   << "] rejected malformed snapshot from " << from;
+        reply(false);
+        return;
+    }
+    _log->SaveSnapshot(index, snap_term, request.data());
+    if (_last_applied < index) {
+        if (!_sm->TryInstallSnapshot(index, request.data()))
+            throw std::runtime_error("durable snapshot failed to install");
+        _last_applied = _sm->LastApplied();
+    }
+    if (_commit_index < index) _commit_index = index;
+    if (_commit_index > _log->LastIndex()) _commit_index = _log->LastIndex();
+    ApplyCommitted();
+    EventLog(LogLevel::Info) << "RaftNode[" << _node_id
+                            << "] installed snapshot index=" << index
+                            << " term=" << snap_term;
+    reply(true);
+}
+void RaftNode::HandleInstallSnapshotResponse(int from,
+                                            const raftcore::InstallSnapshotResponse& response) {
+    if (!_running || !IsRemotePeer(from)) return;
+    if (response.term() > _current_term) {
+        BecomeFollower(response.term());
+        return;
+    }
+    if (!IsLeader() || response.term() != _current_term) return;
+    NotePeerContact(from);
+    auto& flight = _inflight.at(from);
+    if (!flight.id || flight.type != RaftMsgType::kInstallSnapshot ||
+        response.rpc_id() != flight.id) return;
+    const int64_t installed = flight.last_index;
+    flight = {};
+    if (!response.success()) {
+        EventLog(LogLevel::Warning) << "RaftNode[" << _node_id
+                                   << "] snapshot rejected by " << from
+                                   << " index=" << installed;
+        return;
+    }
+    _match_index[from] = std::max(_match_index[from], installed);
+    _next_index[from] = _match_index[from] + 1;
+    FinishReadIndexRounds();
+    SendAppendEntries(from);
+}
+void RaftNode::SendInstallSnapshot(int peer) {
+    auto& flight = _inflight.at(peer);
+    if (flight.id) {
+        if (flight.elapsed_ms >= kRpcRetryMs) {
+            flight.elapsed_ms = 0;
+            ++_replication_retry_attempts;
+            _peer_mgr->Send(peer, flight.type, flight.payload);
+        }
+        return;
+    }
+    if (_log->SnapshotIndex() <= 0) return;
+    raftcore::InstallSnapshot request;
+    request.set_term(_current_term);
+    request.set_leader_id(_node_id);
+    request.set_last_included_index(_log->SnapshotIndex());
+    request.set_last_included_term(_log->SnapshotTerm());
+    if (_rpc_sequence == UINT64_MAX) throw std::runtime_error("Raft RPC sequence exhausted");
+    request.set_rpc_id(++_rpc_sequence);
+    request.set_data(_log->SnapshotData());
+    flight.type = RaftMsgType::kInstallSnapshot;
+    flight.id = request.rpc_id();
+    flight.last_index = _log->SnapshotIndex();
+    flight.elapsed_ms = 0;
+    flight.entries = 0;
+    request.SerializeToString(&flight.payload);
+    flight.first_send = SteadyClock::now();
+    _peer_mgr->Send(peer, RaftMsgType::kInstallSnapshot, flight.payload);
 }
 void RaftNode::SendAppendEntries(int peer) {
     auto& flight = _inflight.at(peer);
@@ -468,11 +595,20 @@ void RaftNode::SendAppendEntries(int peer) {
         if (flight.elapsed_ms >= kRpcRetryMs) {
             flight.elapsed_ms = 0;
             ++_replication_retry_attempts;
-            _peer_mgr->Send(peer, RaftMsgType::kAppendEntries, flight.payload);
+            _peer_mgr->Send(peer, flight.type, flight.payload);
         }
         return;
     }
+    if (_log->SnapshotIndex() > 0 && _next_index.at(peer) <= _log->SnapshotIndex()) {
+        SendInstallSnapshot(peer);
+        return;
+    }
     const int64_t previous = _next_index.at(peer) - 1;
+    if (previous > 0 && _log->GetTerm(previous) < 0) {
+        _next_index[peer] = _log->SnapshotIndex();
+        SendInstallSnapshot(peer);
+        return;
+    }
     raftcore::AppendEntries request;
     request.set_term(_current_term);
     request.set_leader_id(_node_id);
@@ -494,6 +630,7 @@ void RaftNode::SendAppendEntries(int peer) {
         last = index;
         if (index == INT64_MAX) break;
     }
+    flight.type = RaftMsgType::kAppendEntries;
     flight.id = request.rpc_id();
     flight.last_index = last;
     flight.elapsed_ms = 0;
@@ -610,6 +747,42 @@ void RaftNode::FinishApply(int64_t first, size_t count, const ApplyExecutor::Res
         }
     }
     for (auto& callback : callbacks) callback.first(true, callback.second);
+    MaybeCompact();
+}
+void RaftNode::MaybeCompact() {
+    if (!_running || !_storage_healthy || _snapshot_distance <= 0) return;
+    if (_last_applied <= _log->SnapshotIndex()) return;
+    if (_last_applied - _log->SnapshotIndex() < _snapshot_distance) return;
+    const int64_t index = _last_applied;
+    const int64_t term = _log->GetTerm(index);
+    if (term <= 0 || term > INT32_MAX) return;
+    std::string data;
+    if (!_sm->TryExportSnapshot(&data)) {
+        EventLog(LogLevel::Warning) << "RaftNode[" << _node_id
+                                   << "] snapshot export failed index=" << index;
+        return;
+    }
+    if (data.size() > kMaxSnapshotBytes) {
+        if (!_snapshot_skip_logged) {
+            _snapshot_skip_logged = true;
+            EventLog(LogLevel::Warning) << "RaftNode[" << _node_id
+                                       << "] snapshot exceeds " << kMaxSnapshotBytes
+                                       << " bytes; log prefix kept";
+        }
+        return;
+    }
+    try {
+        _log->SaveSnapshot(index, static_cast<int32_t>(term), data);
+    } catch (const std::exception& e) {
+        _storage_healthy = false;
+        EventLog(LogLevel::Error) << "RaftNode[" << _node_id
+                                 << "] snapshot failed: " << e.what();
+        throw;
+    }
+    _snapshot_skip_logged = false;
+    EventLog(LogLevel::Info) << "RaftNode[" << _node_id
+                            << "] compacted log through index=" << index
+                            << " term=" << term;
 }
 void RaftNode::Tick() {
     if (!_running) return;
