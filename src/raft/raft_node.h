@@ -52,6 +52,14 @@ public:
     int GetCurrentTerm() const { return _current_term; }
     int64_t GetCommitIndex() const { return _commit_index; }
     int64_t GetLastApplied() const { return _last_applied; }
+    int64_t MatchIndexOf(int peer_id) const {
+        const auto found = _match_index.find(peer_id);
+        return found == _match_index.end() ? -1 : found->second;
+    }
+    bool HasInflightRpc(int peer_id) const {
+        const auto found = _inflight.find(peer_id);
+        return found != _inflight.end() && found->second.id != 0;
+    }
     size_t PendingProposals() const { return _pending.size(); }
     size_t PendingBytes() const { return _pending_bytes; }
     uint64_t ProposalBatches() const { return _proposal_batches; }
