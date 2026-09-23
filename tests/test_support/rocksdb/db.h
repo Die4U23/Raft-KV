@@ -107,7 +107,7 @@ public:
         if (!options.sync) ++state_->non_sync_writes;
         return {};
     }
-    Iterator* NewIterator(const ReadOptions&) {
+    Iterator* NewIterator(const ReadOptions&) const {
         const auto status = testing::Consume(state_->fail_iterators) ? Status::IOError() : Status();
         return new Iterator(state_->data, status);
     }

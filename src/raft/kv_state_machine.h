@@ -15,6 +15,12 @@ public:
                                       const std::vector<std::string>& commands);
     bool Get(const std::string& key, std::string* value) const;
     int64_t LastApplied() const { return _store->LastApplied(); }
+    // Versioned image of the applied user keys. False means the image could not be built.
+    bool TryExportSnapshot(std::string* out) const;
+    bool IsSnapshot(const std::string& data) const;
+    // False means the bytes are not a snapshot. Storage failures still throw.
+    bool TryInstallSnapshot(int64_t index, const std::string& data);
+    void InstallSnapshot(int64_t index, const std::string& data);
 private:
     std::unique_ptr<RocksDBStore> _store;
 };

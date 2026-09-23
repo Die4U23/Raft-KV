@@ -27,6 +27,10 @@ public:
     // Delete results observe earlier mutations in the same atomic batch.
     std::vector<bool> ApplyBatch(const std::vector<Mutation>& mutations);
     int64_t LastApplied() const { return _last_applied.load(std::memory_order_acquire); }
+    // User keys only. Keys that start with NUL are reserved for store metadata.
+    std::vector<std::pair<std::string, std::string>> ExportUserKeys() const;
+    // Replace user keys and set lastApplied. index must not move backwards.
+    void ReplaceAll(int64_t index, const std::vector<std::pair<std::string, std::string>>& entries);
 private:
     static std::string AppliedKey();
     std::unique_ptr<rocksdb::DB> _db;

@@ -93,3 +93,43 @@ bool RocksDBStore::ApplyDelete(int64_t index, const std::string& key) {
 void RocksDBStore::ApplyNoop(int64_t index) {
     ApplyBatch({{index, Mutation::Kind::Noop, {}, {}}});
 }
+std::vector<std::pair<std::string, std::string>> RocksDBStore::ExportUserKeys() const {
+    std::vector<std::pair<std::string, std::string>> entries;
+    std::unique_ptr<rocksdb::Iterator> it(_db->NewIterator(rocksdb::ReadOptions()));
+    for (it->SeekToFirst(); it->Valid(); it->Next()) {
+        const std::string key = it->key().ToString();
+        if (!key.empty() && key[0] == '\0') continue;
+        entries.emplace_back(key, it->value().ToString());
+    }
+    RequireStorageOK(it->status(), "export KV snapshot");
+    return entries;
+}
+void RocksDBStore::ReplaceAll(int64_t index,
+                              const std::vector<std::pair<std::string, std::string>>& entries) {
+    if (index <= 0) throw std::runtime_error("invalid snapshot index");
+    if (index < LastApplied()) throw std::runtime_error("snapshot is behind the applied index");
+    for (const auto& entry : entries) {
+        if (entry.first.empty() || entry.first[0] == '\0')
+            throw std::runtime_error("snapshot contains a reserved key");
+    }
+    std::vector<std::string> stale;
+    std::unique_ptr<rocksdb::Iterator> it(_db->NewIterator(rocksdb::ReadOptions()));
+    for (it->SeekToFirst(); it->Valid(); it->Next()) {
+        const std::string key = it->key().ToString();
+        if (!key.empty() && key[0] == '\0') continue;
+        stale.push_back(key);
+    }
+    RequireStorageOK(it->status(), "scan KV before snapshot install");
+    rocksdb::WriteBatch batch;
+    for (const auto& key : stale) batch.Delete(key);
+    for (const auto& entry : entries) batch.Put(entry.first, entry.second);
+    std::string value(8, '\0');
+    auto encoded = static_cast<uint64_t>(index);
+    for (int i = 7; i >= 0; --i) {
+        value[i] = static_cast<char>(encoded & 0xff);
+        encoded >>= 8;
+    }
+    batch.Put(AppliedKey(), value);
+    RequireStorageOK(_db->Write(DurableWriteOptions(), &batch), "install KV snapshot");
+    _last_applied.store(index, std::memory_order_release);
+}

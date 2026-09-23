@@ -102,6 +102,79 @@ static void HardStateRoundTrip() {
           "reopened log lost hard state");
 }
 
+static std::string IndexKey(int64_t index) {
+    std::string key(8, '\0');
+    auto value = static_cast<uint64_t>(index);
+    for (int i = 7; i >= 0; --i) {
+        key[static_cast<size_t>(i)] = static_cast<char>(value & 0xff);
+        value >>= 8;
+    }
+    return key;
+}
+
+static void SnapshotDropsPrefixAndReopens() {
+    const std::string path = "raft-log/snapshot";
+    {
+        RaftLog log(path);
+        log.Append(Entry(1, 1, "a"));
+        log.Append(Entry(2, 1, "b"));
+        log.Append(Entry(3, 2, "c"));
+        log.SaveHardState(2, 10);
+        Throws([&] { log.SaveSnapshot(0, 1, "snap"); });
+        Throws([&] { log.SaveSnapshot(2, 1, ""); });
+        log.SaveSnapshot(2, 1, "snap");
+        Check(log.SnapshotIndex() == 2 && log.SnapshotTerm() == 1 && log.SnapshotData() == "snap",
+              "snapshot meta was not stored");
+        Check(log.LastIndex() == 3 && log.LastTerm() == 2, "matching snapshot discarded the suffix");
+        raftcore::LogEntry entry;
+        Check(!log.Get(1, &entry) && !log.Get(2, &entry), "Get returned a snapshotted entry");
+        Check(log.Get(3, &entry) && entry.command() == "c", "suffix entry missing");
+        Check(log.GetTerm(2) == 1 && log.GetTerm(1) == -1 && log.GetTerm(3) == 2,
+              "GetTerm did not treat the snapshot index as the compacted prefix");
+        const auto& durable = rocksdb::testing::StateFor(path)->data;
+        Check(durable.count(IndexKey(0)) == 1 && durable.count(IndexKey(1)) == 0 &&
+              durable.count(IndexKey(2)) == 0 && durable.count(IndexKey(3)) == 1,
+              "snapshot did not delete only the compacted prefix");
+        Check(durable.count(std::string("\x01snapmeta", 9)) == 1 &&
+              durable.count(std::string("\x01snapdata", 9)) == 1,
+              "snapshot keys were not written beside the log");
+        Throws([&] { log.TruncateSuffix(2); });
+        Throws([&] { log.SaveSnapshot(1, 1, "back"); });
+        Check(log.LastIndex() == 3 && log.SnapshotIndex() == 2 && log.Get(3, &entry),
+              "rejected snapshot or truncate mutated the suffix");
+    }
+    {
+        RaftLog reopened(path);
+        raftcore::LogEntry entry;
+        int32_t term = 0, voted = 0;
+        Check(reopened.SnapshotIndex() == 2 && reopened.SnapshotTerm() == 1 &&
+              reopened.SnapshotData() == "snap" && reopened.LastIndex() == 3 &&
+              reopened.GetTerm(2) == 1 && reopened.Get(3, &entry) && entry.command() == "c" &&
+              reopened.LoadHardState(&term, &voted) && term == 2 && voted == 10,
+              "reopened log lost the snapshot, suffix, or hard state");
+        reopened.SaveSnapshot(3, 2, "all");
+        Check(reopened.LastIndex() == 3 && reopened.LastTerm() == 2 &&
+              reopened.GetTerm(3) == 2 && !reopened.Get(3, &entry),
+              "full compact did not move the tail onto the snapshot");
+        reopened.Append(Entry(4, 3, "d"));
+        Check(reopened.LastIndex() == 4 && reopened.Get(4, &entry) && entry.command() == "d",
+              "append after a full compact did not continue at the next index");
+        reopened.Append(Entry(5, 3, "e"));
+        reopened.SaveSnapshot(4, 9, "conflict");
+        Check(reopened.SnapshotIndex() == 4 && reopened.SnapshotTerm() == 9 &&
+              reopened.LastIndex() == 4 && reopened.LastTerm() == 9 &&
+              reopened.GetTerm(5) == -1 && !reopened.Get(4, &entry),
+              "a conflicting snapshot term kept the suffix");
+        Throws([&] { reopened.SaveSnapshot(4, 3, "other"); });
+        Check(reopened.SnapshotTerm() == 9 && reopened.SnapshotData() == "conflict",
+              "same-index term conflict overwrote the snapshot");
+    }
+    RaftLog restored(path);
+    Check(restored.SnapshotIndex() == 4 && restored.SnapshotTerm() == 9 &&
+          restored.LastIndex() == 4 && restored.GetTerm(4) == 9 && restored.GetTerm(3) == -1,
+          "reopen after a conflicting snapshot lost the compacted tail");
+}
+
 static void ScanRejectsNonContiguousLog() {
     const std::string path = "raft-log/gap";
     {
@@ -121,6 +194,7 @@ int main() {
         AppendGetTruncateAndReopen();
         RejectInvalidAppends();
         HardStateRoundTrip();
+        SnapshotDropsPrefixAndReopens();
         ScanRejectsNonContiguousLog();
         Check(checks >= 20, "too few RaftLog assertions");
         std::cout << "PASS: production RaftLog (" << checks << " checks)\n";

@@ -6,7 +6,8 @@
 
 enum class RaftMsgType : uint8_t {
     kRequestVote = 0, kRequestVoteResponse = 1,
-    kAppendEntries = 2, kAppendEntriesResponse = 3
+    kAppendEntries = 2, kAppendEntriesResponse = 3,
+    kInstallSnapshot = 4, kInstallSnapshotResponse = 5
 };
 struct DecodedRaftMsg {
     RaftMsgType type{};
@@ -19,7 +20,7 @@ public:
     static constexpr size_t kHeaderSize = 9;
     static constexpr size_t kMaxFrameSize = 10 * 1024 * 1024;
     static bool IsValidType(uint8_t type) {
-        return type <= static_cast<uint8_t>(RaftMsgType::kAppendEntriesResponse);
+        return type <= static_cast<uint8_t>(RaftMsgType::kInstallSnapshotResponse);
     }
     static uint32_t ReadU32(const char* data) {
         uint32_t value = 0;

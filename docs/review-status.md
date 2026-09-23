@@ -64,7 +64,7 @@ ctest --test-dir build-portable --output-on-failure
 - 新状态机要求持久化 lastApplied 标记；旧的非空 KV 数据库没有该标记时会拒绝启动。保留原数据，验证时使用全新的、配套的 KV 与 Raft 日志目录。目前没有自动迁移方案。
 - AppendEntries 增加 rpc_id 校验，测试集群所有节点须使用同一版本重新构建。
 - GET 默认仍是本地读取；`--leader_only_reads=true` 只检查本机角色。`--linearizable_reads=true` 时 Leader 走 ReadIndex（请求之后的探针 ACK 才计入多数派），Follower 返回 `MOVED`。
-- 尚未实现客户端请求去重、快照与日志压缩、完整请求超时机制。已有同步/异步应用对照保持同步持久化，未比较关闭同步持久化的性能，不能量化该持久化选项的独立成本。
+- 尚未实现客户端请求去重和完整请求超时机制。快照按默认 1024 条已应用记录触发，单条 InstallSnapshot，镜像超过 8 MiB 时保留日志。已有同步/异步应用对照保持同步持久化，未比较关闭同步持久化的性能，不能量化该持久化选项的独立成本。
 
 ## 本轮额外修复
 
