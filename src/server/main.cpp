@@ -18,6 +18,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include "common/log.h"
 #include "common/resp_parser.h"
 #include "common/command_buffer.h"
 #include "common/command_type.h"
@@ -389,11 +390,18 @@ static void ExecuteNextCommand(const muduo::net::TcpConnectionPtr& conn,
 
                     const auto action = DecideLinearizableGet(success, g_raft->IsLeader(), error);
                     if (action == LinearizableGetAction::Redirect) {
+                        EventLog(LogLevel::Info) << "linearizable GET redirect node="
+                                                << g_raft->GetNodeId()
+                                                << " leader=" << g_raft->GetLeaderId()
+                                                << " error=" << error;
                         SendReply(c, s, Error("MOVED " + std::to_string(g_raft->GetLeaderId())));
                         OnCommandComplete(c, s);
                         return;
                     }
                     if (action == LinearizableGetAction::Fail) {
+                        EventLog(LogLevel::Warning) << "linearizable GET failed node="
+                                                   << g_raft->GetNodeId()
+                                                   << " error=" << error;
                         SendReply(c, s, Error(error));
                         OnCommandComplete(c, s);
                         return;
@@ -471,7 +479,12 @@ static void DrainClient(const muduo::net::TcpConnectionPtr& conn,
     g_input_bytes -= drained.consumed_bytes;
     if (drained.invalid) {
         conn->stopRead();
-        if (ShouldReplyInvalidFrame(session->executing, session->waiting, session->queue.Empty()))
+        const bool reply = ShouldReplyInvalidFrame(
+            session->executing, session->waiting, session->queue.Empty());
+        EventLog(LogLevel::Warning) << "client " << conn->name() << " invalid RESP frame ("
+                                   << drained.invalid_error << ") "
+                                   << (reply ? "reply and close" : "close without reply");
+        if (reply)
             SendReply(conn, session, Error(drained.invalid_error));
         session->closing = true;
         conn->shutdown();

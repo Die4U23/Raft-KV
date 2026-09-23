@@ -82,7 +82,8 @@ redis-cli -p 8080 GET user:1
 
 **保证：**
 - 读屏障只接纳该轮创建之后发出的探针 ACK；请求之前已在途的复制/心跳及其重试不能确认这次读。
-- 探针 ACK 必须在最短选举超时（150 ms）内到达。更晚的同任期 ACK 不能确认读，并且到达时就失败该轮，不等下一次 Tick。
+- 探针 ACK 必须在最短选举超时（150 ms）内到达。年龄达到 150 ms 的同任期 ACK 不能确认读，并且到达时就失败该轮，不等下一次 Tick。Follower 的选举截止时间用同一把 `steady_clock`：刚收到心跳之后，至少要过 150 ms 才能给其他候选投票。`Tick` 提前触发不会把这段等待缩短。
+- Leader 失去多数派应答超过 150 ms 后卸任（CheckQuorum）。未完成的读失败，而不是继续返回本地值。
 - 多数派确认之后、读本地 KV 之前再检查一次仍是 Leader。已经卸任则 `MOVED`。
 - 同一连接上 GET 仍排在前面的 SET/DEL 之后，保留读己之写。非法 RESP 帧若撞上尚未完成的命令，只关闭连接，不把帧错误插进那条回复。
 - 卸任或 `Stop()` 会拒绝未完成的读；这些失败在 `--linearizable_reads=true` 时映射为 `MOVED`。
@@ -90,7 +91,8 @@ redis-cli -p 8080 GET user:1
 **不保证 / 已知边界：**
 - 默认 `--linearizable_reads=false` 时 GET 仍是本地读。
 - 应用落后与未发送队列的超时是 1000 ms；探针轮次本身在 150 ms 失败。队列深度上限 10000。
-- 没有 CheckQuorum/PreVote。隔离旧 Leader 仍保持 `IsLeader()`，线性一致 GET 会超时或 `MOVED`，不会成功返回过期值。刚听过心跳的 Follower 在选举时钟到期前不给其他候选投票，避免延迟探针 ACK 与事后投票的交集破坏读屏障。进程内回归在 `readindex_tests`；Linux 三节点在 `tests/cluster_linearizable.py`。
+- 没有 PreVote。隔离旧 Leader 会在 CheckQuorum 到期后卸任；在此之前线性一致 GET 超时或 `MOVED`，不会成功返回过期值。刚听过心跳的 Follower 在选举截止时间之前不给其他候选投票。进程内回归在 `readindex_tests`；Linux 三节点在 `tests/cluster_linearizable.py`。
+- 共识检查日志写到 stderr（`INFO` / `WARNING` / `ERROR`），不进入 Raft 日志。
 - 这不是租约读：时钟不同步或 RTT 接近选举超时会使 ReadIndex 失败，而不是放宽确认窗口。
 
 **参考资料：**

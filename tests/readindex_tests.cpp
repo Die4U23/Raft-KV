@@ -1,9 +1,8 @@
 // Production RaftNode ReadIndex tests. A homemade manager is not enough:
 // these fail if probe rpc_ids, stale ACKs, apply lag, or timeout are wrong.
 #include "in_process_cluster.h"
-#include <chrono>
+#include <functional>
 #include <iostream>
-#include <thread>
 
 static void DistinctRpcIdsReachQuorum() {
     Cluster cluster;
@@ -96,10 +95,11 @@ static void TimeoutWithoutMajority() {
             done = true; ok = success; error = err;
         }), "ReadIndex rejected");
     cluster.messages.clear();
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    cluster.Advance(10, RaftNode::kMinElectionTimeoutMs);
     cluster.Node(10).Tick();
     Check(done && !ok, "ReadIndex did not time out without majority");
     Check(error.find("timeout") != std::string::npos, "timeout used unexpected error");
+    Check(!cluster.Node(10).IsLeader(), "leader without a quorum did not step down");
 }
 
 static void OverloadRejectsAfterTenThousandPending() {
@@ -156,9 +156,10 @@ static void IsolatedOldLeaderCannotConfirmRead() {
     Check(cluster.State(10).Get("default:k", &isolated) && isolated == "old",
           "isolated leader applied a majority write");
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    cluster.Advance(10, RaftNode::kMinElectionTimeoutMs);
     cluster.Node(10).Tick();
     Check(done && !ok, "isolated leader ReadIndex succeeded or hung past the timeout");
+    Check(!cluster.Node(10).IsLeader(), "isolated leader stayed leader after the election timeout");
 }
 
 static void InflightRetryDoesNotConfirm() {
@@ -221,7 +222,7 @@ static void LateProbeAckPastElectionTimeoutDoesNotConfirm() {
     for (const auto& probe : probes)
         acks.push_back(DeliverAppendAndTakeAck(cluster, probe));
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    cluster.Advance(10, RaftNode::kMinElectionTimeoutMs);
     for (const auto& ack : acks) cluster.Deliver(ack);
     Check(done && !ok, "late probe ACK left the round pending until a later tick");
 }
@@ -281,6 +282,86 @@ static void FreshHeartbeatBlocksVoteSoDelayedProbeAckStaysWithLiveLeader() {
     Check(done && ok, "live leader ReadIndex failed after a blocked disruptive vote");
 }
 
+static raftcore::RequestVote Vote(int term, int candidate, int64_t last_index, int64_t last_term) {
+    raftcore::RequestVote request;
+    request.set_term(term);
+    request.set_candidate_id(candidate);
+    request.set_last_log_index(last_index);
+    request.set_last_log_term(last_term);
+    return request;
+}
+
+// Election eligibility and the ReadIndex lease share one steady clock.
+// Bursting Tick used to spend 10 ms of election budget per call, so a follower
+// could vote about one tick before the leader rejected the probe ACK.
+static void ElectionClockMatchesReadIndexLease() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    const int term = cluster.Node(30).GetCurrentTerm();
+    const int64_t last = cluster.Node(30).GetCommitIndex();
+
+    cluster.Advance(30, RaftNode::kMinElectionTimeoutMs - 1);
+    cluster.messages.clear();
+    cluster.Node(30).HandleRequestVote(50, Vote(term + 1, 50, last, term));
+    auto early = LastVoteResponse(cluster);
+    Check(!early.vote_granted() && early.term() == term,
+          "follower voted before the minimum election timeout");
+
+    cluster.messages.clear();
+    bool done = false, ok = false;
+    Check(cluster.Node(10).RequestReadIndex(
+        [&](bool success, int64_t, const std::string&) { done = true; ok = success; }),
+          "ReadIndex rejected inside the lease");
+    auto probes = TakeAppendsFrom(cluster, 10);
+    Check(!probes.empty(), "missing probe");
+    std::vector<Message> acks;
+    for (const auto& probe : probes)
+        acks.push_back(DeliverAppendAndTakeAck(cluster, probe));
+    for (int tick = 0; tick < 15; ++tick)
+        cluster.Node(10).Tick();
+    cluster.Advance(10, RaftNode::kMinElectionTimeoutMs - 1);
+    cluster.Deliver(acks.front());
+    Check(done && ok, "probe ack inside the election timeout was rejected");
+
+    done = false;
+    ok = true;
+    cluster.messages.clear();
+    Check(cluster.Node(10).RequestReadIndex(
+        [&](bool success, int64_t, const std::string&) { done = true; ok = success; }),
+          "ReadIndex rejected at the lease boundary");
+    probes = TakeAppendsFrom(cluster, 10);
+    acks.clear();
+    for (const auto& probe : probes)
+        acks.push_back(DeliverAppendAndTakeAck(cluster, probe));
+    cluster.Advance(10, RaftNode::kMinElectionTimeoutMs);
+    cluster.Deliver(acks.front());
+    Check(done && !ok, "probe ack at the election timeout still confirmed the read");
+
+    // Probes above reset follower 30's deadline. Another full election timeout
+    // must make the disruptive vote eligible again.
+    cluster.Advance(30, RaftNode::kMaxElectionTimeoutMs);
+    cluster.messages.clear();
+    cluster.Node(30).HandleRequestVote(50, Vote(term + 1, 50, last, term));
+    auto later = LastVoteResponse(cluster);
+    Check(later.vote_granted(), "follower refused a vote after its election deadline");
+}
+
+static void SingleNodeReadPipelineDoesNotGrowTheStack() {
+    Cluster cluster({10});
+    cluster.Elect(10);
+    constexpr int kReads = 2000;
+    int completed = 0;
+    std::function<void(bool, int64_t, const std::string&)> next;
+    next = [&](bool success, int64_t, const std::string& error) {
+        Check(success, error.empty() ? "single-node read failed" : error.c_str());
+        if (++completed >= kReads) return;
+        Check(cluster.Node(10).RequestReadIndex(next), "chained ReadIndex rejected");
+    };
+    Check(cluster.Node(10).RequestReadIndex(next), "first ReadIndex rejected");
+    Check(completed == kReads, "single-node ReadIndex pipeline did not finish");
+}
+
 int main() {
     try {
         DistinctRpcIdsReachQuorum();
@@ -292,6 +373,8 @@ int main() {
         InflightRetryDoesNotConfirm();
         LateProbeAckPastElectionTimeoutDoesNotConfirm();
         FreshHeartbeatBlocksVoteSoDelayedProbeAckStaysWithLiveLeader();
+        ElectionClockMatchesReadIndexLease();
+        SingleNodeReadPipelineDoesNotGrowTheStack();
         std::cout << "PASS: production RaftNode ReadIndex\n";
         return 0;
     } catch (const std::exception& e) {

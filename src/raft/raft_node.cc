@@ -1,7 +1,9 @@
 #include "raft/raft_node.h"
+#include "common/log.h"
 #include "common/resp_parser.h"
 #include "raft/peers.h"
 #include <algorithm>
+#include <chrono>
 #include <limits>
 #include <stdexcept>
 
@@ -53,10 +55,12 @@ const char* RaftNode::StateName() const {
 }
 void RaftNode::Start() {
     _running = true;
+    EventLog(LogLevel::Info) << "RaftNode[" << _node_id << "] start term=" << _current_term;
     BecomeFollower(_current_term);
     ApplyCommitted(); // resume committed backlog after Stop/Start
 }
 void RaftNode::Stop() {
+    EventLog(LogLevel::Info) << "RaftNode[" << _node_id << "] stop term=" << _current_term;
     _running = false;
     _state = FOLLOWER;
     _leader_id = -1;
@@ -109,7 +113,7 @@ int64_t RaftNode::ProposeBatch(std::vector<Proposal> proposals) {
         _leader_log_write.Observe(ElapsedMicros(write_started), entries.size(), bytes);
     } catch (const std::exception& e) {
         _storage_healthy = false;
-        // Log error and fail pending proposals before rethrowing
+        EventLog(LogLevel::Error) << "RaftNode[" << _node_id << "] log append failed: " << e.what();
         FailPending("-ERR storage failure; outcome unknown\r\n");
         throw;  // Let the exception propagate to process boundary (fail-stop)
     }
@@ -124,6 +128,7 @@ int64_t RaftNode::ProposeBatch(std::vector<Proposal> proposals) {
     return first;
 }
 void RaftNode::BecomeFollower(int32_t term) {
+    const bool changed = _state != FOLLOWER || term > _current_term || _leader_id != -1;
     if (term > _current_term) {
         _log->SaveHardState(term, -1);
         _current_term = term;
@@ -132,12 +137,17 @@ void RaftNode::BecomeFollower(int32_t term) {
     _state = FOLLOWER;
     _leader_id = -1;
     _votes.clear();
+    _peer_active.clear();
     for (auto& item : _inflight) item.second = {};
     ResetElectionTimer();
     FailPending("-ERR leadership lost; outcome unknown\r\n");
     // Clear ReadIndex queues on step down
     ClearReadIndexQueues("leadership lost");
     _can_serve_read = false;
+    if (changed) {
+        EventLog(LogLevel::Info) << "RaftNode[" << _node_id << "] becomes follower term="
+                                << _current_term;
+    }
 }
 void RaftNode::BecomeCandidate() {
     if (_current_term == INT32_MAX) throw std::runtime_error("Raft term exhausted");
@@ -148,6 +158,8 @@ void RaftNode::BecomeCandidate() {
     _leader_id = -1;
     _votes = {_node_id};
     ResetElectionTimer();
+    EventLog(LogLevel::Info) << "RaftNode[" << _node_id << "] becomes candidate term="
+                            << _current_term;
     if (QuorumSize() == 1) {
         BecomeLeader();
         return;
@@ -164,6 +176,11 @@ void RaftNode::BecomeCandidate() {
 void RaftNode::BecomeLeader() {
     _state = LEADER;
     _leader_id = _node_id;
+    _leader_since = Now();
+    _peer_active.clear();
+    NotePeerContact(_node_id);
+    EventLog(LogLevel::Info) << "RaftNode[" << _node_id << "] becomes leader term="
+                            << _current_term << " commit=" << _commit_index;
     for (const auto& peer : _all_peers) {
         _next_index[peer.id] = _log->LastIndex() + 1;
         _match_index[peer.id] = 0;
@@ -177,8 +194,35 @@ void RaftNode::BecomeLeader() {
     Propose("", {});
 }
 void RaftNode::ResetElectionTimer() {
-    _election_timeout_ms = std::uniform_int_distribution<int>(
+    const int timeout_ms = std::uniform_int_distribution<int>(
         kMinElectionTimeoutMs, kMaxElectionTimeoutMs)(_rng);
+    _election_deadline = Now() + std::chrono::milliseconds(timeout_ms);
+}
+SteadyClock::time_point RaftNode::Now() const {
+    return _clock ? _clock() : SteadyClock::now();
+}
+void RaftNode::NotePeerContact(int peer) {
+    _peer_active[peer] = Now();
+}
+void RaftNode::CheckQuorum() {
+    // The leader counts itself. Everyone else must have answered an
+    // AppendEntries RPC in this term inside the minimum election timeout.
+    NotePeerContact(_node_id);
+    if (QuorumSize() <= 1) return;
+    const auto now = Now();
+    const auto window = std::chrono::milliseconds(kMinElectionTimeoutMs);
+    if (now - _leader_since < window) return;
+    int fresh = 0;
+    for (const auto& peer : _all_peers) {
+        const auto found = _peer_active.find(peer.id);
+        if (found != _peer_active.end() && now - found->second < window)
+            ++fresh;
+    }
+    if (fresh >= QuorumSize()) return;
+    EventLog(LogLevel::Warning) << "RaftNode[" << _node_id << "] check quorum failed term="
+                               << _current_term << " fresh=" << fresh
+                               << " need=" << QuorumSize();
+    BecomeFollower(_current_term);
 }
 bool RaftNode::IsLogUpToDate(int64_t index, int64_t term) const {
     return term != _log->LastTerm() ? term > _log->LastTerm() : index >= _log->LastIndex();
@@ -192,7 +236,12 @@ void RaftNode::HandleRequestVote(int from, const raftcore::RequestVote& request)
     // from this node can confirm a read after it has already voted in a newer
     // term, and the intersecting majority can commit a later write.
     if (_state == FOLLOWER && _leader_id != -1 && _leader_id != from &&
-        _election_timeout_ms > 0) {
+        Now() < _election_deadline) {
+        EventLog(LogLevel::Info) << "RaftNode[" << _node_id
+                                << "] rejected disruptive vote from " << from
+                                << " term=" << request.term()
+                                << " current=" << _current_term
+                                << " leader=" << _leader_id;
         raftcore::RequestVoteResponse response;
         response.set_term(_current_term);
         response.set_vote_granted(false);
@@ -283,6 +332,8 @@ void RaftNode::HandleAppendEntries(int from, const raftcore::AppendEntries& requ
                     _follower_log_write.Observe(ElapsedMicros(write_started), appended.size(), bytes);
                 } catch (const std::exception& e) {
                     _storage_healthy = false;
+                    EventLog(LogLevel::Error) << "RaftNode[" << _node_id
+                                             << "] follower log append failed: " << e.what();
                     throw;  // Propagate to process boundary (fail-stop)
                 }
             }
@@ -306,6 +357,7 @@ void RaftNode::HandleAppendEntriesResponse(int from,
     }
     if (!IsLeader() || response.term() != _current_term) return;
 
+    NotePeerContact(from);
     // Expire a probe round as soon as a late response arrives. Waiting for the
     // next Tick left the read hanging after the lease had already elapsed.
     CheckReadIndexTimeout();
@@ -502,8 +554,7 @@ void RaftNode::FinishApply(int64_t first, size_t count, const ApplyExecutor::Res
 void RaftNode::Tick() {
     if (!_running) return;
     if (_state != LEADER) {
-        _election_timeout_ms -= kTickIntervalMs;
-        if (_election_timeout_ms <= 0) BecomeCandidate();
+        if (Now() >= _election_deadline) BecomeCandidate();
     }
     if (_state == LEADER) {
         for (auto& item : _inflight)
@@ -514,6 +565,8 @@ void RaftNode::Tick() {
             _heartbeat_timer_ms = kHeartbeatIntervalMs;
         }
         CheckReadIndexTimeout();
+        CheckQuorum();
+        if (!IsLeader()) return;
         FinishReadIndexRounds();
     }
 }
@@ -537,18 +590,25 @@ bool RaftNode::RequestReadIndex(ReadIndexCallback callback) {
 
     if (!IsLeader()) {
         ++_read_index_not_leader;
-        callback(false, -1, _leader_id == -1 ? "no leader" : "not leader");
+        const char* error = _leader_id == -1 ? "no leader" : "not leader";
+        EventLog(LogLevel::Info) << "RaftNode[" << _node_id << "] read index rejected: " << error;
+        callback(false, -1, error);
         return false;
     }
 
     if (!_can_serve_read) {
         ++_read_index_not_leader;
+        EventLog(LogLevel::Info) << "RaftNode[" << _node_id
+                                << "] read index rejected: waiting for no-op term="
+                                << _current_term;
         callback(false, -1, "waiting for leader to commit no-op");
         return false;
     }
 
     if (PendingReadIndexCount() >= kMaxPendingReadIndex) {
         ++_read_index_overload;
+        EventLog(LogLevel::Warning) << "RaftNode[" << _node_id
+                                   << "] read index queue full limit=" << kMaxPendingReadIndex;
         callback(false, -1, "read index queue full");
         return false;
     }
@@ -556,7 +616,7 @@ bool RaftNode::RequestReadIndex(ReadIndexCallback callback) {
     ReadIndexRequest req;
     req.read_index = _commit_index;
     req.callback = std::move(callback);
-    req.created_at = SteadyClock::now();
+    req.created_at = Now();
     _unsent_reads.push_back(std::move(req));
     if (!_completing_reads)
         FinishReadIndexRounds();
@@ -564,28 +624,29 @@ bool RaftNode::RequestReadIndex(ReadIndexCallback callback) {
 }
 
 void RaftNode::TryStartReadRound() {
-    if (_unsent_reads.empty() || !_heartbeat_rounds.empty())
-        return;
+    // A single-node confirmation invokes the callback, which may queue the
+    // next read. Loop instead of recursing so a long pipeline does not grow
+    // the stack with the queue depth.
+    while (!_unsent_reads.empty() && _heartbeat_rounds.empty()) {
+        HeartbeatRound round;
+        round.round_id = ++_next_round_id;
+        round.acks.insert(_node_id);
+        round.requests.reserve(_unsent_reads.size());
+        for (auto& req : _unsent_reads)
+            round.requests.push_back(std::move(req));
+        _unsent_reads.clear();
+        round.sent_at = Now();
+        round.confirmed = false;
+        _heartbeat_rounds.push_back(std::move(round));
+        _heartbeat_in_flight = true;
 
-    HeartbeatRound round;
-    round.round_id = ++_next_round_id;
-    round.acks.insert(_node_id);
-    round.requests.reserve(_unsent_reads.size());
-    for (auto& req : _unsent_reads)
-        round.requests.push_back(std::move(req));
-    _unsent_reads.clear();
-    round.sent_at = SteadyClock::now();
-    round.confirmed = false;
-    _heartbeat_rounds.push_back(std::move(round));
-    _heartbeat_in_flight = true;
-
-    if (QuorumSize() == 1) {
+        if (QuorumSize() != 1)
+            break;
         auto& started = _heartbeat_rounds.back();
         started.confirmed = true;
         ProcessConfirmedRound(started);
         _heartbeat_rounds.pop_front();
         _heartbeat_in_flight = false;
-        TryStartReadRound();
     }
 }
 
@@ -599,17 +660,24 @@ void RaftNode::BindReadIndexProbe(int peer, uint64_t rpc_id) {
 }
 
 void RaftNode::AckReadIndexProbe(int from, uint64_t rpc_id) {
-    const auto now = SteadyClock::now();
+    const auto now = Now();
     const auto lease = std::chrono::milliseconds(kMinElectionTimeoutMs);
     for (auto& round : _heartbeat_rounds) {
         const auto found = round.probe_rpc_ids.find(from);
         if (round.confirmed || found == round.probe_rpc_ids.end() || found->second != rpc_id)
             continue;
         // A delayed same-term ACK can arrive after a majority already elected a
-        // new leader. It must not confirm a read whose client-visible time is
-        // after that write.
-        if (now - round.sent_at > lease)
+        // new leader. Reject at the same age a follower is first allowed to
+        // campaign (elapsed >= minimum election timeout), not one tick later.
+        if (now - round.sent_at >= lease) {
+            const auto age_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - round.sent_at).count();
+            EventLog(LogLevel::Warning) << "RaftNode[" << _node_id
+                                       << "] ignored expired probe ack from " << from
+                                       << " rpc=" << rpc_id << " round=" << round.round_id
+                                       << " age_ms=" << age_ms;
             return;
+        }
         round.acks.insert(from);
         if (static_cast<int>(round.acks.size()) >= QuorumSize()) {
             round.confirmed = true;
@@ -678,7 +746,7 @@ void RaftNode::ProcessPendingReads() {
 }
 
 void RaftNode::CheckReadIndexTimeout() {
-    const auto now = SteadyClock::now();
+    const auto now = Now();
     const auto round_timeout = std::chrono::milliseconds(kMinElectionTimeoutMs);
     const auto timeout = std::chrono::milliseconds(kReadIndexTimeoutMs);
     const bool nested = _completing_reads;
@@ -686,8 +754,13 @@ void RaftNode::CheckReadIndexTimeout() {
 
     while (!_heartbeat_rounds.empty()) {
         auto& round = _heartbeat_rounds.front();
-        if (now - round.sent_at <= round_timeout)
+        if (now - round.sent_at < round_timeout)
             break;
+        const auto age_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - round.sent_at).count();
+        EventLog(LogLevel::Warning) << "RaftNode[" << _node_id << "] read index round "
+                                   << round.round_id << " expired age_ms=" << age_ms
+                                   << " reads=" << round.requests.size();
         for (auto& req : round.requests) {
             req.callback(false, -1, "read index timeout");
             ++_read_index_timeout;
@@ -697,13 +770,19 @@ void RaftNode::CheckReadIndexTimeout() {
     _heartbeat_in_flight = !_heartbeat_rounds.empty();
 
     auto timeout_queue = [&](std::deque<ReadIndexRequest>& queue, const char* reason) {
+        size_t expired = 0;
         while (!queue.empty()) {
             auto& req = queue.front();
             if (now - req.created_at <= timeout)
                 break;
             req.callback(false, -1, reason);
             ++_read_index_timeout;
+            ++expired;
             queue.pop_front();
+        }
+        if (expired != 0) {
+            EventLog(LogLevel::Warning) << "RaftNode[" << _node_id << "] " << reason
+                                       << " expired " << expired << " reads";
         }
     };
     timeout_queue(_unsent_reads, "read index timeout");
@@ -712,6 +791,11 @@ void RaftNode::CheckReadIndexTimeout() {
 }
 
 void RaftNode::ClearReadIndexQueues(const std::string& reason) {
+    const size_t pending = PendingReadIndexCount();
+    if (pending != 0) {
+        EventLog(LogLevel::Warning) << "RaftNode[" << _node_id << "] failing " << pending
+                                   << " read index requests: " << reason;
+    }
     const bool nested = _completing_reads;
     _completing_reads = true;
     auto fail = [&](std::deque<ReadIndexRequest>& queue) {
