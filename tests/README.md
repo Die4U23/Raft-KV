@@ -4,7 +4,7 @@
 
 ## 可移植协议与核心测试
 
-不构建 Linux 服务端时，可运行六个独立的 C++ 测试目标：
+不构建 Linux 服务端时，可运行下列独立的 C++ 测试目标：
 
 ```sh
 cmake -S . -B build-protocol -DRAFTKV_BUILD_SERVER=OFF -DBUILD_TESTING=ON
@@ -12,9 +12,15 @@ cmake --build build-protocol
 ctest --test-dir build-protocol --output-on-failure
 ```
 
-- `protocol_tests` 使用实际解析器、输入缓冲区、帧编解码器和命名空间实现。
+- `protocol_tests` 使用实际解析器、输入缓冲区、帧编解码器和命名空间实现；命名空间检查含长度边界与连接隔离。
 - `peer_retry_tests` 使用实际重连策略，检查反复断线退避、稳定重置、旧定时任务及 peer 独立状态；不运行 Muduo。
 - `core_tests` 编译实际 RaftNode、RaftLog、KVStateMachine 与 RocksDBStore 源码，通过可控消息队列测试多数派、重复投票、复制、重启、日志冲突、丢失回复与存储失败。
+- `kv_state_machine_tests` 检查 SET/覆盖/DEL 回复、空命令 no-op、已提交命令大小写、非法日志命令拒绝，以及缺少 lastApplied 标记的旧库拒绝启动。
+- `raft_log_tests` 检查追加、截断、硬状态往返、GetTerm 边界，以及非连续日志在打开时失败。
+- `raft_node_coverage_tests` 检查 Follower/停机/不健康/超限提案返回值、选举日志新旧与一任一次性投票、非法 RequestVote 忽略，以及 Candidate 收到更高任期心跳后转为 Follower。
+- `readindex_tests` 用生产 RaftNode 检查探针 rpc_id、请求前 ACK 无效、应用落后等待、超时、10000 条过载，以及隔离旧 Leader 不能仅凭自身确认完成线性一致读。
+- `replication_logic_tests` / `replication_partition_tests` / `replication_edge_cases_unit` 用生产 RaftNode 检查复制 ACK、分区多数派与日志冲突边界。
+- `connection_order_tests` 使用生产 `ClassifyCommand` 与 `SessionQueueLimits`（1000 条 / 4 MiB），检查非法命令 FIFO 回复与队列满停止准入。
 - `storage_batch_tests` 检查批量同步写调用次数、批内删除语义、整批校验、故障和恢复；核心测试还检查批量复制顺序与条数/字节配额。
 - `async_executor_tests` 使用实际 `SerialApplyExecutor` 与真实 `std::thread`，检查串行任务、owner 线程完成通知、异常传递和停止时 join；没有数据库或真实网络。
 - `batch_flush_tests` 使用实际 `BatchFlushPolicy` 和显式假事件队列，检查满条数/字节数或已到期时升格、保留初始窗口、取消竞态下的旧 token 与重复回调、多批分轮处理、尾批剩余期限及零延迟；不调用 Muduo 定时器。
@@ -25,7 +31,7 @@ ctest --test-dir build-protocol --output-on-failure
 
 `tests/test_support/` 仅在核心和批量存储测试中使用。其 RocksDB 替身是支持故障注入的内存映射，Protobuf 替身使用进程内对象快照，PeerManager 替身使用消息队列。因此核心测试能检查状态转换、调用顺序及错误传播，不能验证 Protobuf 真实编码、磁盘 fsync、掉电恢复、文件锁、实际连接重连或网络调度。服务端目标不包含这些替身头文件。执行器测试虽使用真实线程，也不验证 RocksDB 并发 GET/Write 或 Muduo 调度。
 
-Python 测试客户端仅使用标准库，兼容 Python 3.8+。以下命令检查 RESP 编解码、碎片回复、粘连回复、数组、二进制 bulk、错误、整数和 EOF；不会启动集群：
+Python 测试客户端仅使用标准库，兼容 Python 3.8+。以下命令检查 RESP 编解码、碎片回复、粘连回复、数组、二进制 bulk、错误、整数和 EOF；不会启动集群。可移植 CI 通过 `tests/cluster_smoke_tests.py` 运行同一组自检：
 
 ```sh
 python3 tests/cluster_smoke.py --self-test

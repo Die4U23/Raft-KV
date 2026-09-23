@@ -1,6 +1,7 @@
 // Production command classifier + per-connection FIFO used by src/server/main.cpp.
-// These tests fail if ClassifyCommand or the ERROR-in-queue contract changes.
+// These tests fail if ClassifyCommand, ERROR-in-queue, or F3 queue limits change.
 #include "common/command_type.h"
+#include "common/session_queue.h"
 #include <deque>
 #include <functional>
 #include <iostream>
@@ -42,12 +43,53 @@ static void TestClassifier() {
     auto bad_get = ClassifyCommand({"GET"});
     Check(bad_get.type == CommandClass::ERROR, "GET missing key is ERROR");
     auto empty = ClassifyCommand({});
-    Check(empty.type == CommandClass::ERROR, "empty command is ERROR");
+    Check(empty.type == CommandClass::ERROR && empty.error == "ERR empty command",
+          "empty command text");
+
+    auto ping_args = ClassifyCommand({"PING", "x"});
+    Check(ping_args.type == CommandClass::ERROR &&
+          ping_args.error == "ERR wrong number of arguments for 'PING' command",
+          "PING arity");
+    auto info_args = ClassifyCommand({"INFO", "all"});
+    Check(info_args.type == CommandClass::ERROR, "INFO extra arg is ERROR");
+    auto select_short = ClassifyCommand({"SELECT"});
+    Check(select_short.type == CommandClass::ERROR, "SELECT missing ns is ERROR");
+    auto select_extra = ClassifyCommand({"SELECT", "a", "b"});
+    Check(select_extra.type == CommandClass::ERROR, "SELECT extra arg is ERROR");
+    auto get_extra = ClassifyCommand({"GET", "k", "extra"});
+    Check(get_extra.type == CommandClass::ERROR, "GET extra arg is ERROR");
+    auto set_extra = ClassifyCommand({"SET", "k", "v", "nx"});
+    Check(set_extra.type == CommandClass::ERROR &&
+          set_extra.error.find("wrong number of arguments") != std::string::npos,
+          "SET extra arg is ERROR");
+    auto del_extra = ClassifyCommand({"DEL", "k", "k2"});
+    Check(del_extra.type == CommandClass::ERROR, "DEL extra arg is ERROR");
+    auto del_short = ClassifyCommand({"DEL"});
+    Check(del_short.type == CommandClass::ERROR, "DEL missing key is ERROR");
+    auto lower = ClassifyCommand({"set", "k", "v"});
+    Check(lower.type == CommandClass::ERROR &&
+          lower.error == "ERR unknown command 'set'",
+          "classifier is case-sensitive; DrainClient must uppercase first");
+}
+
+static void TestSessionQueueLimits() {
+    Check(SessionQueueLimits::kMaxCommands == 1000, "F3 command limit drifted");
+    Check(SessionQueueLimits::kMaxBytes == 4 * 1024 * 1024, "F3 byte limit drifted");
+    Check(!SessionQueueLimits::IsFull(0, 0), "empty queue reported full");
+    Check(!SessionQueueLimits::IsFull(999, SessionQueueLimits::kMaxBytes - 1),
+          "999 commands just under 4MiB reported full");
+    Check(SessionQueueLimits::IsFull(1000, 0), "1000 queued commands were still admitted");
+    Check(SessionQueueLimits::IsFull(0, SessionQueueLimits::kMaxBytes),
+          "exactly 4MiB queued was still admitted");
+    const std::vector<std::string> args{"SET", "k", "value"};
+    Check(SessionQueueLimits::AccountedBytes(20, args) == 20 + 3 + 1 + 5,
+          "accounted bytes dropped RESP framing or argument bytes");
 }
 
 struct Queued {
     CommandClass classified;
     std::string name;
+    size_t bytes = 0;
 };
 
 class SessionQueue {
@@ -56,10 +98,18 @@ public:
     std::vector<std::string> replies;
     bool executing = false;
     std::function<void()> inflight_write;
+    size_t queued_bytes = 0;
 
-    void Enqueue(const std::vector<std::string>& args) {
+    bool CanAdmit() const {
+        return !SessionQueueLimits::IsFull(queue.size(), queued_bytes);
+    }
+
+    void Enqueue(const std::vector<std::string>& args, size_t consumed = 0) {
+        Check(CanAdmit(), "admitted a command after the production queue was full");
         auto classified = ClassifyCommand(args);
-        queue.push_back({classified, args.empty() ? "" : args[0]});
+        const auto bytes = SessionQueueLimits::AccountedBytes(consumed, args);
+        queue.push_back({classified, args.empty() ? "" : args[0], bytes});
+        queued_bytes += bytes;
         Process();
     }
 
@@ -69,6 +119,7 @@ public:
         executing = true;
         auto cmd = std::move(queue.front());
         queue.pop_front();
+        queued_bytes -= cmd.bytes;
         if (cmd.classified.type == CommandClass::ERROR) {
             replies.push_back("-ERR " + cmd.classified.error);
             Complete();
@@ -128,12 +179,46 @@ static void TestMixedPipeline() {
           q.replies[4] == "OK: GET", "pipeline RESP order");
 }
 
+static void TestQueueStopsAtCommandLimit() {
+    SessionQueue q;
+    q.Enqueue({"SET", "k", "v"});
+    Check(q.executing && q.queue.empty(), "write should be executing, not queued");
+    for (size_t i = 0; i < SessionQueueLimits::kMaxCommands; ++i)
+        q.Enqueue({"PING"});
+    Check(q.queue.size() == SessionQueueLimits::kMaxCommands, "lost queued PINGs");
+    Check(!q.CanAdmit(), "queue still admitted after 1000 waiting commands");
+    q.FinishWrite();
+    Check(q.replies.size() == 1 + SessionQueueLimits::kMaxCommands, "limit drain replies");
+    Check(q.CanAdmit() && q.queue.empty() && q.queued_bytes == 0,
+          "queue did not resume after draining the command limit");
+}
+
+static void TestQueueStopsAtByteLimit() {
+    SessionQueue q;
+    q.Enqueue({"SET", "k", "v"}, 8);
+    const std::string payload(64 * 1024, 'x');
+    size_t admitted = 0;
+    while (q.CanAdmit()) {
+        q.Enqueue({"SET", "k", payload}, 20);
+        ++admitted;
+        Check(admitted <= SessionQueueLimits::kMaxCommands,
+              "byte-limit fill exceeded the command cap; loop is not making progress");
+    }
+    Check(q.queued_bytes >= SessionQueueLimits::kMaxBytes ||
+          q.queue.size() >= SessionQueueLimits::kMaxCommands,
+          "stopped admitting without hitting either production limit");
+    Check(admitted > 1, "byte-limit test admitted only the in-flight write");
+}
+
 int main() {
     try {
         TestClassifier();
+        TestSessionQueueLimits();
         TestErrorDoesNotOvertakeWrite();
         TestMixedPipeline();
-        Check(checks >= 20, "too few assertions");
+        TestQueueStopsAtCommandLimit();
+        TestQueueStopsAtByteLimit();
+        Check(checks >= 40, "too few assertions");
         std::cout << "PASS: production ClassifyCommand and FIFO ERROR ordering ("
                   << checks << " checks)\n";
         return 0;

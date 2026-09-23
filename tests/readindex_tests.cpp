@@ -102,12 +102,73 @@ static void TimeoutWithoutMajority() {
     Check(error.find("timeout") != std::string::npos, "timeout used unexpected error");
 }
 
+static void OverloadRejectsAfterTenThousandPending() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    cluster.messages.clear();
+    int accepted = 0;
+    int overloaded = 0;
+    int completed = 0;
+    for (int i = 0; i < 10001; ++i) {
+        const bool ok = cluster.Node(10).RequestReadIndex(
+            [&](bool, int64_t, const std::string&) { ++completed; });
+        if (ok) ++accepted;
+        else ++overloaded;
+    }
+    Check(accepted == 10000 && overloaded == 1,
+          "ReadIndex overload did not reject the 10001st request");
+    Check(Metric(cluster.Node(10), "read_index_overload") == 1,
+          "overload counter was not incremented");
+    Check(Metric(cluster.Node(10), "read_index_pending") == 10000,
+          "pending ReadIndex count drifted from the admitted queue");
+    Check(completed == 1, "overload path must invoke the failure callback once");
+    cluster.Node(10).Stop();
+    Check(completed == 10001, "Stop did not fail the queued ReadIndex requests");
+}
+
+static void IsolatedOldLeaderCannotConfirmRead() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    Check(cluster.Node(10).Propose(Command({"SET", "default:k", "old"}), {}) > 0, "seed");
+    cluster.Pump();
+    cluster.Settle();
+    cluster.Partition(10);
+    cluster.messages.clear();
+
+    bool done = false, ok = true;
+    Check(cluster.Node(10).RequestReadIndex(
+        [&](bool success, int64_t, const std::string&) { done = true; ok = success; }),
+          "isolated leader rejected ReadIndex");
+    cluster.Pump();
+    Check(!done && cluster.Node(10).IsLeader(),
+          "isolated leader confirmed a read with only its self-ack");
+
+    cluster.Elect(50);
+    Check(cluster.Node(50).Propose(Command({"SET", "default:k", "new"}), {}) > 0,
+          "majority could not write while the old leader was isolated");
+    cluster.Pump();
+    cluster.Settle();
+    std::string majority, isolated;
+    Check(cluster.State(50).Get("default:k", &majority) && majority == "new",
+          "new leader missing the post-partition write");
+    Check(cluster.State(10).Get("default:k", &isolated) && isolated == "old",
+          "isolated leader applied a majority write");
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+    cluster.Node(10).Tick();
+    Check(done && !ok, "isolated leader ReadIndex succeeded or hung past the timeout");
+}
+
 int main() {
     try {
         DistinctRpcIdsReachQuorum();
         StaleAckDoesNotConfirm();
         ApplyLagWaitsForLastApplied();
         TimeoutWithoutMajority();
+        OverloadRejectsAfterTenThousandPending();
+        IsolatedOldLeaderCannotConfirmRead();
         std::cout << "PASS: production RaftNode ReadIndex\n";
         return 0;
     } catch (const std::exception& e) {

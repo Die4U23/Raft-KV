@@ -21,6 +21,7 @@
 #include "common/resp_parser.h"
 #include "common/command_buffer.h"
 #include "common/command_type.h"
+#include "common/session_queue.h"
 #include "common/batch_flush_policy.h"
 #include "common/metrics.h"
 #include "namespace/namespace_manager.h"
@@ -72,8 +73,6 @@ static constexpr size_t kMaxTotalOutput = 64 * 1024 * 1024;
 static constexpr size_t kMaxClientOutput = 4 * 1024 * 1024;
 static constexpr size_t kMaxQueuedWrites = 1024;
 static constexpr size_t kMaxQueuedWriteBytes = 16 * 1024 * 1024;
-static constexpr size_t kMaxPerConnectionQueue = 1000;  // Max commands per connection
-static constexpr size_t kMaxPerConnectionQueueBytes = 4 * 1024 * 1024;  // Max bytes per connection
 static size_t g_input_bytes = 0, g_output_bytes = 0, g_queued_write_bytes = 0;
 static uint64_t g_overload_rejections = 0;
 static LatencyStats g_write_queue_wait, g_write_completed, g_local_read;
@@ -201,8 +200,7 @@ static void OnCommandComplete(const muduo::net::TcpConnectionPtr& conn,
     session->executing = false;
 
     // Resume reading if queue was previously full
-    if (session->command_queue.size() < kMaxPerConnectionQueue &&
-        session->queued_bytes < kMaxPerConnectionQueueBytes &&
+    if (!SessionQueueLimits::IsFull(session->command_queue.size(), session->queued_bytes) &&
         conn->connected() && !session->closing) {
         conn->startRead();
     }
@@ -472,8 +470,7 @@ static void DrainClient(const muduo::net::TcpConnectionPtr& conn,
          !session->closing && !session->drain_scheduled; ++handled) {
 
         // Check per-connection queue limits before parsing more
-        if (session->command_queue.size() >= kMaxPerConnectionQueue ||
-            session->queued_bytes >= kMaxPerConnectionQueueBytes) {
+        if (SessionQueueLimits::IsFull(session->command_queue.size(), session->queued_bytes)) {
             // Queue full, stop reading until commands complete
             conn->stopRead();
             break;
@@ -492,11 +489,7 @@ static void DrainClient(const muduo::net::TcpConnectionPtr& conn,
         g_input_bytes -= parsed.consumed;
         auto& args = parsed.args;
 
-        // Calculate command size for accounting
-        size_t cmd_size = parsed.consumed;
-        for (const auto& arg : args) {
-            cmd_size += arg.size();
-        }
+        const size_t cmd_size = SessionQueueLimits::AccountedBytes(parsed.consumed, args);
 
         for (char& c : args[0])
             c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));

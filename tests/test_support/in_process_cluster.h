@@ -191,6 +191,15 @@ inline raftcore::AppendEntriesResponse LastResponse(Cluster& cluster) {
     cluster.messages.clear(); return response;
 }
 
+inline raftcore::RequestVoteResponse LastVoteResponse(Cluster& cluster) {
+    Check(!cluster.messages.empty(), "missing vote response");
+    raftcore::RequestVoteResponse response;
+    Check(cluster.messages.back().type == RaftMsgType::kRequestVoteResponse &&
+          response.ParseFromString(cluster.messages.back().payload), "invalid vote response");
+    cluster.messages.clear();
+    return response;
+}
+
 inline std::vector<Message> TakeAppendsFrom(Cluster& cluster, int leader) {
     std::vector<Message> appends;
     std::deque<Message> rest;
