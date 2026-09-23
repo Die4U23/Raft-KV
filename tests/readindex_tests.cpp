@@ -223,9 +223,7 @@ static void LateProbeAckPastElectionTimeoutDoesNotConfirm() {
 
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     for (const auto& ack : acks) cluster.Deliver(ack);
-    Check(!done, "ReadIndex completed on probe ACKs older than min election timeout");
-    cluster.Node(10).Tick();
-    Check(done && !ok, "expired probe round was left hanging");
+    Check(done && !ok, "late probe ACK left the round pending until a later tick");
 }
 
 // A probe ACK held in the network must not be paired with a later vote from

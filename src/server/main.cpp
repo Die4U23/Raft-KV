@@ -227,7 +227,14 @@ static void FlushQueuedWrites() {
                 if (ok) g_write_completed.Observe(ElapsedMicros(enqueued_at));
                 const auto conn = weak_conn.lock();
                 const auto session = weak_session.lock();
-                if (!conn || !session || !conn->connected() || session->closing) return;
+                if (!conn || !session ||
+                    !CanDeliverClientReply(conn->connected(), session->closing)) {
+                    if (session) {
+                        session->executing = false;
+                        session->waiting = false;
+                    }
+                    return;
+                }
                 SendReply(conn, session, response);
                 session->waiting = false;
                 OnCommandComplete(conn, session);  // Continue with next command
@@ -241,7 +248,14 @@ static void FlushQueuedWrites() {
             for (const auto& owner : owners) {
                 const auto conn = owner.connection.lock();
                 const auto state = owner.session.lock();
-                if (!conn || !state) continue;
+                if (!conn || !state ||
+                    !CanDeliverClientReply(conn->connected(), state->closing)) {
+                    if (state) {
+                        state->executing = false;
+                        state->waiting = false;
+                    }
+                    continue;
+                }
                 state->waiting = false;
                 SendReply(conn, state, index == -1 ?
                     Error("MOVED " + std::to_string(g_raft->GetLeaderId())) :
@@ -365,20 +379,29 @@ static void ExecuteNextCommand(const muduo::net::TcpConnectionPtr& conn,
                 g_raft->RequestReadIndex([weak_conn, weak_session, key](bool success, int64_t read_index, const std::string& error) {
                     auto c = weak_conn.lock();
                     auto s = weak_session.lock();
-                    if (!c || !s || !c->connected() || s->closing) return;
-
-                    if (!success) {
-                        if (IsReadIndexRedirectError(error)) {
-                            SendReply(c, s, Error("MOVED " + std::to_string(g_raft->GetLeaderId())));
-                        } else {
-                            SendReply(c, s, Error(error));
+                    if (!c || !s || !CanDeliverClientReply(c->connected(), s->closing)) {
+                        if (s) {
+                            s->executing = false;
+                            s->waiting = false;
                         }
+                        return;
+                    }
+
+                    const auto action = DecideLinearizableGet(success, g_raft->IsLeader(), error);
+                    if (action == LinearizableGetAction::Redirect) {
+                        SendReply(c, s, Error("MOVED " + std::to_string(g_raft->GetLeaderId())));
+                        OnCommandComplete(c, s);
+                        return;
+                    }
+                    if (action == LinearizableGetAction::Fail) {
+                        SendReply(c, s, Error(error));
                         OnCommandComplete(c, s);
                         return;
                     }
 
-                    // Callback is invoked when lastApplied >= read_index
-                    // At this point, it's safe to read from state machine
+                    // Callback is invoked when lastApplied >= read_index and
+                    // this node is still leader. Read the local state machine.
+                    (void)read_index;
                     std::string value;
                     bool found = g_sm->Get(key, &value);
                     SendReply(c, s, found ? Bulk(value) : "$-1\r\n");
@@ -448,7 +471,8 @@ static void DrainClient(const muduo::net::TcpConnectionPtr& conn,
     g_input_bytes -= drained.consumed_bytes;
     if (drained.invalid) {
         conn->stopRead();
-        SendReply(conn, session, Error(drained.invalid_error));
+        if (ShouldReplyInvalidFrame(session->executing, session->waiting, session->queue.Empty()))
+            SendReply(conn, session, Error(drained.invalid_error));
         session->closing = true;
         conn->shutdown();
         conn->forceCloseWithDelay(1.0);

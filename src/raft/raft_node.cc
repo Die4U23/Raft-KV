@@ -306,6 +306,10 @@ void RaftNode::HandleAppendEntriesResponse(int from,
     }
     if (!IsLeader() || response.term() != _current_term) return;
 
+    // Expire a probe round as soon as a late response arrives. Waiting for the
+    // next Tick left the read hanging after the lease had already elapsed.
+    CheckReadIndexTimeout();
+
     auto& flight = _inflight.at(from);
 
     // A matching in-flight RPC may also be a ReadIndex probe, but only if this

@@ -18,10 +18,22 @@ from raft_proxy import RaftProxyMesh
 
 
 def isolated_get_ok(reply):
-    """True only if the isolated old Leader did not serve a successful value."""
-    if isinstance(reply, RespError):
-        return True
-    return False
+    """True only when the isolated leader answered with a read failure.
+
+    A socket timeout or a dropped connection is not an answer: the server may
+    still be holding the GET. Successful bulk values are not safe either.
+    """
+    if not isinstance(reply, RespError):
+        return False
+    message = reply.message
+    return any(token in message for token in (
+        "read index timeout",
+        "MOVED",
+        "leadership lost",
+        "server stopped",
+        "no leader",
+        "not leader",
+    ))
 
 
 def run_linearizable(cluster):
@@ -61,10 +73,11 @@ def run_linearizable(cluster):
 
         stale = None
         try:
-            with cluster.client(leader, io_timeout=2.5) as client:
+            with cluster.client(leader, io_timeout=1.0) as client:
                 stale = client.command('GET', 'k')
         except (socket.timeout, TimeoutError, OSError) as error:
-            stale = RespError('timeout-or-disconnect: {}'.format(error))
+            raise AssertionError(
+                'isolated old leader did not answer the linearizable GET: {}'.format(error))
         if not isolated_get_ok(stale):
             raise AssertionError(
                 'isolated old leader served a successful linearizable GET: {!r}'.format(stale))

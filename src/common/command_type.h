@@ -40,3 +40,18 @@ inline bool IsReadIndexRedirectError(const std::string& error) {
     return error == "not leader" || error == "no leader" ||
            error == "leadership lost" || error == "server stopped";
 }
+
+// After RequestReadIndex: serve only if the quorum succeeded and this node
+// is still leader. A timeout while we are still leader stays a local error
+// (MOVED would name ourselves). Losing leadership before the state-machine
+// read redirects instead of returning the local value.
+enum class LinearizableGetAction { Serve, Redirect, Fail };
+
+inline LinearizableGetAction DecideLinearizableGet(bool success, bool still_leader,
+                                                   const std::string& error) {
+    if (success && still_leader)
+        return LinearizableGetAction::Serve;
+    if (!success && still_leader && !IsReadIndexRedirectError(error))
+        return LinearizableGetAction::Fail;
+    return LinearizableGetAction::Redirect;
+}

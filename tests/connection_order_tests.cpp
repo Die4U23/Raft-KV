@@ -85,6 +85,18 @@ static void TestReadIndexRedirectErrors() {
     Check(!IsReadIndexRedirectError("read index queue full"), "overload stays a local error");
     Check(!IsReadIndexRedirectError("waiting for leader to commit no-op"),
           "pre-noop wait is not MOVED");
+    Check(DecideLinearizableGet(true, true, "") == LinearizableGetAction::Serve,
+          "quorum plus leadership serves the local value");
+    Check(DecideLinearizableGet(true, false, "") == LinearizableGetAction::Redirect,
+          "successful quorum after step-down must not serve the local value");
+    Check(DecideLinearizableGet(false, false, "leadership lost") == LinearizableGetAction::Redirect,
+          "step-down failure redirects");
+    Check(DecideLinearizableGet(false, true, "read index timeout") == LinearizableGetAction::Fail,
+          "timeout while still leader stays a local error");
+    Check(DecideLinearizableGet(false, false, "read index timeout") == LinearizableGetAction::Redirect,
+          "timeout after step-down redirects");
+    Check(DecideLinearizableGet(false, true, "read index queue full") == LinearizableGetAction::Fail,
+          "overload while still leader stays a local error");
 }
 
 static void TestSessionQueueLimits() {
@@ -196,19 +208,44 @@ static void TestQueueStopsAtByteLimitAndDoesNotLeak() {
     Check(q.replies.size() == 32 && q.queue.Empty() && q.queue.queued_bytes == 0,
           "completed reads leaked queued_bytes");
 
-    SessionCommandQueue queue;
     const std::string payload(64 * 1024, 'x');
-    size_t admitted = 0;
-    while (!queue.IsFull()) {
-        Check(queue.Enqueue({"SET", "k", payload}, 20), "byte-limit fill rejected a command");
-        ++admitted;
-        Check(admitted <= SessionQueueLimits::kMaxCommands, "byte fill made no progress");
-    }
-    Check(queue.queued_bytes >= SessionQueueLimits::kMaxBytes, "byte limit was not reached");
-    Check(admitted > 1, "byte-limit test admitted only one command");
-    const auto held = queue.queued_bytes;
-    auto first = queue.PopFront();
-    Check(queue.queued_bytes == held - first.bytes, "pop subtracted the wrong accounted size");
+    const auto frame = Resp({"SET", "k", payload});
+    const size_t args_only = std::string("SET").size() + 1 + payload.size();
+    Check(SessionQueueLimits::AccountedBytes(frame.size(), {"SET", "k", payload}) == frame.size(),
+          "wire frame must be counted once, not added to the payload");
+    Check(SessionQueueLimits::AccountedBytes(frame.size(), {"SET", "k", payload}) <
+              frame.size() + args_only,
+          "payload was charged a second time");
+
+    CommandBuffer first;
+    std::string chunk;
+    while (chunk.size() + frame.size() <= CommandBuffer::kMaxBufferedBytes)
+        chunk += frame;
+    Check(!chunk.empty() && first.Append(chunk), "first wire chunk rejected");
+    SessionCommandQueue queue;
+    const auto drained = DrainCommands(
+        first, queue, SessionQueueLimits::kMaxCommandsPerTurn, true);
+    Check(!drained.invalid && drained.enqueued > 0 && first.UnreadBytes() == 0,
+          "first wire chunk did not drain");
+    Check(queue.queued_bytes == drained.enqueued * frame.size(),
+          "queued_bytes is not one wire frame per admitted command");
+    Check(!queue.IsFull(), "one input buffer was double-counted past 4MiB");
+
+    const auto before = queue.queued_bytes;
+    CommandBuffer extra;
+    Check(extra.Append(frame + frame), "crossing frames rejected");
+    const auto crossed = DrainCommands(
+        extra, queue, SessionQueueLimits::kMaxCommandsPerTurn, true);
+    Check(crossed.enqueued == 1 && crossed.stop_read && !crossed.invalid,
+          "byte cap did not admit exactly the crossing command");
+    Check(extra.UnreadBytes() == frame.size(),
+          "drain consumed the frame past the byte cap");
+    Check(queue.IsFull() && queue.queued_bytes == before + frame.size(),
+          "crossing command was not counted once");
+    auto first_cmd = queue.PopFront();
+    Check(first_cmd.bytes == frame.size() &&
+          queue.queued_bytes == before + frame.size() - first_cmd.bytes,
+          "pop subtracted a different size than the wire frame");
 }
 
 static void TestDrainTurnLimitAndStopRead() {
@@ -242,6 +279,17 @@ static void TestInvalidStopsWithoutEnqueue() {
     const auto drained = DrainCommands(buffer, queue, SessionQueueLimits::kMaxCommandsPerTurn, true);
     Check(drained.invalid && drained.stop_read && drained.enqueued == 0 && queue.Empty(),
           "invalid RESP was enqueued or skipped");
+    Check(ShouldReplyInvalidFrame(false, false, true),
+          "an idle connection should report the broken frame");
+    Check(!ShouldReplyInvalidFrame(true, false, true),
+          "an in-flight command must not receive the broken-frame error");
+    Check(!ShouldReplyInvalidFrame(false, true, true),
+          "a write waiting on Raft must not receive the broken-frame error");
+    Check(!ShouldReplyInvalidFrame(false, false, false),
+          "queued commands must not receive the broken-frame error");
+    Check(CanDeliverClientReply(true, false), "connected session can take a reply");
+    Check(!CanDeliverClientReply(false, false), "disconnected session must drop the reply");
+    Check(!CanDeliverClientReply(true, true), "closing session must drop the reply");
 }
 
 int main() {
