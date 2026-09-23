@@ -74,6 +74,23 @@ static void TestClassifier() {
     Check(lower.type == CommandClass::ERROR &&
           lower.error == "ERR unknown command 'set'",
           "classifier is case-sensitive; DrainClient must uppercase first");
+
+    auto idem_set = ClassifyCommand({"SET", "k", "v", "c1", "1"});
+    Check(idem_set.type == CommandClass::WRITE && idem_set.error.empty(),
+          "SET with client id and request id is WRITE");
+    auto idem_del = ClassifyCommand({"DEL", "k", "c1", "2"});
+    Check(idem_del.type == CommandClass::WRITE && idem_del.error.empty(),
+          "DEL with client id and request id is WRITE");
+    auto bad_seq = ClassifyCommand({"SET", "k", "v", "c1", "01"});
+    Check(bad_seq.type == CommandClass::ERROR &&
+          bad_seq.error == "ERR invalid client id or request id",
+          "leading zero request id was accepted");
+    auto zero_seq = ClassifyCommand({"DEL", "k", "c1", "0"});
+    Check(zero_seq.type == CommandClass::ERROR, "request id 0 was accepted");
+    auto empty_client = ClassifyCommand({"SET", "k", "v", "", "1"});
+    Check(empty_client.type == CommandClass::ERROR, "empty client id was accepted");
+    auto huge = ClassifyCommand({"SET", "k", "v", std::string(129, 'a'), "1"});
+    Check(huge.type == CommandClass::ERROR, "oversized client id was accepted");
 }
 
 static void TestReadIndexRedirectErrors() {

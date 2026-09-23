@@ -514,6 +514,61 @@ static void SnapshotConflictWithAppliedLogStops() {
           "conflicting snapshot changed the applied prefix");
 }
 
+static void IdempotentRetrySurvivesLeaderChange() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    std::string first;
+    Check(cluster.Node(10).Propose(Command({"SET", "default:k", "v1", "app", "1"}),
+                                   [&](bool ok, const std::string& reply) {
+                                       Check(ok, "first idempotent SET was not applied");
+                                       first = reply;
+                                   }) > 0,
+          "leader rejected an idempotent SET");
+    cluster.Pump();
+    cluster.Settle();
+    std::string value;
+    Check(first == "+OK\r\n" && cluster.State(30).Get("default:k", &value) && value == "v1",
+          "idempotent SET did not reach a follower");
+
+    cluster.Partition(10);
+    const int leader = cluster.ElectAmong({30, 50});
+    std::string retry;
+    Check(cluster.Node(leader).Propose(Command({"SET", "default:k", "v2", "app", "1"}),
+                                       [&](bool ok, const std::string& reply) {
+                                           Check(ok, "retried SET was not applied");
+                                           retry = reply;
+                                       }) > 0,
+          "new leader rejected the retry");
+    cluster.Pump();
+    cluster.Settle();
+    Check(retry == "+OK\r\n" && cluster.State(leader).Get("default:k", &value) && value == "v1",
+          "retry on the new leader wrote a second value");
+
+    std::string deleted;
+    Check(cluster.Node(leader).Propose(Command({"DEL", "default:k", "app", "2"}),
+                                       [&](bool ok, const std::string& reply) {
+                                           Check(ok, "idempotent DEL was not applied");
+                                           deleted = reply;
+                                       }) > 0,
+          "new leader rejected the next request id");
+    cluster.Pump();
+    cluster.Settle();
+    Check(deleted == ":1\r\n" && !cluster.State(leader).Get("default:k", &value),
+          "the next request id did not delete");
+    std::string again;
+    Check(cluster.Node(leader).Propose(Command({"DEL", "default:k", "app", "2"}),
+                                       [&](bool ok, const std::string& reply) {
+                                           Check(ok, "duplicate DEL was not applied");
+                                           again = reply;
+                                       }) > 0,
+          "new leader rejected the duplicate DEL");
+    cluster.Pump();
+    cluster.Settle();
+    Check(again == ":1\r\n" && !cluster.State(leader).Get("default:k", &value),
+          "duplicate DEL returned a fresh result");
+}
+
 static void SnapshotChunksReassembleAndRejectAGap() {
     Cluster cluster;
     cluster.Elect(10);
@@ -638,6 +693,8 @@ int main() {
              MatchingSnapshotDoesNotRewindAppliedState},
             {"snapshot term conflict with applied log stops the node",
              SnapshotConflictWithAppliedLogStops},
+            {"idempotent retry does not apply twice after a leader change",
+             IdempotentRetrySurvivesLeaderChange},
             {"snapshot chunks reassemble and a gap is rejected",
              SnapshotChunksReassembleAndRejectAGap},
             {"higher-term AppendEntries steps down a candidate",

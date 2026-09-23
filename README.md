@@ -114,8 +114,10 @@ redis-cli -p 8080 DEL user:1
 | --- | --- |
 | `PING` | 返回 `PONG` |
 | `SET key value` | 通过 Raft 提交和状态机应用后返回 `OK` |
+| `SET key value client_id request_id` | 同上，但同一 `client_id` 的同一 `request_id` 只执行一次，重试返回上一次的回复 |
 | `GET key` | 默认读当前节点本地状态机；`--linearizable_reads=true` 时 Leader 走 ReadIndex，Follower 返回 `MOVED` |
 | `DEL key` | 通过 Raft 删除，返回 `0` 或 `1` |
+| `DEL key client_id request_id` | 同上，重复序号返回上一次的 `0` 或 `1`，不再次删除 |
 | `SELECT namespace` | 为当前 TCP 连接选择逻辑命名空间 |
 | `INFO` | 查看角色、任期、Leader、提交/应用位置和过载指标 |
 
@@ -133,8 +135,8 @@ redis-cli -p 8080 DEL user:1
 ## 当前边界
 
 - 集群是固定成员的单 Raft 组，没有动态成员变更和多分片。
-- 已应用条目超过快照距离（默认 1024）后压缩日志。落后副本用 InstallSnapshot 追平，镜像按 1 MiB 分片，收齐后再安装。整份镜像超过 8 MiB 时跳过压缩、保留日志。
-- 没有 `client_id + request_id` 去重；超时或回复丢失后重试可能重复执行。
+- 已应用条目超过快照距离（默认 1024）后压缩日志。落后副本用 InstallSnapshot 追平，镜像按 1 MiB 分片，收齐后再安装。镜像再大也压缩；压缩和安装时整份镜像留在内存里。
+- `client_id` 为 1–128 字节且不能含 NUL，`request_id` 从 1 起按十进制连续递增、不补零。每个客户端只记住最新序号和那次回复。序号对不上时返回 `-ERR stale request id`，不改键。不带序号的 `SET`/`DEL` 仍会在重试时再执行一次。去重记录写进同一次状态机批次，并放进快照。
 - 已有验证不覆盖整机掉电、存储介质损坏、长时间压测或完整 Raft 正确性证明。
 
 详细实现范围与验证边界见 [项目状态](docs/review-status.md)。
@@ -160,8 +162,8 @@ scripts/           Linux 构建与固定 Muduo 准备流程
 
 1. ✅ ~~ReadIndex 线性一致读~~：多数派确认读屏障，等待本地应用位置追上后再读取。默认关闭。选举截止时间和探针租约用同一把 `steady_clock`。隔离旧 Leader 在 CheckQuorum 到期后卸任，线性一致 GET 失败而不是返回过期值。
 2. ✅ ~~Pre-Vote~~：选举超时先进入 pre-candidate，不抬任期、不记 `votedFor`。只有多数派预投票才开始真正的选举。竞选失败后回到预投票，而不是再次抬任期。
-3. ✅ ~~快照 / InstallSnapshot / 日志压缩~~：应用后按距离导出 KV 镜像并截断日志前缀。落后副本按 1 MiB 分片接收 InstallSnapshot，收齐后安装。日志快照先于 KV 落盘，重启时用日志里的镜像补上尚未安装的状态。
-4. 客户端请求去重：为超时重试提供明确语义。
+3. ✅ ~~快照 / InstallSnapshot / 日志压缩~~：应用后按距离导出 KV 镜像并截断日志前缀。落后副本按 1 MiB 分片接收 InstallSnapshot，收齐后安装。日志快照先于 KV 落盘，重启时用日志里的镜像补上尚未安装的状态。镜像变大不再跳过压缩。
+4. ✅ ~~客户端请求去重~~：`SET`/`DEL` 带上 `client_id` 和 `request_id` 后，超时重试返回上一次的回复，不把同一条写再执行一次。序号必须从 1 连续递增。不带序号的写入保持原来的语义。
 
 ## 依赖与来源
 
