@@ -17,7 +17,7 @@ ctest --test-dir build-protocol --output-on-failure
 - `core_tests` 编译实际 RaftNode、RaftLog、KVStateMachine 与 RocksDBStore 源码，通过可控消息队列测试多数派、重复投票、复制、重启、日志冲突、丢失回复与存储失败。
 - `kv_state_machine_tests` 检查 SET/覆盖/DEL 回复、空命令 no-op、已提交命令大小写、非法日志命令拒绝，以及缺少 lastApplied 标记的旧库拒绝启动。
 - `raft_log_tests` 检查追加、截断、硬状态往返、GetTerm 边界，以及非连续日志在打开时失败。
-- `raft_node_coverage_tests` 检查 Follower/停机/不健康/超限提案返回值、选举日志新旧与一任一次性投票、非法 RequestVote 忽略，以及 Candidate 收到更高任期心跳后转为 Follower。
+- `raft_node_coverage_tests` 检查 Follower/停机/不健康/超限提案返回值、选举日志新旧与一任一次性投票、非法 RequestVote 忽略、Candidate 收到更高任期心跳后转为 Follower，以及 Pre-Vote：隔离节点不抬任期、恢复后不打断原 Leader、落后节点仍能完成选举、预投票不落盘、Leader 拒绝预投票、落选后回到预投票。
 - `readindex_tests` 用生产 RaftNode 检查探针 rpc_id、请求前 ACK 及其重试无效、超过最短选举超时的探针 ACK 在投递时即失败、应用落后等待、超时、10000 条过载，以及隔离旧 Leader 不能仅凭自身确认完成线性一致读。
 - `replication_logic_tests` / `replication_partition_tests` / `replication_edge_cases_unit` 用生产 RaftNode 检查复制 ACK、分区多数派与日志冲突边界。
 - `connection_order_tests` 使用生产 `DrainCommands` / `SessionCommandQueue`（与 `main.cpp` 共用），检查非法命令 FIFO 回复、小写动词、每轮 128 条、真实 RESP 打到 4 MiB 且每条只记一次线帧、坏帧在有未完成命令时不回复、线性一致 GET 卸任后改为重定向，以及弹出后 `queued_bytes` 归零。

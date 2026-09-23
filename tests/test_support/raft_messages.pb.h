@@ -49,10 +49,12 @@ class RequestVote : public test_proto::Snapshot<RequestVote> {
     TEST_PROTO_FIELD(int32_t, candidate_id)
     TEST_PROTO_FIELD(int64_t, last_log_index)
     TEST_PROTO_FIELD(int64_t, last_log_term)
+    TEST_PROTO_FIELD(bool, prevote)
 };
 class RequestVoteResponse : public test_proto::Snapshot<RequestVoteResponse> {
     TEST_PROTO_FIELD(int32_t, term)
     TEST_PROTO_FIELD(bool, vote_granted)
+    TEST_PROTO_FIELD(bool, prevote)
 };
 class AppendEntries : public test_proto::Snapshot<AppendEntries> {
     TEST_PROTO_FIELD(int32_t, term)
