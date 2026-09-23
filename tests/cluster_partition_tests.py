@@ -117,6 +117,7 @@ class RelayTests(unittest.TestCase):
             self.mesh.close()
             self.assertLess(time.monotonic() - started, 4)
             self.assertFalse(self.mesh.thread.is_alive())
+            self.assertTrue(self.mesh.loop.is_closed())
         finally:
             for stream in held:
                 stream.close()

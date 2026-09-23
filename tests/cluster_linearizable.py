@@ -79,6 +79,13 @@ def run_linearizable(cluster):
             expect(client.command('GET', 'k'), b'new', 'healed cluster GET')
         cluster.step('healed cluster reads the majority value')
     finally:
+        # Drop live Raft TCP before tearing down the proxy loop. Leaving the
+        # servers up while close() waits on relays previously hung CI.
+        for node in cluster.nodes:
+            try:
+                node.stop()
+            except Exception:
+                pass
         mesh.close()
 
 

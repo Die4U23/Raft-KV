@@ -10,7 +10,7 @@
 - 请求之前已在途的 AppendEntries 在超时后重试同一 `rpc_id` 时仍然不能绑定为探针；`readindex_tests` 覆盖这条路径。
 - `--linearizable_reads=true` 时，`leadership lost` / `server stopped` 与 `not leader` 一样映射为 `MOVED`。`IsReadIndexRedirectError` 与 `ClassifyCommand` 一样由 CTest 驱动。
 - 应用追上后若回调里又排队了下一条 ReadIndex，立即开启下一轮，不再等到下一次 Tick。
-- Linux `cluster_linearizable.py` 在 CI 中全部读路径已通过；先前失败是 `RaftProxyMesh.close()` 在仍有中继时先 `wait_closed` 服务器导致超时。关闭顺序改为先取消中继。
+- Linux `cluster_linearizable.py` 的读断言在上一轮 CI 已通过；job 失败是 `RaftProxyMesh.close()` 在 Raft 仍连着时 `wait_closed` 超时，随后关掉 event loop，残留 `_relay` 再 `Task.cancel()` 报 `Event loop is closed`。关闭改为 `abort` 传输、取消任务，loop 已关闭时不再 cancel；脚本在拆代理前先停服务进程。
 
 ## 2026-09-23 — F6 剩余缺口：生产连接调度器与 Linux 三节点 CI
 
