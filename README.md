@@ -158,8 +158,8 @@ scripts/           Linux 构建与固定 Muduo 准备流程
 
 ## 路线图
 
-1. ✅ ~~ReadIndex 线性一致读~~：多数派确认读屏障，等待本地应用位置追上后再读取。默认关闭；刚听过心跳的 Follower 到期前不给其他候选投票。没有完整 CheckQuorum/PreVote，隔离旧 Leader 上的线性一致 GET 失败而不是返回过期值。
-2. Pre-Vote / CheckQuorum：减少隔离节点恢复后的无效任期抬升和重新选举。
+1. ✅ ~~ReadIndex 线性一致读~~：多数派确认读屏障，等待本地应用位置追上后再读取。默认关闭。选举截止时间和探针租约用同一把 `steady_clock`。隔离旧 Leader 在 CheckQuorum 到期后卸任，线性一致 GET 失败而不是返回过期值。
+2. Pre-Vote：减少隔离节点恢复后的无效任期抬升。CheckQuorum 已实现。
 3. 快照 / InstallSnapshot / 日志压缩：限制日志增长和启动恢复时间。
 4. 客户端请求去重：为超时重试提供明确语义。
 

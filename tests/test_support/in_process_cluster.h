@@ -3,6 +3,7 @@
 // Transport and RocksDB are test doubles; this still fails if RaftNode is wrong.
 #include "raft/raft_node.h"
 #include "raft/apply_executor.h"
+#include <chrono>
 #include <cstdint>
 #include <deque>
 #include <initializer_list>
@@ -91,6 +92,11 @@ private:
     std::exception_ptr error_;
 };
 
+struct NodeClock {
+    std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+    void Advance(int ms) { now += std::chrono::milliseconds(ms); }
+};
+
 class Cluster {
 public:
     explicit Cluster(std::vector<int> ids = {10, 30, 50}, ApplyExecutor* executor = nullptr) {
@@ -105,6 +111,7 @@ public:
     }
     void Restart(int id) {
         members.erase(id);
+        clocks[id] = NodeClock{};
         auto member = std::make_unique<Member>();
         member->sm = std::make_unique<KVStateMachine>(Path(id, "/kv"));
         member->transport = std::make_unique<PeerManager>(id, peers,
@@ -114,14 +121,20 @@ public:
         member->raft = std::make_unique<RaftNode>(id, peers, nullptr, Path(id, "/log"),
             member->sm.get(), member->transport.get(),
             executors.count(id) ? executors.at(id) : nullptr);
+        member->raft->SetClockForTest([this, id] { return clocks.at(id).now; });
         member->raft->Start();
         members.emplace(id, std::move(member));
     }
     RaftNode& Node(int id) { return *members.at(id)->raft; }
     KVStateMachine& State(int id) { return *members.at(id)->sm; }
+    // Move only this node's clock. Other nodes keep their own elapsed time,
+    // matching production where each process measures steady_clock locally.
+    void Advance(int id, int ms) { clocks.at(id).Advance(ms); }
     void Candidate(int id) {
-        for (int ticks = 0; ticks < 31 && std::string(Node(id).StateName()) == "follower"; ++ticks)
+        for (int ticks = 0; ticks < 31 && std::string(Node(id).StateName()) == "follower"; ++ticks) {
+            Advance(id, RaftNode::kTickIntervalMs);
             Node(id).Tick();
+        }
         Check(std::string(Node(id).StateName()) == "candidate" || Node(id).IsLeader(),
               "election did not start within bounded ticks");
     }
@@ -175,6 +188,7 @@ public:
         for (int round = 0; round < 80; ++round) {
             for (int id : ids) {
                 if (!members.count(id) || Node(id).IsLeader()) continue;
+                Advance(id, RaftNode::kTickIntervalMs);
                 Node(id).Tick();
             }
             Pump();
@@ -193,6 +207,7 @@ public:
     std::map<int, ApplyExecutor*> executors;
     std::deque<Message> messages;
     std::set<int> partitioned;
+    std::map<int, NodeClock> clocks;
     std::string prefix;
 };
 

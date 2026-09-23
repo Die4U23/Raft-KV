@@ -72,6 +72,16 @@ public:
     // Callback will be invoked when read_index is safe to read
     // Returns false if not leader or cannot serve reads yet
     bool RequestReadIndex(ReadIndexCallback callback);
+    // Empty in production: Now() is steady_clock. Tests install a manual clock
+    // so elections and the ReadIndex lease advance together without sleeping.
+    void SetClockForTest(std::function<SteadyClock::time_point()> clock) {
+        _clock = std::move(clock);
+    }
+
+    static constexpr int kTickIntervalMs = 10;
+    static constexpr int kHeartbeatIntervalMs = 50;
+    static constexpr int kMinElectionTimeoutMs = 150;
+    static constexpr int kMaxElectionTimeoutMs = 300;
 private:
     enum State { FOLLOWER, CANDIDATE, LEADER };
     struct Inflight {
@@ -107,6 +117,9 @@ private:
     void BecomeCandidate();
     void BecomeLeader();
     void ResetElectionTimer();
+    SteadyClock::time_point Now() const;
+    void NotePeerContact(int peer);
+    void CheckQuorum();
     bool IsLogUpToDate(int64_t index, int64_t term) const;
     bool IsRemotePeer(int id) const;
     void SendAppendEntries(int peer);
@@ -152,7 +165,12 @@ private:
     std::map<int, int64_t> _match_index;
     std::map<int, Inflight> _inflight;
     uint64_t _rpc_sequence = 0;
-    int _election_timeout_ms = 0;
+    // Absolute steady-clock deadline. Tick observes it; it does not subtract a
+    // fixed 10 ms, so an early timer wakeup cannot open a ReadIndex window.
+    SteadyClock::time_point _election_deadline{};
+    SteadyClock::time_point _leader_since{};
+    std::map<int, SteadyClock::time_point> _peer_active;
+    std::function<SteadyClock::time_point()> _clock;
     int _heartbeat_timer_ms = 0;
     struct Pending { ProposeCallback callback; size_t bytes; };
     std::map<int64_t, Pending> _pending;
@@ -181,10 +199,6 @@ private:
     uint64_t _read_index_not_leader = 0;
     uint64_t _read_index_overload = 0;
 
-    static constexpr int kTickIntervalMs = 10;
-    static constexpr int kHeartbeatIntervalMs = 50;
-    static constexpr int kMinElectionTimeoutMs = 150;
-    static constexpr int kMaxElectionTimeoutMs = 300;
     // Retry an unacknowledged heartbeat before the minimum election timeout.
     static constexpr int kRpcRetryMs = kHeartbeatIntervalMs;
     static constexpr size_t kMaxPending = 1024;
@@ -192,8 +206,9 @@ private:
     static constexpr size_t kMaxBatchBytes = 2 * 1024 * 1024;
     static constexpr int kMaxBatchEntries = 128;
     static constexpr size_t kMaxPendingReadIndex = 10000;  // Max pending ReadIndex requests
-    // Apply-lag and unsent-queue bound. Probe rounds themselves expire at
-    // kMinElectionTimeoutMs: a later ACK cannot prove exclusive leadership
-    // after a follower could already have started an election.
+    // Apply-lag and unsent-queue bound. Probe rounds expire at
+    // kMinElectionTimeoutMs on the same clock as the election deadline: a
+    // follower cannot campaign until at least that long after a heartbeat,
+    // and a leader rejects a probe ACK at the same age.
     static constexpr int kReadIndexTimeoutMs = 1000;
 };
