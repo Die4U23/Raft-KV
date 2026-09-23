@@ -1,0 +1,46 @@
+name: Linux cluster
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-cluster-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cluster:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install Linux server dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake python3 unzip \
+            libboost-dev libboost-thread-dev \
+            libprotobuf-dev protobuf-compiler \
+            librocksdb-dev libgflags-dev libgoogle-glog-dev libssl-dev
+
+      - name: Build Muduo, server, CTest, and three-node smoke
+        run: python3 scripts/build_linux.py --jobs 2 --smoke --build-dir "$HOME/build-linux-ci"
+
+      - name: Isolated old-leader linearizable reads
+        run: >-
+          python3 tests/cluster_linearizable.py
+          --binary "$HOME/build-linux-ci/server/raft_kv_server"
+          --timeout 90
+          --artifacts "$HOME/build-linux-ci/linearizable"

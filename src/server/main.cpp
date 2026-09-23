@@ -47,27 +47,17 @@ static KVStateMachine* g_sm = nullptr;
 static RaftNode* g_raft = nullptr;
 static muduo::net::EventLoop* g_loop = nullptr;
 static NamespaceManager g_namespaces;
-// Per-connection command queue entry
-struct QueuedCommand {
-    CommandClass::Type type = CommandClass::ERROR;
-    std::vector<std::string> args;
-    SteadyClock::time_point enqueued_at;
-    std::string error_message;
-};
 
 struct ClientSession {
     CommandBuffer input;
+    SessionCommandQueue queue;
     bool waiting = false;
     bool closing = false;
     bool drain_scheduled = false;
     size_t accounted_output = 0;
-    // Per-connection command queue for ordered execution
-    std::deque<QueuedCommand> command_queue;
     bool executing = false;  // Whether a command is currently executing
-    size_t queued_bytes = 0;  // Bytes in command_queue (for memory accounting)
 };
 static std::map<std::string, std::shared_ptr<ClientSession>> g_sessions;
-static constexpr size_t kMaxCommandsPerTurn = 128;
 static constexpr size_t kMaxTotalInput = 64 * 1024 * 1024;
 static constexpr size_t kMaxTotalOutput = 64 * 1024 * 1024;
 static constexpr size_t kMaxClientOutput = 4 * 1024 * 1024;
@@ -200,8 +190,7 @@ static void OnCommandComplete(const muduo::net::TcpConnectionPtr& conn,
     session->executing = false;
 
     // Resume reading if queue was previously full
-    if (!SessionQueueLimits::IsFull(session->command_queue.size(), session->queued_bytes) &&
-        conn->connected() && !session->closing) {
+    if (!session->queue.IsFull() && conn->connected() && !session->closing) {
         conn->startRead();
     }
 
@@ -326,7 +315,7 @@ static void ExecuteNextCommand(const muduo::net::TcpConnectionPtr& conn,
     if (session->executing || session->closing || !conn->connected()) return;
 
     // Check if there are commands in the queue
-    if (session->command_queue.empty()) {
+    if (session->queue.Empty()) {
         // Queue is empty, resume parsing input
         ScheduleDrain(conn, session);
         return;
@@ -335,18 +324,7 @@ static void ExecuteNextCommand(const muduo::net::TcpConnectionPtr& conn,
     // Mark as executing
     session->executing = true;
 
-    // Get the next command and release its bytes from queue accounting
-    auto cmd = std::move(session->command_queue.front());
-    session->command_queue.pop_front();
-
-    // Release queue byte accounting for this command
-    size_t cmd_size = 0;
-    for (const auto& arg : cmd.args) {
-        cmd_size += arg.size();
-    }
-    session->queued_bytes = (session->queued_bytes > cmd_size) ?
-                             (session->queued_bytes - cmd_size) : 0;
-
+    auto cmd = session->queue.PopFront();
     auto& args = cmd.args;
 
     // Execute the command based on type
@@ -465,49 +443,22 @@ static void ExecuteNextCommand(const muduo::net::TcpConnectionPtr& conn,
 
 static void DrainClient(const muduo::net::TcpConnectionPtr& conn,
                         const std::shared_ptr<ClientSession>& session) {
-    // Parse commands from input and add to per-connection queue
-    for (size_t handled = 0; handled < kMaxCommandsPerTurn && conn->connected() &&
-         !session->closing && !session->drain_scheduled; ++handled) {
-
-        // Check per-connection queue limits before parsing more
-        if (SessionQueueLimits::IsFull(session->command_queue.size(), session->queued_bytes)) {
-            // Queue full, stop reading until commands complete
-            conn->stopRead();
-            break;
-        }
-
-        auto parsed = session->input.Next();
-        if (parsed.state == RespParser::State::NeedMore) break;
-        if (parsed.state == RespParser::State::Invalid) {
-            conn->stopRead();
-            SendReply(conn, session, Error(parsed.error));
-            session->closing = true;
-            conn->shutdown();
-            conn->forceCloseWithDelay(1.0);
-            return;
-        }
-        g_input_bytes -= parsed.consumed;
-        auto& args = parsed.args;
-
-        const size_t cmd_size = SessionQueueLimits::AccountedBytes(parsed.consumed, args);
-
-        for (char& c : args[0])
-            c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-
-        const auto classified = ClassifyCommand(args);
-
-        QueuedCommand cmd;
-        cmd.type = classified.type;
-        cmd.args = std::move(args);
-        cmd.enqueued_at = SteadyClock::now();
-        cmd.error_message = classified.error;
-
-        session->command_queue.push_back(std::move(cmd));
-        session->queued_bytes += cmd_size;
+    const auto drained = DrainCommands(
+        session->input, session->queue, SessionQueueLimits::kMaxCommandsPerTurn,
+        conn->connected() && !session->closing && !session->drain_scheduled);
+    g_input_bytes -= drained.consumed_bytes;
+    if (drained.invalid) {
+        conn->stopRead();
+        SendReply(conn, session, Error(drained.invalid_error));
+        session->closing = true;
+        conn->shutdown();
+        conn->forceCloseWithDelay(1.0);
+        return;
     }
+    if (drained.stop_read)
+        conn->stopRead();
 
-    // Start executing commands if not already executing
-    if (!session->executing && !session->command_queue.empty()) {
+    if (!session->executing && !session->queue.Empty()) {
         ExecuteNextCommand(conn, session);
     } else if (conn->connected() && !session->executing) {
         ScheduleDrain(conn, session);
