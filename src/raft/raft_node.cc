@@ -523,10 +523,16 @@ SteadyClock::time_point RaftNode::Now() const {
 void RaftNode::NotePeerContact(int peer) {
     _peer_active[peer] = Now();
 }
+void RaftNode::NotePeerAck(int peer, SteadyClock::time_point sent_at) {
+    const auto found = _peer_active.find(peer);
+    if (found == _peer_active.end() || sent_at > found->second)
+        _peer_active[peer] = sent_at;
+}
 void RaftNode::CheckQuorum() {
-    // The leader counts itself. Everyone else must have answered an
-    // AppendEntries RPC in this term inside the minimum election timeout.
-    // A joint config steps down when either voter set loses its majority.
+    // The leader counts itself at Now(). A remote voter counts from the send
+    // time of a matched AppendEntries or InstallSnapshot, so this window
+    // closes before that follower can start an election. A joint config
+    // steps down when either voter set loses its majority.
     NotePeerContact(_node_id);
     if (Singleton()) return;
     const auto now = Now();
@@ -711,7 +717,6 @@ void RaftNode::HandleAppendEntriesResponse(int from,
     }
     if (!IsLeader() || response.term() != _current_term) return;
 
-    NotePeerContact(from);
     // Expire a probe round as soon as a late response arrives. Waiting for the
     // next Tick left the read hanging after the lease had already elapsed.
     CheckReadIndexTimeout();
@@ -727,6 +732,9 @@ void RaftNode::HandleAppendEntriesResponse(int from,
         FinishReadIndexRounds();
         return;
     }
+    // The follower reset its election timer when this RPC arrived. Anchor the
+    // lease at the first send, and ignore a later or mismatched response.
+    NotePeerAck(from, flight.sent_at);
     if (response.success() && response.last_log_index() != flight.last_index) {
         FinishReadIndexRounds();
         return;
@@ -879,10 +887,10 @@ void RaftNode::HandleInstallSnapshotResponse(int from,
         return;
     }
     if (!IsLeader() || response.term() != _current_term) return;
-    NotePeerContact(from);
     auto& flight = _inflight.at(from);
     if (!flight.id || flight.type != RaftMsgType::kInstallSnapshot ||
         response.rpc_id() != flight.id) return;
+    NotePeerAck(from, flight.sent_at);
     if (!response.success()) {
         const int64_t installed = flight.last_index;
         flight = {};
@@ -956,6 +964,7 @@ void RaftNode::SendSnapshotChunk(int peer) {
     flight.snapshot_done = request.done();
     request.SerializeToString(&flight.payload);
     flight.first_send = SteadyClock::now();
+    flight.sent_at = Now();
     SendPeer(peer, RaftMsgType::kInstallSnapshot, flight.payload);
 }
 void RaftNode::SendAppendEntries(int peer) {
@@ -1006,6 +1015,7 @@ void RaftNode::SendAppendEntries(int peer) {
     flight.entries = static_cast<size_t>(request.entries_size());
     request.SerializeToString(&flight.payload);
     flight.first_send = SteadyClock::now();
+    flight.sent_at = Now();
     BindReadIndexProbe(peer, flight.id);
     SendPeer(peer, RaftMsgType::kAppendEntries, flight.payload);
 }

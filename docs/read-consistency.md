@@ -93,7 +93,7 @@ redis-cli -p 8080 GET user:1
 - 应用落后与未发送队列的超时是 1000 ms；探针轮次本身在 150 ms 失败。队列深度上限 10000。
 - 选举超时先走 Pre-Vote。得不到多数派预投票就不会抬任期，隔离节点不能靠连续竞选打断仍有多数派的 Leader。CheckQuorum 仍会让隔离旧 Leader 卸任；在此之前线性一致 GET 超时或 `MOVED`，不会成功返回过期值。刚听过心跳的 Follower 在选举截止时间之前不给预投票，也不给正式投票。进程内回归在 `readindex_tests` 和 `raft_node_coverage_tests`；Linux 三节点在 `tests/cluster_linearizable.py`。
 - 共识检查日志写到 stderr（`INFO` / `WARNING` / `ERROR`），不进入 Raft 日志。
-- `--lease_reads` 默认关闭。打开后，与 `--linearizable_reads` 一样走强一致读：Follower 返回 `MOVED`。投票者 AppendEntries 联系时间的多数派加上（150 ms − 10 ms）之前，Leader 把读排到当前 `commit_index` 并计入 `lease_reads`，仍然要等 `lastApplied` 追上后才读本地 KV，不在应用前完成回调。恰好到达该窗口，或窗口之外，退回 ReadIndex，不增加 `lease_reads`。过载上限在这条快路径之前检查。各节点时钟不对齐；Follower 的时钟如果快过 10 ms，可能在 Leader 仍认为租约有效时开始竞选。RTT 接近选举超时会使 ReadIndex 失败，租约路径不会把确认窗口放宽到 150 ms 以外。
+- `--lease_reads` 默认关闭。打开后，与 `--linearizable_reads` 一样走强一致读：Follower 返回 `MOVED`。远程投票者的联系时间是已确认 AppendEntries 或 InstallSnapshot 第一次发出的时刻，不是应答到达时刻。这个时刻的多数派加上（150 ms − 10 ms）之前，Leader 把读排到当前 `commit_index` 并计入 `lease_reads`，仍然要等 `lastApplied` 追上后才读本地 KV，不在应用前完成回调。恰好到达该窗口，或窗口之外，退回 ReadIndex，不增加 `lease_reads`。过载上限在这条快路径之前检查。回程延迟不再把租约延长到跟随者最早能竞选之后。各节点时钟不对齐；跟随者的时钟如果在一个选举超时里快过 10 ms，可能在 Leader 仍认为租约有效时开始竞选。这 10 ms 只留给时钟。RTT 接近选举超时会使 ReadIndex 失败，租约路径不会把确认窗口放宽到 150 ms 以外。
 
 **参考资料：**
 - [Raft 论文第 8 节](https://raft.github.io/raft.pdf)
@@ -202,7 +202,7 @@ redis-cli -p 8080 GET user:1
 
 ### 短期（下个版本）
 
-ReadIndex、Pre-Vote、快照 / InstallSnapshot / 日志压缩，以及 `client_id + request_id` 去重已经在当前代码里。Lease read 仍未做：它需要时钟同步假设，用来省掉每次读取的多数派往返。
+ReadIndex、Pre-Vote、快照 / InstallSnapshot / 日志压缩，以及 `client_id + request_id` 去重已经在当前代码里。`--lease_reads` 也已经实现，默认关闭。联系时间锚在已确认 RPC 的发送时刻。跟随者的时钟如果在一个选举超时里快过 10 ms，这条快路径仍不安全。
 
 ### 长期
 

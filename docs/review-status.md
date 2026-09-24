@@ -63,7 +63,7 @@ ctest --test-dir build-portable --output-on-failure
 
 - 新状态机要求持久化 lastApplied 标记；旧的非空 KV 数据库没有该标记时会拒绝启动。保留原数据，验证时使用全新的、配套的 KV 与 Raft 日志目录。目前没有自动迁移方案。
 - AppendEntries 增加 rpc_id 校验，测试集群所有节点须使用同一版本重新构建。
-- GET 默认仍是本地读取；`--leader_only_reads=true` 只检查本机角色。`--linearizable_reads=true` 时 Leader 走 ReadIndex（请求之后的探针 ACK 才计入多数派），Follower 返回 `MOVED`。`--lease_reads=true` 时，在 140 ms 租约窗口内把读排到当前提交位置并仍等待应用；窗口外退回 ReadIndex。Follower 时钟快过 10 ms 时，这条租约并不安全。
+- GET 默认仍是本地读取；`--leader_only_reads=true` 只检查本机角色。`--linearizable_reads=true` 时 Leader 走 ReadIndex（请求之后的探针 ACK 才计入多数派），Follower 返回 `MOVED`。`--lease_reads=true` 时，联系时间是已确认 RPC 的发送时刻；在该时刻之后的 140 ms 内把读排到当前提交位置并仍等待应用，窗口外退回 ReadIndex。回程延迟不再延长租约。跟随者的时钟如果在一个选举超时里快过 10 ms，这条租约并不安全。
 - 带 `client_id` 和 `request_id` 的 `SET`/`DEL` 只执行一次。`--require_request_id` 默认关闭；关闭时不带序号的写入重试仍会再执行，打开后缺少序号返回 `-ERR request id required`。每个客户端只保留最新序号。`--request_timeout_ms` 默认 0；大于 0 时，已经提案的命令到期后回复一次 `-ERR request timeout; outcome unknown` 并留下日志条目，尚未提案的队列项回复 `-ERR request timeout` 后丢掉。快照按默认 1024 条已应用记录触发。新镜像按 1 MiB 分片键存放，压缩、发送、接收和安装每次处理一块；旧的版本 1 快照在打开时拆成 1 MiB 分片并改成版本 2，日志对象不再保留整份镜像；这一次打开仍要读出原来的那一个键。已有同步/异步应用对照保持同步持久化，未比较关闭同步持久化的性能，不能量化该持久化选项的独立成本。
 - 本分支另有版本化配置（`CFGSET` / `CFGGET` / `CFGROLLBACK` / `CFGCACHE`）、一次一个的 joint 成员变更、`--shards`（默认 1）、`--cluster_token` / `--client_token`（默认空）。这些都不在 `main`，也不在 `v0.2.0`。`MEMBER JOIN id host port` 可以加入静态列表之外的主机，Leader 可以移除自己。本节点不是某个分片的 Leader 时，把 `MEMBER` 转给那个分片的 Leader。可移植 CTest 16/16 通过。Linux 构建 CTest 17/17 通过，三进程冒烟 10/10 通过；`cluster_linearizable.py` 这次没有重跑。
 
