@@ -1,3 +1,5 @@
+> 这是对提交 `831a91c` 的检查记录，不是当前状态。当前读路径见 [../read-consistency.md](../read-consistency.md)。
+
 # Raft-KV 架构检查（2026-09-22）
 
 检查版本：`831a91cf259d77a48267e9b1c66e4ae6dc6e3da9`，本地 `main` 与本次获取的 `origin/main` 一致。

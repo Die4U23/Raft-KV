@@ -1,5 +1,7 @@
 # Ubuntu 构建与验证流程
 
+日常只保留两个构建目录。`build-linux-repro/` 由下面的自动流程生成。`build-portable/` 用 `RAFTKV_BUILD_SERVER=OFF` 跑不链接 Muduo 的回归。其余 `build*` 目录是临时产物，可以删。
+
 此流程固化了用户 Ubuntu 26.04 VM 上已验证的 Boost/Muduo 兼容修改，并在构建和测试时记录源码、依赖及服务二进制指纹。Windows 上的准备逻辑测试和可移植 C++ 回归已完成；2026-09-08 回传的 [Linux 自动流程原始证据](benchmarks/linux-workflow-validation.md)也已核验，已有构建目录上的增量流程、CTest 5/5 和真实冒烟 10 项通过。后续[空目录全量编译和测试](benchmarks/linux-fresh-validation.md)也已核验通过；干净系统复现及 Docker 镜像构建仍待验证。此前的[性能测试证据](benchmarks/ubuntu-2cpu-abba.md)属于独立的手工流程。
 
 ## 改动与依赖范围
