@@ -816,15 +816,6 @@ void RaftNode::MaybeCompact() {
                                    << "] snapshot export failed index=" << index;
         return;
     }
-    if (data.size() > kMaxSnapshotBytes) {
-        if (!_snapshot_skip_logged) {
-            _snapshot_skip_logged = true;
-            EventLog(LogLevel::Warning) << "RaftNode[" << _node_id
-                                       << "] snapshot exceeds " << kMaxSnapshotBytes
-                                       << " bytes; log prefix kept";
-        }
-        return;
-    }
     try {
         _log->SaveSnapshot(index, static_cast<int32_t>(term), data);
     } catch (const std::exception& e) {
@@ -833,7 +824,6 @@ void RaftNode::MaybeCompact() {
                                  << "] snapshot failed: " << e.what();
         throw;
     }
-    _snapshot_skip_logged = false;
     EventLog(LogLevel::Info) << "RaftNode[" << _node_id
                             << "] compacted log through index=" << index
                             << " term=" << term;

@@ -118,12 +118,12 @@ static void SnapshotExportInstallRoundTrip() {
           "binary snapshot seed");
     Check(source.Apply(3, Command({"DEL", "default:a"})) == ":1\r\n", "snapshot delete");
     std::string blob;
-    Check(source.TryExportSnapshot(&blob) && source.IsSnapshot(blob) && blob.size() >= 5 &&
-          blob[0] == 1, "export did not produce a versioned snapshot");
+    Check(source.TryExportSnapshot(&blob) && source.IsSnapshot(blob) && blob.size() >= 9 &&
+          blob[0] == 2, "export did not produce a version-2 snapshot");
     KVStateMachine empty("kv-sm/snap-empty");
     std::string empty_blob;
-    Check(empty.TryExportSnapshot(&empty_blob) && empty_blob.size() == 5 &&
-          empty.IsSnapshot(empty_blob), "empty user-key snapshot is not 5 bytes");
+    Check(empty.TryExportSnapshot(&empty_blob) && empty_blob.size() == 9 &&
+          empty.IsSnapshot(empty_blob), "empty snapshot is not version 2 with zero sessions");
 
     KVStateMachine restored("kv-sm/snap-dst");
     Check(restored.Apply(1, Command({"SET", "default:stale", "x"})) == "+OK\r\n", "stale seed");
@@ -150,6 +150,81 @@ static void SnapshotExportInstallRoundTrip() {
           value == binary, "rejected snapshot rewound applied state");
 }
 
+static void IdempotentRetryDoesNotApplyTwice() {
+    KVStateMachine plain("kv-sm/plain-del");
+    Check(plain.Apply(1, Command({"SET", "default:k", "v"})) == "+OK\r\n", "plain SET");
+    Check(plain.Apply(2, Command({"DEL", "default:k"})) == ":1\r\n", "plain DEL existing");
+    Check(plain.Apply(3, Command({"DEL", "default:k"})) == ":0\r\n",
+          "plain DEL without a request id ran a second time");
+
+    KVStateMachine machine("kv-sm/dedup");
+    Check(machine.Apply(1, Command({"SET", "default:k", "v"})) == "+OK\r\n", "seed SET");
+    Check(machine.Apply(2, "") == "+OK\r\n", "no-op before the idempotent DEL");
+    Check(machine.Apply(3, Command({"SET", "default:k", "v"})) == "+OK\r\n", "plain SET");
+    Check(machine.Apply(4, Command({"DEL", "default:k", "app", "1"})) == ":1\r\n",
+          "idempotent DEL missed the key");
+    Check(machine.Apply(5, Command({"DEL", "default:k", "other", "1"})) == ":0\r\n",
+          "a second client shared the first session");
+    std::string value;
+    Check(!machine.Get("default:k", &value), "DEL left the key");
+    Check(machine.Apply(6, Command({"DEL", "default:k", "app", "1"})) == ":1\r\n",
+          "retry did not replay the original DEL reply");
+    Check(machine.Apply(7, Command({"SET", "default:k", "again", "app", "1"})) == ":1\r\n" &&
+          !machine.Get("default:k", &value),
+          "same request id with a different command was executed");
+    Check(machine.Apply(8, Command({"SET", "default:k", "v2", "app", "3"})) == "-ERR stale request id\r\n" &&
+          !machine.Get("default:k", &value) && machine.LastApplied() == 8,
+          "a gap wrote the key or skipped the index");
+    Check(machine.Apply(9, Command({"SET", "default:k", "v2", "app", "2"})) == "+OK\r\n" &&
+          machine.Get("default:k", &value) && value == "v2",
+          "the next request id did not apply");
+    const auto batch = machine.ApplyBatch(10, {
+        Command({"SET", "default:k", "batch", "app", "3"}),
+        Command({"SET", "default:k", "ignored", "app", "3"}),
+        Command({"DEL", "default:k", "app", "2"}),
+    });
+    Check(batch.size() == 3 && batch[0] == "+OK\r\n" && batch[1] == "+OK\r\n" &&
+          batch[2] == "-ERR stale request id\r\n" &&
+          machine.Get("default:k", &value) && value == "batch",
+          "same-batch duplicate or stale request changed the key");
+    Check(machine.Apply(13, Command({"set", "default:k", "lower", "app", "4"})) == "+OK\r\n" &&
+          machine.Get("default:k", &value) && value == "lower",
+          "lowercase idempotent SET was rejected");
+    Throws([&] { machine.Apply(14, Command({"SET", "default:k", "v", "app", "01"})); });
+    Throws([&] { machine.Apply(14, Command({"SET", "default:k", "v", std::string("a\0b", 3), "1"})); });
+    Check(machine.LastApplied() == 13 && machine.Get("default:k", &value) && value == "lower",
+          "invalid request id mutated the store");
+
+    KVStateMachine reopened("kv-sm/dedup");
+    Check(reopened.Apply(14, Command({"SET", "default:k", "nope", "app", "4"})) == "+OK\r\n" &&
+          reopened.Get("default:k", &value) && value == "lower",
+          "reopened session executed the retry");
+
+    std::string blob;
+    Check(reopened.TryExportSnapshot(&blob) && reopened.IsSnapshot(blob), "session export failed");
+    KVStateMachine restored("kv-sm/dedup-dst");
+    Check(restored.Apply(1, Command({"SET", "default:other", "x", "stranger", "1"})) == "+OK\r\n",
+          "pre-install session");
+    Check(restored.TryInstallSnapshot(14, blob), "session snapshot rejected");
+    Check(!restored.Get("default:other", &value) && restored.Get("default:k", &value) &&
+          value == "lower", "install did not replace keys");
+    Check(restored.Apply(15, Command({"SET", "default:k", "nope", "app", "4"})) == "+OK\r\n" &&
+          restored.Get("default:k", &value) && value == "lower",
+          "installed session executed the retry");
+    Check(restored.Apply(16, Command({"SET", "default:other", "y", "stranger", "1"})) == "+OK\r\n" &&
+          restored.Get("default:other", &value) && value == "y",
+          "install kept a session that was not in the snapshot");
+
+    KVStateMachine legacy("kv-sm/dedup-v1");
+    Check(legacy.Apply(1, Command({"SET", "default:k", "v", "c", "1"})) == "+OK\r\n", "v1 seed");
+    Check(legacy.TryInstallSnapshot(2, SnapshotWithKey("default:n", "1")), "version 1 snapshot rejected");
+    Check(legacy.Get("default:n", &value) && value == "1" && !legacy.Get("default:k", &value),
+          "version 1 snapshot did not replace user keys");
+    Check(legacy.Apply(3, Command({"SET", "default:k", "again", "c", "1"})) == "+OK\r\n" &&
+          legacy.Get("default:k", &value) && value == "again",
+          "version 1 snapshot kept a session and blocked the same request id");
+}
+
 static void LegacyStoreWithoutMarkerIsRejected() {
     const std::string path = "kv-sm/legacy";
     auto state = rocksdb::testing::StateFor(path);
@@ -165,6 +240,7 @@ int main() {
         RejectUnsupportedCommittedCommands();
         ApplyMatchesApplyBatchAndReopen();
         SnapshotExportInstallRoundTrip();
+        IdempotentRetryDoesNotApplyTwice();
         LegacyStoreWithoutMarkerIsRejected();
         Check(checks >= 20, "too few KV assertions");
         std::cout << "PASS: production KVStateMachine (" << checks << " checks)\n";
