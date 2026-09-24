@@ -162,7 +162,7 @@ redis-cli -p 8080 DEL user:1
 
 - 默认仍是一个 Raft 组，启动时静态 peer 全部是投票者。`MEMBER JOIN` / `MEMBER LEAVE` 一次一个：进入 joint 配置后，提交要旧集合和新集合都过半数；应用内部的 `MEMBER COMMIT` 后才切到新投票者。`MEMBER JOIN id host port` 可以加入静态列表之外的主机。Leader 可以用 `MEMBER LEAVE` 去掉自己，应用 COMMIT 后卸任。不能把集合减空。`--shards` 大于 1 时同一组 peer 上有多个 Raft 组，键按 FNV-1a 分片，各分片各自选主。本节点是该分片 Leader 时就地提案；否则把这次 `MEMBER` 转给那个分片的 Leader。还不知道 Leader 时返回 `MOVED -1`。默认 `--shards=1`，数据路径和帧字节不变。
 - `--cluster_token` 为空时 Raft 帧不变。非空时帧外是 `MAC1`、内层长度和 HMAC-SHA256，校验失败就关闭连接。`--client_token` 为空时客户端命令不认证。`--lease_reads` 默认关闭。打开后，投票者联系时间的多数派加上（150 ms − 10 ms）之前，Leader 把读排到当前提交位置，仍要等应用到那一位；恰好到达该窗口或窗口之外退回 ReadIndex。Follower 时钟快过这 10 ms 时，仍可能在 Leader 认为租约有效时开始竞选。
-- 已应用条目超过快照距离（默认 1024）后压缩日志。落后副本用 InstallSnapshot 追平，镜像按 1 MiB 分片，收齐并确认是合法镜像后再安装。新快照按 1 MiB 写在日志库里；压缩、发送、接收和安装每次处理一块，发送还没结束时不开始下一次压缩。打开旧的版本 1 快照元数据时，仍会把那一份镜像读进内存。
+- 已应用条目超过快照距离（默认 1024）后压缩日志。落后副本用 InstallSnapshot 追平，镜像按 1 MiB 分片，收齐并确认是合法镜像后再安装。新快照按 1 MiB 写在日志库里；压缩、发送、接收和安装每次处理一块，发送还没结束时不开始下一次压缩。打开旧的版本 1 快照时，会把那一个整份键读出来拆成 1 MiB 分片，写成版本 2 后删掉原键，日志对象不再留着整份镜像；这一次打开本身仍要读出那个旧键。
 - `client_id` 为 1–128 字节且不能含 NUL，`request_id` 从 1 起按十进制连续递增、不补零。每个客户端只记住最新序号和那次回复。序号对不上时返回 `-ERR stale request id`，不改键。默认不带序号的 `SET`/`DEL`/`CFGSET`/`CFGROLLBACK` 仍会在重试时再执行一次。`--require_request_id=true` 时，这些写入缺少序号会返回 `-ERR request id required`；`MEMBER` 不要求序号。去重记录写进同一次状态机批次，并放进快照。`--request_timeout_ms` 默认 0。大于 0 时，已经提案的命令到期后只回复一次 `-ERR request timeout; outcome unknown`，日志条目留下，恢复多数派后仍会提交；尚未提案、只在写队列里的命令到期后丢掉，回复 `-ERR request timeout`。
 - 已有验证不覆盖整机掉电、存储介质损坏、长时间压测或完整 Raft 正确性证明。
 
