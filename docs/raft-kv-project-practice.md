@@ -432,7 +432,7 @@ P99 描述报告所收集延迟样本的第 99 百分位，用来观察尾部等
 
 ## 十、接下来准备提高什么
 
-下表是 2026-09-14 列出的五项计划。2026-09-24 按代码核对：1、4、5 已在 `cursor/raft-snapshot-386d`（`284cc2a`）实现，第 2 项在 `cursor/cluster-features-386d` 实现并已合进 `cursor/prd-progress-386d`。`main`（`531fcf4`）已有 ReadIndex 和 Pre-Vote，没有快照、去重和下面的配置命令。标签 `v0.2.0` 指向 `8f5142f`，不是 `531fcf4`。第 3 项有持续集成，以及 `scripts/demo_three_nodes.py` 这条可重复演示；干净系统从零安装的证据包仍然没有。
+下表是 2026-09-14 列出的五项计划。2026-09-24 按代码核对：1、4、5 已在 `cursor/raft-snapshot-386d`（`284cc2a`）实现，第 2 项在 `cursor/cluster-features-386d` 实现并已合进 `cursor/prd-progress-386d`。这些合在标签 `v0.3.0`。`main`（`531fcf4`）已有 ReadIndex 和 Pre-Vote，没有快照、去重和下面的配置命令。标签 `v0.2.0` 指向 `8f5142f`，不是 `531fcf4`。第 3 项有持续集成，以及 `scripts/demo_three_nodes.py` 这条可重复演示；干净系统从零安装的证据包仍然没有。
 
 | 优先级 | 计划 | 状态 | 对照 |
 | --- | --- | --- | --- |
