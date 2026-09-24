@@ -432,7 +432,7 @@ P99 描述报告所收集延迟样本的第 99 百分位，用来观察尾部等
 
 ## 十、接下来准备提高什么
 
-下表是 2026-09-14 列出的五项计划。2026-09-24 按代码核对：1、4、5 已在 `cursor/raft-snapshot-386d`（`284cc2a`）实现。`main` 停在 Pre-Vote（`531fcf4`，标签 `v0.2.0`），还没有快照和去重。第 2 项没有开始。第 3 项只完成了持续集成，没有单独的干净系统复现归档。
+下表是 2026-09-14 列出的五项计划。2026-09-24 按代码核对：1、4、5 已在 `cursor/raft-snapshot-386d`（`284cc2a`）实现。`main`（`531fcf4`）已有 ReadIndex 和 Pre-Vote，没有快照和去重。标签 `v0.2.0` 指向 `8f5142f`，不是 `531fcf4`。第 2 项没有开始。第 3 项只完成了持续集成，没有单独的干净系统复现归档。
 
 | 优先级 | 计划 | 状态 | 对照 |
 | --- | --- | --- | --- |
@@ -454,7 +454,7 @@ ReadIndex 的重点不只是增加一次心跳。需要明确何时可以相信�
 
 - **问题或目标**：第十节原先把五项都写成后续计划。ReadIndex、快照和请求去重已经进代码，进度表还写着未做。
 - **本次改动**：改第十节、本条记录，以及 `PROJECT_COMPLETION_SUMMARY.md`、`PROJECT_COMPLETENESS_CHECK.md` 里已经过时的进度表。没有改 Raft、状态机或测试。
-- **验证环境与方法**：对照 `284cc2a` 的 README 路线图、`src/raft/raft_node.cc`、`src/raft/kv_state_machine.cc` 和 `.github/workflows/`。快照与去重提交上，可移植 CTest 为 15/15；`6f4a761` 与合入提交 `284cc2a` 的 Portable checks、Linux cluster 两条 GitHub Actions 均成功。Linux cluster 包含服务构建、冒烟和 `cluster_linearizable.py`。
+- **验证环境与方法**：对照 `284cc2a` 的 README 路线图、`src/raft/raft_node.cc`、`src/raft/kv_state_machine.cc` 和 `.github/workflows/`。本地再跑可移植 CTest，15/15 通过。`6f4a761` 的 GitHub Actions 为 Portable checks `35860265890`、Linux cluster `35860265948`，均为 success。合入提交 `284cc2a` 为 Portable checks `35870967153`、Linux cluster `35870967265`，均为 success。Linux cluster 构建服务并跑冒烟和 `cluster_linearizable.py`；去重与快照分片的场景在可移植 CTest 里，不在这个 Linux 脚本里。`git merge-base --is-ancestor` 确认 `6f4a761` 和 `3a478d4` 都不在 `main`，`8f5142f` 在 `main`。`v0.2.0^{}` 是 `8f5142f`。
 - **实测结果**：五项里 1、4、5 已完成，3 只有持续集成，2 未开始。`main` 仍是 `531fcf4`，不含快照和去重。
 - **取舍与未完成事项**：不把版本化配置演示、成员变更、多分片、网络身份认证或租约读写成已完成。不带 `request_id` 的重试仍会再执行。快照镜像在内存中是整份。这次没有新的干净系统复现证据包。
 - **关联提交**：ReadIndex 与 Pre-Vote 在 `main` 的 `531fcf4`（`v0.2.0` 为 `8f5142f`）。快照分片为 `3a478d4`。去重和不按体积跳过压缩为 `6f4a761`。进度核对没有单独的功能提交。

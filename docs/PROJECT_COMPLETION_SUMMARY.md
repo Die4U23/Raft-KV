@@ -219,7 +219,7 @@ Total Test time (real) = 0.17 sec
 
 | 优先级 | 功能 | 状态 | 进度 |
 |-------|------|------|------|
-| 1 | Pre-Vote / CheckQuorum | ✅ 完成 | 在 `main`，标签 `v0.2.0` |
+| 1 | Pre-Vote / CheckQuorum | ✅ 完成 | 在 `main` 的 `531fcf4` 里。标签 `v0.2.0` 指向 `8f5142f` |
 | 2 | **ReadIndex 线性一致读** | ✅ 完成 | 在 `main`。默认关闭 |
 | 3 | 快照 / InstallSnapshot | ✅ 完成 | 在快照分支，尚未进入 `main`。1 MiB 分片；镜像再大也压缩 |
 | 4 | 客户端请求去重 | ✅ 完成 | 在快照分支，尚未进入 `main`。只保留每个客户端的最新序号 |
