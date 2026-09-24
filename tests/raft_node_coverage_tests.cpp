@@ -1,8 +1,10 @@
 // Production RaftNode admission, voting, and health paths not covered by the
 // existing scenario files. Homemade election/quota models are not CTest.
 #include "in_process_cluster.h"
+#include "common/request_deadline.h"
 #include "common/resp_parser.h"
 #include <algorithm>
+#include <chrono>
 #include <iostream>
 #include <vector>
 
@@ -655,6 +657,61 @@ static void SnapshotChunksReassembleAndRejectAGap() {
           "reassembled snapshot did not keep the applied key");
 }
 
+static void RequestTimeoutLeavesTheLogEntry() {
+    Check(!RequestTimedOut(0, std::chrono::milliseconds(1000)),
+          "a disabled deadline expired");
+    Check(!RequestTimedOut(50, std::chrono::milliseconds(49)),
+          "an age below the deadline expired");
+    Check(RequestTimedOut(50, std::chrono::milliseconds(50)),
+          "an age equal to the deadline stayed open");
+
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    cluster.Node(10).SetRequestTimeoutMs(50);
+    cluster.Partition(10);
+    int callbacks = 0;
+    bool ok = true;
+    std::string body;
+    const int64_t index = cluster.Node(10).Propose(
+        Command({"SET", "default:k", "v"}),
+        [&](bool success, const std::string& reply) {
+            ++callbacks;
+            ok = success;
+            body = reply;
+        });
+    Check(index > cluster.Node(10).GetCommitIndex(),
+          "a partitioned propose committed on one node");
+
+    cluster.Advance(10, 49);
+    cluster.Node(10).Tick();
+    Check(callbacks == 0 && cluster.Node(10).IsLeader() &&
+          cluster.Node(10).PendingProposals() == 1,
+          "the request expired before its deadline");
+
+    cluster.Advance(10, 1);
+    cluster.Node(10).Tick();
+    Check(callbacks == 1 && !ok &&
+          body == "-ERR request timeout; outcome unknown\r\n" &&
+          cluster.Node(10).PendingProposals() == 0 &&
+          cluster.Node(10).IsLeader() &&
+          cluster.Node(10).GetCommitIndex() < index &&
+          Metric(cluster.Node(10), "request_timeout") == 1,
+          "the deadline did not reply once and leave the entry uncommitted");
+    cluster.Node(10).Tick();
+    Check(callbacks == 1 && cluster.Node(10).IsLeader(),
+          "a later tick replied again or stepped down");
+
+    cluster.Heal(10);
+    cluster.Pump();
+    cluster.Settle();
+    std::string value;
+    Check(callbacks == 1 &&
+          cluster.Node(10).GetCommitIndex() >= index &&
+          cluster.State(30).Get("default:k", &value) && value == "v",
+          "the timed-out log entry was not applied after the partition healed");
+}
+
 static void HigherTermAppendStepsDownCandidate() {
     Cluster cluster;
     cluster.Candidate(10);
@@ -702,6 +759,8 @@ int main() {
              IdempotentRetrySurvivesLeaderChange},
             {"snapshot chunks reassemble and a gap is rejected",
              SnapshotChunksReassembleAndRejectAGap},
+            {"request timeout replies once and still applies the log entry",
+             RequestTimeoutLeavesTheLogEntry},
             {"higher-term AppendEntries steps down a candidate",
              HigherTermAppendStepsDownCandidate},
         };

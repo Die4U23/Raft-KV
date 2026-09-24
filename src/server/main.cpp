@@ -19,6 +19,7 @@
 #include <string>
 #include <vector>
 #include "common/log.h"
+#include "common/request_deadline.h"
 #include "common/resp_parser.h"
 #include "common/command_buffer.h"
 #include "common/command_type.h"
@@ -47,6 +48,7 @@ DEFINE_int32(shards, 1, "Raft groups on this peer set. 1 keeps one log, one KV, 
 DEFINE_string(cluster_token, "", "HMAC-SHA256 token for Raft frames. Empty keeps the current frame bytes");
 DEFINE_string(client_token, "", "Require AUTH before other commands. Empty leaves AUTH as an unknown command at execution");
 DEFINE_bool(require_request_id, false, "Reject SET, DEL, and config writes that have no client_id and request_id");
+DEFINE_int32(request_timeout_ms, 0, "Reply when a write has waited this long. 0 waits until apply or leadership loss. A command already in the log is not removed");
 DEFINE_int32(group_commit_ms, 1, "Partial batch collection window, 0..10 ms; full batches flush next loop turn");
 DEFINE_bool(async_apply, true, "Apply committed KV batches on a serial worker; Raft log writes stay synchronous");
 DEFINE_int32(max_clients, 1024, "Maximum concurrent client connections");
@@ -246,6 +248,25 @@ static void FlushQueuedWrites() {
     std::vector<QueuedWrite> owners;
     proposals.reserve(BatchFlushPolicy::kMaxEntries);
     owners.reserve(BatchFlushPolicy::kMaxEntries);
+    while (!g_writes.empty() &&
+           RequestTimedOut(FLAGS_request_timeout_ms,
+                           SteadyClock::now() - g_writes.front().enqueued_at)) {
+        auto write = std::move(g_writes.front());
+        g_writes.pop_front();
+        g_queued_write_bytes -= write.command.size();
+        const auto conn = write.connection.lock();
+        const auto state = write.session.lock();
+        if (!conn || !state || !CanDeliverClientReply(conn->connected(), state->closing)) {
+            if (state) {
+                state->executing = false;
+                state->waiting = false;
+            }
+            continue;
+        }
+        state->waiting = false;
+        SendReply(conn, state, Error("request timeout"));
+        OnCommandComplete(conn, state);
+    }
     size_t bytes = 0;
     size_t inspected = 0;
     const int shard = g_writes.empty() ? 0 : g_writes.front().shard;
@@ -727,8 +748,9 @@ static void OnClientMessage(const muduo::net::TcpConnectionPtr& conn,
 }
 static int RunServer() {
     if (FLAGS_group_commit_ms < 0 || FLAGS_group_commit_ms > 10 || FLAGS_max_clients < 1 ||
-        FLAGS_shards < 1 || FLAGS_shards > 64)
-        throw std::invalid_argument("invalid group_commit_ms, max_clients, or shards");
+        FLAGS_shards < 1 || FLAGS_shards > 64 ||
+        FLAGS_request_timeout_ms < 0 || FLAGS_request_timeout_ms > 60000)
+        throw std::invalid_argument("invalid group_commit_ms, max_clients, shards, or request_timeout_ms");
     const auto peers = ParsePeers(FLAGS_peers);
     if (FLAGS_client_port < 1 || FLAGS_client_port > 65535 ||
         FLAGS_raft_port < 1 || FLAGS_raft_port > 65535)
@@ -760,6 +782,7 @@ static int RunServer() {
             runtime.sm.get(), &peer_manager, runtime.apply.get());
         runtime.raft->SetReplicaShard(shard);
         runtime.raft->SetLeaseReads(FLAGS_lease_reads);
+        runtime.raft->SetRequestTimeoutMs(FLAGS_request_timeout_ms);
         g_shards.push_back(std::move(runtime));
     }
     g_loop = &loop;

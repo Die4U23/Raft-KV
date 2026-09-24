@@ -69,6 +69,10 @@ public:
     void SetReplicaShard(int shard) { _shard = shard; }
     // Off by default. See kLeaseClockDriftMs.
     void SetLeaseReads(bool enabled) { _lease_reads_enabled = enabled; }
+    // 0 keeps the current behavior: a proposed command waits until it is
+    // applied or this node stops being leader. A positive value replies once
+    // when the wait reaches that age and leaves the log entry in place.
+    void SetRequestTimeoutMs(int timeout_ms) { _request_timeout_ms = timeout_ms; }
     bool IsClusterVoter(int id) const;
     bool MembershipJoint() const { return _active.joint; }
     std::vector<int> ClusterVoters() const;
@@ -206,6 +210,7 @@ private:
     void LearnPeer(int id, const std::string& host, int port);
     void RememberMembershipPeers(const MembershipState& state);
     void FailForwards(const std::string& result);
+    void ExpireRequests();
     void StepDownIfRemoved();
     void MaybeAppendMemberCommit();
     static void FoldMembership(MembershipState* view, int64_t index, const std::string& command,
@@ -252,7 +257,11 @@ private:
     std::map<int, SteadyClock::time_point> _peer_active;
     std::function<SteadyClock::time_point()> _clock;
     int _heartbeat_timer_ms = 0;
-    struct Pending { ProposeCallback callback; size_t bytes; };
+    struct Pending {
+        ProposeCallback callback;
+        size_t bytes;
+        SteadyClock::time_point started;
+    };
     std::map<int64_t, Pending> _pending;
     size_t _pending_bytes = 0;
     uint64_t _proposal_batches = 0;
@@ -283,7 +292,11 @@ private:
     int _lease_drift_ms = kLeaseClockDriftMs;
     int _shard = 0;
     bool _appending_member_commit = false;
-    std::map<uint64_t, ProposeCallback> _forward_callbacks;
+    struct Forward {
+        ProposeCallback callback;
+        SteadyClock::time_point started;
+    };
+    std::map<uint64_t, Forward> _forward_callbacks;
     MembershipState _durable;
     MembershipState _active;
 
@@ -299,6 +312,8 @@ private:
     // follower cannot campaign until at least that long after a heartbeat,
     // and a leader rejects a probe ACK at the same age.
     static constexpr int kReadIndexTimeoutMs = 1000;
+    int _request_timeout_ms = 0;
+    uint64_t _request_timeout = 0;
     int64_t _snapshot_distance = kSnapshotDistance;
     size_t _snapshot_chunk_bytes = kSnapshotChunkBytes;
 };

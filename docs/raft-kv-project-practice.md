@@ -444,11 +444,20 @@ P99 描述报告所收集延迟样本的第 99 百分位，用来观察尾部等
 
 ReadIndex 的重点不只是增加一次心跳。需要明确何时可以相信当前读屏障，等待状态机应用到哪一个位置，以及等待期间角色变化如何结束请求。算法背景可参考 [Raft 论文第 8 节](https://raft.github.io/raft.pdf)；对外读写语义的描述方式可对照 [etcd API 一致性保证](https://etcd.io/docs/v3.6/learning/api_guarantees/)。
 
-动态成员变更、多分片、网络身份认证和租约读已在本分支实现，默认保持原来的行为：`--shards=1`，`--cluster_token` 和 `--client_token` 为空，`--lease_reads=false`，`--require_request_id=false`。`MEMBER JOIN id host port` 可以加入静态列表之外的主机，Leader 可以移除自己。一次只能有一个变更，不能把集合减空。多分片时各分片各自选主；本节点不是该分片 Leader 时把 `MEMBER` 转给那个 Leader，还不知道 Leader 时返回 `MOVED -1`。`--cluster_token` 非空时 Raft 帧外面加 HMAC-SHA256，校验失败就关掉连接。`--client_token` 非空时，除 `AUTH` 外的命令在认证前返回 `-ERR NOAUTH Authentication required`。`--lease_reads` 在投票者联系时间的多数派加上（150 ms − 10 ms）之内把读排到当前提交位置，仍要等 `lastApplied`；窗口外退回 ReadIndex。Follower 的时钟如果快过这个漂移上界，仍可能在 Leader 认为租约有效时开始竞选。其他网络故障、真实存储故障和长期运行验证仍未做。干净系统复现证据包仍未归档。可重复的三节点演示是 `scripts/demo_three_nodes.py`。
+动态成员变更、多分片、网络身份认证和租约读已在本分支实现，默认保持原来的行为：`--shards=1`，`--cluster_token` 和 `--client_token` 为空，`--lease_reads=false`，`--require_request_id=false`。`MEMBER JOIN id host port` 可以加入静态列表之外的主机，Leader 可以移除自己。一次只能有一个变更，不能把集合减空。多分片时各分片各自选主；本节点不是该分片 Leader 时把 `MEMBER` 转给那个 Leader，还不知道 Leader 时返回 `MOVED -1`。`--cluster_token` 非空时 Raft 帧外面加 HMAC-SHA256，校验失败就关掉连接。`--client_token` 非空时，除 `AUTH` 外的命令在认证前返回 `-ERR NOAUTH Authentication required`。`--lease_reads` 在投票者联系时间的多数派加上（150 ms − 10 ms）之内把读排到当前提交位置，仍要等 `lastApplied`；窗口外退回 ReadIndex。Follower 的时钟如果快过这个漂移上界，仍可能在 Leader 认为租约有效时开始竞选。`--request_timeout_ms` 默认 0。大于 0 时，已经进入日志的命令到期后只回复一次 `-ERR request timeout; outcome unknown`，条目留下，恢复多数派后仍会提交；还没提案的队列项到期后丢掉，回复 `-ERR request timeout`。其他网络故障、真实存储故障和长期运行验证仍未做。干净系统复现证据包仍未归档。可重复的三节点演示是 `scripts/demo_three_nodes.py`。
 
 ## 十一、持续更新日志
 
 以下按验收或归档日期倒序维护；同日记录按本次整理顺序排列。每次更新保留“问题或目标、改动、验证、结果、取舍、证据”六项。代码发布早于实测归档时，分别注明，避免把工具发布当成实验完成。
+
+### 2026-09-24｜写入等待超时
+
+- **问题或目标**：调用方停止等待时，服务端不能把已经进入 Raft 的命令撤掉。`v0.3.0` 还没有这条超时。
+- **本次改动**：`--request_timeout_ms` 默认 0，范围 0–60000。大于 0 时，已经提案的命令和成员转发到达这个时间，回复一次 `-ERR request timeout; outcome unknown`，回调从待回复表里拿掉。日志条目留下。还在写队列里、尚未提案的命令到期后丢掉，回复 `-ERR request timeout`。
+- **验证环境与方法**：可移植 CTest。`raft_node_coverage_tests` 里隔离 Leader，只拨这台节点的钟，49 ms 不回复，50 ms 回复一次，分区恢复后跟随者读到该键。Linux 三进程冒烟这次没有重跑。
+- **实测结果**：可移植 CTest 16/16 通过，覆盖场景 19 个。回调只有一次，提交索引在超时时还没越过这条日志，恢复后键是 `v`。没有新的性能数字。
+- **取舍与未完成事项**：超时不表示失败或回滚。单节点提案在同一次调用里提交，这条超时用不上。Follower 时钟快过 10 ms 时，租约读仍不安全。版本 1 快照元数据仍整份读入内存。这一节不在标签 `v0.3.0`，也不在 `main` 的 `531fcf4` 或 `v0.2.0` 的 `8f5142f`。
+- **关联提交**：在 `cursor/prd-progress-386d` 的 `8c73dbd` 之上。
 
 ### 2026-09-24｜三节点演示入口
 
