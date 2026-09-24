@@ -215,31 +215,35 @@ Total Test time (real) = 0.17 sec
 
 ### 路线图进度
 
+2026-09-21 写本报告时，下表除 ReadIndex 外都是待实现。2026-09-24 按 `cursor/raft-snapshot-386d` 的 `284cc2a` 重新核对。`main`（`531fcf4`）只有 ReadIndex 和 Pre-Vote，没有快照和去重。
+
 | 优先级 | 功能 | 状态 | 进度 |
 |-------|------|------|------|
-| 1 | Pre-Vote / CheckQuorum | 📋 待实现 | 0% |
-| 2 | **ReadIndex 线性一致读** | ✅ **完成** | **100%** |
-| 3 | 快照 / InstallSnapshot | 📋 待实现 | 0% |
-| 4 | 客户端请求去重 | 📋 待实现 | 0% |
+| 1 | Pre-Vote / CheckQuorum | ✅ 完成 | 在 `main`，标签 `v0.2.0` |
+| 2 | **ReadIndex 线性一致读** | ✅ 完成 | 在 `main`。默认关闭 |
+| 3 | 快照 / InstallSnapshot | ✅ 完成 | 在快照分支，尚未进入 `main`。1 MiB 分片；镜像再大也压缩 |
+| 4 | 客户端请求去重 | ✅ 完成 | 在快照分支，尚未进入 `main`。只保留每个客户端的最新序号 |
 
 ### 已知限制
 
 1. **GET 读一致性**:
-   - ❌ 默认本地读（最终一致）
-   - ⚠️ `--leader_only_reads` 仅检查角色（非线性一致）
-   - ✅ **`--linearizable_reads` 线性一致（新增）**
+   - 默认本地读
+   - `--leader_only_reads` 只检查角色，不是线性一致读
+   - `--linearizable_reads` 走 ReadIndex
 
 2. **集群管理**:
-   - ❌ 固定成员，无动态变更
-   - ❌ 单 Raft 组，无多分片
+   - 固定成员，无动态变更
+   - 单 Raft 组，无多分片
+   - 无网络身份认证
 
 3. **日志管理**:
-   - ❌ 无快照与日志压缩
-   - ❌ 日志随历史增长
+   - 超过 1024 条已应用记录后压缩
+   - 压缩和安装时整份镜像留在内存里
 
 4. **客户端语义**:
-   - ❌ 无请求去重
-   - ❌ 超时重试可能重复执行
+   - 带 `client_id` 和 `request_id` 的 `SET`/`DEL` 重试返回上次回复
+   - 不带序号的写入，超时重试仍会再执行
+   - 版本化策略配置演示未做
 
 ---
 
@@ -362,11 +366,7 @@ struct ReadIndexMetrics {
 
 #### 1. Pre-Vote 实现
 
-减少隔离节点恢复后的无效任期抬升：
-
-- 实现 Pre-Vote RPC
-- 添加 CheckQuorum 机制
-- 编写单元测试
+2026-09-24 已在 `main` 完成，不再是待办。隔离节点先预投票，多数派同意后才抬任期；CheckQuorum 在丢失多数派心跳后让 Leader 卸任。
 
 #### 2. Follower ReadIndex
 
@@ -386,19 +386,11 @@ struct ReadIndexMetrics {
 
 #### 1. 快照与日志压缩
 
-实现 InstallSnapshot：
-
-- 快照生成与恢复
-- InstallSnapshot RPC
-- 日志压缩与清理
+2026-09-24 已在 `cursor/raft-snapshot-386d` 完成，尚未进入 `main`。已应用记录超过 1024 条后导出镜像并截断日志；InstallSnapshot 按 1 MiB 分片，收齐后安装；日志快照先于 KV 落盘。
 
 #### 2. 客户端请求去重
 
-实现幂等性保证：
-
-- client_id + request_id 机制
-- 去重窗口管理
-- 超时与清理策略
+2026-09-24 已在同一分支完成，尚未进入 `main`。`client_id + request_id` 的结果随状态机和版本 2 快照持久化。每个客户端只保留最新序号，没有单独的过期清理窗口。不带序号的写入仍会再执行。
 
 #### 3. 租约读（可选）
 
