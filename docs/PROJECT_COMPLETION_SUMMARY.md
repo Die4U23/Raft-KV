@@ -215,7 +215,7 @@ Total Test time (real) = 0.17 sec
 
 ### 路线图进度
 
-2026-09-21 写本报告时，下表除 ReadIndex 外都是待实现。2026-09-24 按 `cursor/raft-snapshot-386d` 的 `284cc2a` 重新核对。`main`（`531fcf4`）只有 ReadIndex 和 Pre-Vote，没有快照和去重。
+2026-09-21 写本报告时，下表除 ReadIndex 外都是待实现。2026-09-24 按代码重新核对。快照和去重在 `cursor/raft-snapshot-386d` 的 `284cc2a`。版本化配置、成员变更、多分片、认证和租约读在本分支 `cursor/cluster-features-386d`，默认都保持原来的行为。`main`（`531fcf4`）只有 ReadIndex 和 Pre-Vote。标签 `v0.2.0` 指向 `8f5142f`。
 
 | 优先级 | 功能 | 状态 | 进度 |
 |-------|------|------|------|
@@ -223,6 +223,11 @@ Total Test time (real) = 0.17 sec
 | 2 | **ReadIndex 线性一致读** | ✅ 完成 | 在 `main`。默认关闭 |
 | 3 | 快照 / InstallSnapshot | ✅ 完成 | 在快照分支，尚未进入 `main`。1 MiB 分片；镜像再大也压缩 |
 | 4 | 客户端请求去重 | ✅ 完成 | 在快照分支，尚未进入 `main`。只保留每个客户端的最新序号 |
+| 5 | 版本化配置 | ✅ 完成 | 本分支，尚未进入 `main`。`CFGSET` / `CFGGET` / `CFGROLLBACK` / `CFGCACHE` |
+| 6 | 动态成员变更 | ✅ 完成 | 本分支。joint consensus，一次一个，只能改静态 peer 列表里的 id |
+| 7 | 多分片 | ✅ 完成 | 本分支。`--shards` 默认 1，各分片各自选主 |
+| 8 | 网络身份认证 | ✅ 完成 | 本分支。两个令牌默认空，空令牌不改帧字节 |
+| 9 | 租约读 | ✅ 完成 | 本分支。`--lease_reads` 默认 false。漂移上界 10 ms |
 
 ### 已知限制
 
@@ -232,9 +237,11 @@ Total Test time (real) = 0.17 sec
    - `--linearizable_reads` 走 ReadIndex
 
 2. **集群管理**:
-   - 固定成员，无动态变更
-   - 单 Raft 组，无多分片
-   - 无网络身份认证
+   - 默认全体静态 peer 都是投票者
+   - `MEMBER JOIN` / `MEMBER LEAVE` 一次一个。Leader 不能移除自己，不能把集合减空，不能加入列表外的主机。提交要旧配置和新配置都过半数；应用 `MEMBER COMMIT` 后才切换
+   - `--shards` 默认 1。大于 1 时同一 peer 集合上有多个 Raft 组，键按 FNV-1a 分片，各分片各自选主
+   - `--cluster_token` 为空时帧不变；非空时帧外加 HMAC-SHA256，校验失败关闭连接
+   - `--client_token` 为空时 `AUTH` 在执行期是未知命令；非空时其他命令要先认证
 
 3. **日志管理**:
    - 超过 1024 条已应用记录后压缩
@@ -243,7 +250,7 @@ Total Test time (real) = 0.17 sec
 4. **客户端语义**:
    - 带 `client_id` 和 `request_id` 的 `SET`/`DEL` 重试返回上次回复
    - 不带序号的写入，超时重试仍会再执行
-   - 版本化策略配置演示未做
+   - `CFGSET` / `CFGROLLBACK` 使用同一张会话表。缺少的回滚版本不消耗序号。`CFGCACHE` 过期时返回错误，不返回旧值
 
 ---
 
@@ -394,11 +401,13 @@ struct ReadIndexMetrics {
 
 #### 3. 租约读（可选）
 
-需要时钟同步保证：
+2026-09-24 已在本分支实现，默认关闭，尚未进入 `main`。
 
-- 租约时长计算
-- 时钟漂移上界
-- 租约续约机制
+- `--lease_reads` 与 `--linearizable_reads` 都会打开强一致读路径
+- 投票者 AppendEntries 联系时间里，第 quorum 新的那一次加上（最短选举超时 150 ms − 漂移 10 ms）之前，Leader 把读排到当前 `commit_index`，仍等 `lastApplied`，不在应用前完成 GET
+- 恰好等于联系时间 + 140 ms 时租约无效，退回 ReadIndex，不增加 `lease_reads`
+- 过载检查在租约路径之前
+- Follower 时钟快过 10 ms 时，可能在 Leader 仍认为租约有效时开始竞选。各节点时钟并不对齐
 
 ---
 

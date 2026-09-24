@@ -14,6 +14,8 @@ public:
     std::vector<std::string> ApplyBatch(int64_t first_index,
                                       const std::vector<std::string>& commands);
     bool Get(const std::string& key, std::string* value) const;
+    // False when this name has no published version.
+    bool GetConfig(const std::string& key, uint64_t* version, std::string* value) const;
     int64_t LastApplied() const { return _store->LastApplied(); }
     // Versioned image of applied user keys and client sessions.
     // Version 2 is current. Version 1 is a user-key image and clears sessions on install.

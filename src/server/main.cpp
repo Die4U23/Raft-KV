@@ -25,6 +25,8 @@
 #include "common/session_queue.h"
 #include "common/batch_flush_policy.h"
 #include "common/metrics.h"
+#include "common/config_cache.h"
+#include "common/shard.h"
 #include "namespace/namespace_manager.h"
 #include "raft/kv_state_machine.h"
 #include "raft/peer_manager.h"
@@ -40,14 +42,33 @@ DEFINE_string(raft_log_path, "/tmp/raft_log", "Raft log path");
 DEFINE_string(peers, "0:127.0.0.1:9080,1:127.0.0.1:9081,2:127.0.0.1:9082", "id:host:port,...");
 DEFINE_bool(leader_only_reads, false, "Restrict local reads to leader (NOT linearizable)");
 DEFINE_bool(linearizable_reads, false, "Use ReadIndex for linearizable reads (overrides leader_only_reads)");
+DEFINE_bool(lease_reads, false, "Serve a leader lease read inside the drift bound, then wait for apply. Falls back to ReadIndex.");
+DEFINE_int32(shards, 1, "Raft groups on this peer set. 1 keeps one log, one KV, and the current frame bytes");
+DEFINE_string(cluster_token, "", "HMAC-SHA256 token for Raft frames. Empty keeps the current frame bytes");
+DEFINE_string(client_token, "", "Require AUTH before other commands. Empty leaves AUTH as an unknown command at execution");
 DEFINE_int32(group_commit_ms, 1, "Partial batch collection window, 0..10 ms; full batches flush next loop turn");
 DEFINE_bool(async_apply, true, "Apply committed KV batches on a serial worker; Raft log writes stay synchronous");
 DEFINE_int32(max_clients, 1024, "Maximum concurrent client connections");
 
-static KVStateMachine* g_sm = nullptr;
-static RaftNode* g_raft = nullptr;
+struct ShardRuntime {
+    std::unique_ptr<KVStateMachine> sm;
+    std::unique_ptr<SerialApplyExecutor> apply;
+    std::unique_ptr<RaftNode> raft;
+};
+static std::vector<ShardRuntime> g_shards;
+static ConfigCache g_config_cache;
 static muduo::net::EventLoop* g_loop = nullptr;
 static NamespaceManager g_namespaces;
+
+static bool StrongRead() { return FLAGS_linearizable_reads || FLAGS_lease_reads; }
+static int ShardCount() { return static_cast<int>(g_shards.size()); }
+static RaftNode* RaftAt(int shard) { return g_shards.at(static_cast<size_t>(shard)).raft.get(); }
+static KVStateMachine* SmAt(int shard) { return g_shards.at(static_cast<size_t>(shard)).sm.get(); }
+static int KeyShard(const std::string& key) { return ShardOf(key, ShardCount()); }
+static std::string ConfigValueReply(uint64_t version, const std::string& value) {
+    return "*2\r\n:" + std::to_string(version) + "\r\n$" + std::to_string(value.size()) +
+           "\r\n" + value + "\r\n";
+}
 
 struct ClientSession {
     CommandBuffer input;
@@ -57,6 +78,7 @@ struct ClientSession {
     bool drain_scheduled = false;
     size_t accounted_output = 0;
     bool executing = false;  // Whether a command is currently executing
+    bool authed = false;
 };
 static std::map<std::string, std::shared_ptr<ClientSession>> g_sessions;
 static constexpr size_t kMaxTotalInput = 64 * 1024 * 1024;
@@ -73,6 +95,7 @@ struct QueuedWrite {
     std::weak_ptr<muduo::net::TcpConnection> connection;
     std::weak_ptr<ClientSession> session;
     SteadyClock::time_point enqueued_at;
+    int shard = 0;
 };
 static std::deque<QueuedWrite> g_writes;
 static BatchFlushPolicy g_flush_policy;
@@ -138,36 +161,38 @@ static std::vector<PeerInfo> ParsePeers(const std::string& text) {
     ValidatePeers(FLAGS_node_id, peers);
     return peers;
 }
-static void OnRaftMessage(int from, RaftMsgType type, const std::string& payload) {
+static void OnRaftMessage(int from, RaftMsgType type, const std::string& payload, int shard) {
+    if (shard < 0 || shard >= ShardCount()) return;
+    RaftNode* raft = RaftAt(shard);
     switch (type) {
     case RaftMsgType::kRequestVote: {
         raftcore::RequestVote request;
-        if (request.ParseFromString(payload)) g_raft->HandleRequestVote(from, request);
+        if (request.ParseFromString(payload)) raft->HandleRequestVote(from, request);
         break;
     }
     case RaftMsgType::kRequestVoteResponse: {
         raftcore::RequestVoteResponse response;
-        if (response.ParseFromString(payload)) g_raft->HandleRequestVoteResponse(from, response);
+        if (response.ParseFromString(payload)) raft->HandleRequestVoteResponse(from, response);
         break;
     }
     case RaftMsgType::kAppendEntries: {
         raftcore::AppendEntries request;
-        if (request.ParseFromString(payload)) g_raft->HandleAppendEntries(from, request);
+        if (request.ParseFromString(payload)) raft->HandleAppendEntries(from, request);
         break;
     }
     case RaftMsgType::kAppendEntriesResponse: {
         raftcore::AppendEntriesResponse response;
-        if (response.ParseFromString(payload)) g_raft->HandleAppendEntriesResponse(from, response);
+        if (response.ParseFromString(payload)) raft->HandleAppendEntriesResponse(from, response);
         break;
     }
     case RaftMsgType::kInstallSnapshot: {
         raftcore::InstallSnapshot request;
-        if (request.ParseFromString(payload)) g_raft->HandleInstallSnapshot(from, request);
+        if (request.ParseFromString(payload)) raft->HandleInstallSnapshot(from, request);
         break;
     }
     case RaftMsgType::kInstallSnapshotResponse: {
         raftcore::InstallSnapshotResponse response;
-        if (response.ParseFromString(payload)) g_raft->HandleInstallSnapshotResponse(from, response);
+        if (response.ParseFromString(payload)) raft->HandleInstallSnapshotResponse(from, response);
         break;
     }
     }
@@ -216,7 +241,9 @@ static void FlushQueuedWrites() {
     owners.reserve(BatchFlushPolicy::kMaxEntries);
     size_t bytes = 0;
     size_t inspected = 0;
-    while (!g_writes.empty() && inspected < BatchFlushPolicy::kMaxEntries) {
+    const int shard = g_writes.empty() ? 0 : g_writes.front().shard;
+    while (!g_writes.empty() && g_writes.front().shard == shard &&
+           inspected < BatchFlushPolicy::kMaxEntries) {
         if (!proposals.empty() && g_writes.front().command.size() >
             BatchFlushPolicy::kMaxBytes - bytes) break;
         auto write = std::move(g_writes.front());
@@ -253,7 +280,7 @@ static void FlushQueuedWrites() {
         owners.push_back(std::move(write));
     }
     if (!proposals.empty()) {
-        const auto index = g_raft->ProposeBatch(std::move(proposals));
+        const auto index = RaftAt(shard)->ProposeBatch(std::move(proposals));
         if (index < 0) {
             if (index == -2) g_overload_rejections += owners.size();
             for (const auto& owner : owners) {
@@ -269,7 +296,7 @@ static void FlushQueuedWrites() {
                 }
                 state->waiting = false;
                 SendReply(conn, state, index == -1 ?
-                    Error("MOVED " + std::to_string(g_raft->GetLeaderId())) :
+                    Error("MOVED " + std::to_string(RaftAt(shard)->GetLeaderId())) :
                     Error("BUSY proposal capacity exhausted"));
                 OnCommandComplete(conn, state);  // Continue with next command
             }
@@ -309,7 +336,9 @@ static void ScheduleFlush() {
 static void SubmitWrite(const muduo::net::TcpConnectionPtr& conn,
                         const std::shared_ptr<ClientSession>& session,
                         std::vector<std::string> args) {
-    args[1] = g_namespaces.MakeKey(conn->name(), args[1]);
+    const bool member = args[0] == "MEMBER";
+    if (!member) args[1] = g_namespaces.MakeKey(conn->name(), args[1]);
+    const int shard = member ? 0 : KeyShard(args[1]);
     const std::string command = SerializeCommand(args);
     // Namespace expansion must also fit the state machine's parser limit.
     if (command.size() > RespParser::kMaxCommandBytes) {
@@ -317,8 +346,64 @@ static void SubmitWrite(const muduo::net::TcpConnectionPtr& conn,
         OnCommandComplete(conn, session);
         return;
     }
-    if (!g_raft->IsLeader()) {
-        SendReply(conn, session, Error("MOVED " + std::to_string(g_raft->GetLeaderId())));
+    if (member) {
+        const bool join = args[1] == "JOIN";
+        int peer = 0;
+        if (!ParsePeerIdText(args[2], &peer)) {
+            SendReply(conn, session, Error("invalid peer id"));
+            OnCommandComplete(conn, session);
+            return;
+        }
+        for (int i = 0; i < ShardCount(); ++i) {
+            if (!RaftAt(i)->MemberChangeAllowed(join, peer)) {
+                SendReply(conn, session, RaftAt(i)->IsLeader() ?
+                    Error("membership change rejected") :
+                    Error("MOVED " + std::to_string(RaftAt(i)->GetLeaderId())));
+                OnCommandComplete(conn, session);
+                return;
+            }
+        }
+        struct Wait {
+            int left = 0;
+            bool ok = true;
+            std::string error;
+        };
+        auto wait = std::make_shared<Wait>();
+        wait->left = ShardCount();
+        std::weak_ptr<muduo::net::TcpConnection> weak_conn = conn;
+        std::weak_ptr<ClientSession> weak_session = session;
+        for (int i = 0; i < ShardCount(); ++i) {
+            const auto index = RaftAt(i)->ProposeMemberChange(join, peer,
+                [wait, weak_conn, weak_session](bool ok, const std::string& response) {
+                    if (!ok) {
+                        wait->ok = false;
+                        wait->error = response;
+                    }
+                    if (--wait->left != 0) return;
+                    const auto c = weak_conn.lock();
+                    const auto s = weak_session.lock();
+                    if (!c || !s || !CanDeliverClientReply(c->connected(), s->closing)) {
+                        if (s) {
+                            s->executing = false;
+                            s->waiting = false;
+                        }
+                        return;
+                    }
+                    SendReply(c, s, wait->ok ? "+OK\r\n" : wait->error);
+                    s->waiting = false;
+                    OnCommandComplete(c, s);
+                });
+            if (index < 0) {
+                SendReply(conn, session, Error("membership change rejected"));
+                OnCommandComplete(conn, session);
+                return;
+            }
+        }
+        session->waiting = true;
+        return;
+    }
+    if (!RaftAt(shard)->IsLeader()) {
+        SendReply(conn, session, Error("MOVED " + std::to_string(RaftAt(shard)->GetLeaderId())));
         OnCommandComplete(conn, session);
         return;
     }
@@ -329,7 +414,7 @@ static void SubmitWrite(const muduo::net::TcpConnectionPtr& conn,
         OnCommandComplete(conn, session);
         return;
     }
-    g_writes.push_back({command, conn, session, SteadyClock::now()});
+    g_writes.push_back({command, conn, session, SteadyClock::now(), shard});
     g_queued_write_bytes += command.size();
     session->waiting = true;
     ScheduleFlush();
@@ -352,10 +437,44 @@ static void ExecuteNextCommand(const muduo::net::TcpConnectionPtr& conn,
     auto cmd = session->queue.PopFront();
     auto& args = cmd.args;
 
+    if (!FLAGS_client_token.empty() && !session->authed &&
+        (args.empty() || args[0] != "AUTH")) {
+        SendReply(conn, session, Error("NOAUTH Authentication required"));
+        OnCommandComplete(conn, session);
+        return;
+    }
+
     // Execute the command based on type
     if (cmd.type == CommandClass::ERROR) {
         // Return error for invalid commands (preserves order)
         SendReply(conn, session, Error(cmd.error_message));
+        OnCommandComplete(conn, session);
+    } else if (cmd.type == CommandClass::LOCAL) {
+        if (args[0] == "AUTH") {
+            if (FLAGS_client_token.empty()) {
+                SendReply(conn, session, Error("unknown command 'AUTH'"));
+            } else if (args[1] == FLAGS_client_token) {
+                session->authed = true;
+                SendReply(conn, session, "+OK\r\n");
+            } else {
+                SendReply(conn, session, Error("invalid password"));
+            }
+        } else if (args[0] == "CFGCACHE") {
+            int max_age = 0;
+            const auto parsed = std::from_chars(args[2].data(), args[2].data() + args[2].size(), max_age);
+            const auto key = g_namespaces.MakeKey(conn->name(), args[1]);
+            uint64_t version = 0;
+            std::string value;
+            if (parsed.ec != std::errc{} || parsed.ptr != args[2].data() + args[2].size() || max_age < 0) {
+                SendReply(conn, session, Error("invalid max age"));
+            } else if (!g_config_cache.Fresh(key, SteadyClock::now(), max_age, &version, &value)) {
+                SendReply(conn, session, Error("config not fresh"));
+            } else {
+                SendReply(conn, session, ConfigValueReply(version, value));
+            }
+        } else {
+            SendReply(conn, session, Error("unknown command"));
+        }
         OnCommandComplete(conn, session);
     } else if (cmd.type == CommandClass::READ) {
         // Execute read command immediately
@@ -372,22 +491,38 @@ static void ExecuteNextCommand(const muduo::net::TcpConnectionPtr& conn,
                 SendReply(conn, session, "+OK\r\n");
             }
             OnCommandComplete(conn, session);
-        } else if (op == "GET") {
-            // Linearizable reads require leader confirmation
-            if (FLAGS_linearizable_reads) {
-                if (!g_raft->IsLeader()) {
+        } else if (op == "GET" || op == "CFGGET") {
+            const auto key = g_namespaces.MakeKey(conn->name(), args[1]);
+            const int shard = KeyShard(key);
+            RaftNode* raft = RaftAt(shard);
+            KVStateMachine* sm = SmAt(shard);
+            const bool config = op == "CFGGET";
+            auto reply_value = [sm, key, config]() {
+                if (!config) {
+                    std::string value;
+                    const bool found = sm->Get(key, &value);
+                    return found ? Bulk(value) : std::string("$-1\r\n");
+                }
+                uint64_t version = 0;
+                std::string value;
+                if (!sm->GetConfig(key, &version, &value)) return std::string("*-1\r\n");
+                g_config_cache.Store(key, version, value, SteadyClock::now());
+                return ConfigValueReply(version, value);
+            };
+            // Linearizable reads require leader confirmation. Lease reads use the
+            // same barrier and take the fast path only while the drift bound holds.
+            if (StrongRead()) {
+                if (!raft->IsLeader()) {
                     // Follower must reject or redirect, not serve stale data
-                    SendReply(conn, session, Error("MOVED " + std::to_string(g_raft->GetLeaderId())));
+                    SendReply(conn, session, Error("MOVED " + std::to_string(raft->GetLeaderId())));
                     OnCommandComplete(conn, session);
                     return;
                 }
 
-                // Leader: use ReadIndex for linearizable reads
                 std::weak_ptr<muduo::net::TcpConnection> weak_conn = conn;
                 std::weak_ptr<ClientSession> weak_session = session;
-                std::string key = g_namespaces.MakeKey(conn->name(), args[1]);
 
-                g_raft->RequestReadIndex([weak_conn, weak_session, key](bool success, int64_t read_index, const std::string& error) {
+                raft->RequestReadIndex([weak_conn, weak_session, reply_value, raft](bool success, int64_t read_index, const std::string& error) {
                     auto c = weak_conn.lock();
                     auto s = weak_session.lock();
                     if (!c || !s || !CanDeliverClientReply(c->connected(), s->closing)) {
@@ -398,19 +533,19 @@ static void ExecuteNextCommand(const muduo::net::TcpConnectionPtr& conn,
                         return;
                     }
 
-                    const auto action = DecideLinearizableGet(success, g_raft->IsLeader(), error);
+                    const auto action = DecideLinearizableGet(success, raft->IsLeader(), error);
                     if (action == LinearizableGetAction::Redirect) {
                         EventLog(LogLevel::Info) << "linearizable GET redirect node="
-                                                << g_raft->GetNodeId()
-                                                << " leader=" << g_raft->GetLeaderId()
+                                                << raft->GetNodeId()
+                                                << " leader=" << raft->GetLeaderId()
                                                 << " error=" << error;
-                        SendReply(c, s, Error("MOVED " + std::to_string(g_raft->GetLeaderId())));
+                        SendReply(c, s, Error("MOVED " + std::to_string(raft->GetLeaderId())));
                         OnCommandComplete(c, s);
                         return;
                     }
                     if (action == LinearizableGetAction::Fail) {
                         EventLog(LogLevel::Warning) << "linearizable GET failed node="
-                                                   << g_raft->GetNodeId()
+                                                   << raft->GetNodeId()
                                                    << " error=" << error;
                         SendReply(c, s, Error(error));
                         OnCommandComplete(c, s);
@@ -420,43 +555,41 @@ static void ExecuteNextCommand(const muduo::net::TcpConnectionPtr& conn,
                     // Callback is invoked when lastApplied >= read_index and
                     // this node is still leader. Read the local state machine.
                     (void)read_index;
-                    std::string value;
-                    bool found = g_sm->Get(key, &value);
-                    SendReply(c, s, found ? Bulk(value) : "$-1\r\n");
+                    SendReply(c, s, reply_value());
                     OnCommandComplete(c, s);
                 });
             } else {
                 // Local read mode
-                if (FLAGS_leader_only_reads && !g_raft->IsLeader()) {
-                    SendReply(conn, session, Error("MOVED " + std::to_string(g_raft->GetLeaderId())));
+                if (FLAGS_leader_only_reads && !raft->IsLeader()) {
+                    SendReply(conn, session, Error("MOVED " + std::to_string(raft->GetLeaderId())));
                 } else {
-                    std::string value;
-                    const auto key = g_namespaces.MakeKey(conn->name(), args[1]);
                     const auto started = SteadyClock::now();
-                    const bool found = g_sm->Get(key, &value);
-                    g_local_read.Observe(ElapsedMicros(started));
-                    SendReply(conn, session, found ? Bulk(value) : "$-1\r\n");
+                    const auto reply = reply_value();
+                    if (!config) g_local_read.Observe(ElapsedMicros(started));
+                    SendReply(conn, session, reply);
                 }
                 OnCommandComplete(conn, session);
             }
         } else if (op == "INFO") {
-            std::string info = "node_id:" + std::to_string(g_raft->GetNodeId()) + "\r\n";
-            info += "state:" + std::string(g_raft->StateName()) + "\r\n";
-            info += "leader_id:" + std::to_string(g_raft->GetLeaderId()) + "\r\n";
-            info += "term:" + std::to_string(g_raft->GetCurrentTerm()) + "\r\n";
-            info += "commit_index:" + std::to_string(g_raft->GetCommitIndex()) + "\r\n";
-            info += "last_applied:" + std::to_string(g_raft->GetLastApplied()) + "\r\n";
+            RaftNode* raft = RaftAt(0);
+            std::string info = "node_id:" + std::to_string(raft->GetNodeId()) + "\r\n";
+            info += "state:" + std::string(raft->StateName()) + "\r\n";
+            info += "leader_id:" + std::to_string(raft->GetLeaderId()) + "\r\n";
+            info += "term:" + std::to_string(raft->GetCurrentTerm()) + "\r\n";
+            info += "commit_index:" + std::to_string(raft->GetCommitIndex()) + "\r\n";
+            info += "last_applied:" + std::to_string(raft->GetLastApplied()) + "\r\n";
+            info += "shards:" + std::to_string(ShardCount()) + "\r\n";
             info += "namespace:" + g_namespaces.GetNs(conn->name()) + "\r\n";
             info += "connected_clients:" + std::to_string(g_sessions.size()) + "\r\n";
             info += "queued_writes:" + std::to_string(g_writes.size()) + "\r\n";
             info += "queued_write_bytes:" + std::to_string(g_queued_write_bytes) + "\r\n";
-            info += "pending_proposals:" + std::to_string(g_raft->PendingProposals()) + "\r\n";
-            info += "pending_proposal_bytes:" + std::to_string(g_raft->PendingBytes()) + "\r\n";
-            info += "proposal_batches:" + std::to_string(g_raft->ProposalBatches()) + "\r\n";
-            info += "apply_batches:" + std::to_string(g_raft->ApplyBatches()) + "\r\n";
-            info += "async_apply:" + std::to_string(g_raft->AsyncApplyEnabled()) + "\r\n";
-            info += "apply_inflight:" + std::to_string(g_raft->ApplyInFlight()) + "\r\n";
-            info += "apply_lag:" + std::to_string(g_raft->GetCommitIndex() - g_raft->GetLastApplied()) + "\r\n";
+            info += "pending_proposals:" + std::to_string(raft->PendingProposals()) + "\r\n";
+            info += "pending_proposal_bytes:" + std::to_string(raft->PendingBytes()) + "\r\n";
+            info += "proposal_batches:" + std::to_string(raft->ProposalBatches()) + "\r\n";
+            info += "apply_batches:" + std::to_string(raft->ApplyBatches()) + "\r\n";
+            info += "async_apply:" + std::to_string(raft->AsyncApplyEnabled()) + "\r\n";
+            info += "apply_inflight:" + std::to_string(raft->ApplyInFlight()) + "\r\n";
+            info += "apply_lag:" + std::to_string(raft->GetCommitIndex() - raft->GetLastApplied()) + "\r\n";
             info += "client_input_bytes:" + std::to_string(g_input_bytes) + "\r\n";
             info += "client_output_reserved_bytes:" + std::to_string(g_output_bytes) + "\r\n";
             info += "overload_rejections:" + std::to_string(g_overload_rejections) + "\r\n";
@@ -466,7 +599,7 @@ static void ExecuteNextCommand(const muduo::net::TcpConnectionPtr& conn,
             info += g_write_queue_wait.ToInfo("write_queue_wait");
             info += g_write_completed.ToInfo("write_completed");
             info += g_local_read.ToInfo("local_read");
-            info += g_raft->MetricsInfo();
+            info += raft->MetricsInfo();
             SendReply(conn, session, Bulk(info));
             OnCommandComplete(conn, session);
         } else {
@@ -551,8 +684,9 @@ static void OnClientMessage(const muduo::net::TcpConnectionPtr& conn,
     DrainClient(conn, session);
 }
 static int RunServer() {
-    if (FLAGS_group_commit_ms < 0 || FLAGS_group_commit_ms > 10 || FLAGS_max_clients < 1)
-        throw std::invalid_argument("invalid group_commit_ms or max_clients");
+    if (FLAGS_group_commit_ms < 0 || FLAGS_group_commit_ms > 10 || FLAGS_max_clients < 1 ||
+        FLAGS_shards < 1 || FLAGS_shards > 64)
+        throw std::invalid_argument("invalid group_commit_ms, max_clients, or shards");
     const auto peers = ParsePeers(FLAGS_peers);
     if (FLAGS_client_port < 1 || FLAGS_client_port > 65535 ||
         FLAGS_raft_port < 1 || FLAGS_raft_port > 65535)
@@ -564,21 +698,35 @@ static int RunServer() {
     // Raft invalidates queued completions before the worker drains. The state
     // machine and EventLoop remain alive until all accepted work is finished.
     muduo::net::EventLoop loop;
-    KVStateMachine state_machine(FLAGS_db_path);
     PeerManager peer_manager(&loop, FLAGS_node_id, FLAGS_raft_port, peers);
-    std::unique_ptr<SerialApplyExecutor> apply_executor;
-    if (FLAGS_async_apply)
-        apply_executor = std::make_unique<SerialApplyExecutor>(
-            [&loop](std::function<void()> completion) { loop.queueInLoop(std::move(completion)); });
-    RaftNode raft(FLAGS_node_id, peers, &loop, FLAGS_raft_log_path,
-                  &state_machine, &peer_manager, apply_executor.get());
+    peer_manager.SetClusterToken(FLAGS_cluster_token);
+    peer_manager.SetShardCount(FLAGS_shards);
+    g_shards.clear();
+    g_shards.reserve(static_cast<size_t>(FLAGS_shards));
+    auto shard_path = [](const std::string& base, int shard) {
+        if (FLAGS_shards <= 1) return base;
+        return base + "/shard-" + std::to_string(shard);
+    };
+    for (int shard = 0; shard < FLAGS_shards; ++shard) {
+        ShardRuntime runtime;
+        runtime.sm = std::make_unique<KVStateMachine>(shard_path(FLAGS_db_path, shard));
+        if (FLAGS_async_apply)
+            runtime.apply = std::make_unique<SerialApplyExecutor>(
+                [&loop](std::function<void()> completion) { loop.queueInLoop(std::move(completion)); });
+        runtime.raft = std::make_unique<RaftNode>(
+            FLAGS_node_id, peers, &loop, shard_path(FLAGS_raft_log_path, shard),
+            runtime.sm.get(), &peer_manager, runtime.apply.get());
+        runtime.raft->SetReplicaShard(shard);
+        runtime.raft->SetLeaseReads(FLAGS_lease_reads);
+        g_shards.push_back(std::move(runtime));
+    }
     g_loop = &loop;
-    g_sm = &state_machine;
-    g_raft = &raft;
     peer_manager.SetMessageHandler(OnRaftMessage);
     peer_manager.Start();
-    raft.Start();
-    loop.runEvery(0.01, [&raft]() { raft.Tick(); });
+    for (auto& shard : g_shards) shard.raft->Start();
+    loop.runEvery(0.01, []() {
+        for (auto& shard : g_shards) shard.raft->Tick();
+    });
     muduo::net::TcpServer server(&loop,
         muduo::net::InetAddress(static_cast<uint16_t>(FLAGS_client_port)), "RaftKVClient");
     server.setConnectionCallback(OnClientConnection);

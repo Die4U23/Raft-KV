@@ -21,6 +21,14 @@ public:
         bool remember_session = false;
         std::string session_client;
         uint64_t session_seq = 0;
+        // Non-empty overrides AppliedWriteReply. Config writes store the version reply.
+        std::string session_reply;
+        bool config_write = false;
+        uint64_t config_version = 0;
+    };
+    struct ConfigHistory {
+        std::string name;
+        std::vector<std::pair<uint64_t, std::string>> versions;
     };
     explicit RocksDBStore(const std::string& db_path);
     ~RocksDBStore();
@@ -41,12 +49,17 @@ public:
     // False when this client has no session. Corrupt records throw.
     bool ReadSession(const std::string& client_id, uint64_t* seq, std::string* reply) const;
     static bool DecodeSessionValue(const std::string& raw, uint64_t* seq, std::string* reply);
+    // False when this name has no version. History is 1..current with no gaps.
+    bool ReadCurrentConfig(const std::string& name, uint64_t* version, std::string* value) const;
+    bool ReadConfigVersion(const std::string& name, uint64_t version, std::string* value) const;
+    std::vector<ConfigHistory> ExportConfigs() const;
     // Replace user keys and set lastApplied. index must not move backwards.
     // sessions == nullptr keeps existing client sessions (not used for snapshots).
     // A non-null vector replaces the session table, including an empty one.
     void ReplaceAll(int64_t index,
                     const std::vector<std::pair<std::string, std::string>>& entries,
-                    const std::vector<std::pair<std::string, std::string>>* sessions = nullptr);
+                    const std::vector<std::pair<std::string, std::string>>* sessions = nullptr,
+                    const std::vector<ConfigHistory>* configs = nullptr);
 private:
     static std::string AppliedKey();
     std::unique_ptr<rocksdb::DB> _db;

@@ -122,6 +122,7 @@ public:
             member->sm.get(), member->transport.get(),
             executors.count(id) ? executors.at(id) : nullptr);
         member->raft->SetClockForTest([this, id] { return clocks.at(id).now; });
+        if (!bootstrap_voters.empty()) member->raft->SetVotersForTest(bootstrap_voters);
         member->raft->Start();
         members.emplace(id, std::move(member));
     }
@@ -217,6 +218,15 @@ public:
         }
     }
     void Elect(int id) { Candidate(id); Pump(); Settle(); Check(Node(id).IsLeader(), "leader election failed"); }
+    // Restart every node with this voter set. Later Restart calls keep applying
+    // it until bootstrap_voters is cleared, so a persistence check must clear it first.
+    void Rebootstrap(std::vector<int> voters) {
+        bootstrap_voters = std::move(voters);
+        std::vector<int> ids;
+        for (const auto& member : members) ids.push_back(member.first);
+        for (int id : ids) Restart(id);
+    }
+    std::vector<int> bootstrap_voters;
     // Tick the given followers until one of them is leader. Use this after
     // isolating a live leader: followers ignore pre-votes and RequestVotes
     // until their election timer expires, so Elect(id) would stall.

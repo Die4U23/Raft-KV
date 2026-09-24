@@ -361,6 +361,7 @@ scripts/
 
 长期（2-3 月）:
 - ✅ 快照与日志压缩已在 `cursor/raft-snapshot-386d`，尚未进入 `main`
+- ✅ 版本化配置、joint 成员变更、多分片、帧与客户端认证、租约读已在 `cursor/cluster-features-386d`，默认关闭或为空，尚未进入 `main`，也不在 `v0.2.0`
 - 📋 添加监控指标导出
 - 📋 容器化部署
 

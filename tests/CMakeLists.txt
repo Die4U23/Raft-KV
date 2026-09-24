@@ -36,8 +36,10 @@ add_portable_raft_test(replication_edge_cases_unit)
 add_portable_raft_test(kv_state_machine_tests)
 add_portable_raft_test(raft_log_tests)
 add_portable_raft_test(raft_node_coverage_tests)
+add_portable_raft_test(cluster_features_tests)
 set_tests_properties(readindex_tests PROPERTIES TIMEOUT 20)
 set_tests_properties(raft_node_coverage_tests PROPERTIES TIMEOUT 20)
+set_tests_properties(cluster_features_tests PROPERTIES TIMEOUT 20)
 
 # Production ClassifyCommand and FIFO ERROR ordering (no RaftNode).
 add_executable(connection_order_tests connection_order_tests.cpp)

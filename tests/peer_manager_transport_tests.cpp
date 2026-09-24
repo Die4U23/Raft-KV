@@ -46,8 +46,9 @@ int main(int argc, char** argv) {
         remote.setMessageCallback([](const auto&, auto* buf, auto) { buf->retrieveAll(); });
         std::vector<PeerInfo> peers{{0, "127.0.0.1", local_port}, {1, "127.0.0.1", remote_port}};
         auto manager = std::make_unique<PeerManager>(&loop, 0, local_port, peers);
-        manager->SetMessageHandler([&](int peer, RaftMsgType type, const std::string& payload) {
-            Check(peer == 1 && type == RaftMsgType::kAppendEntriesResponse && payload == "healthy", "bad healed RPC");
+        manager->SetMessageHandler([&](int peer, RaftMsgType type, const std::string& payload, int shard) {
+            Check(peer == 1 && type == RaftMsgType::kAppendEntriesResponse &&
+                  payload == "healthy" && shard == 0, "bad healed RPC");
             ++received;
         });
         manager->Start();

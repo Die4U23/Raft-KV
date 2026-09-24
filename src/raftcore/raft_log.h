@@ -24,6 +24,9 @@ public:
     void TruncateSuffix(int64_t start_index);
     void SaveHardState(int32_t term, int32_t voted_for);
     bool LoadHardState(int32_t* term, int32_t* voted_for);
+    // Applied voter set. Missing means the caller should use every configured peer.
+    void SaveMembership(const std::string& blob);
+    bool LoadMembership(std::string* blob) const;
     // Drop the log prefix through index. A matching entry keeps the suffix.
     // A missing or conflicting index discards the suffix as well.
     void SaveSnapshot(int64_t index, int32_t term, const std::string& data);
@@ -34,6 +37,7 @@ private:
     static std::string IndexToKey(int64_t index);
     static std::string SnapshotMetaKey();
     static std::string SnapshotDataKey();
+    static std::string MembershipKey();
     void LoadSnapshot();
     std::unique_ptr<rocksdb::DB> _db;
     int64_t _last_index = 0;

@@ -87,8 +87,11 @@ class InstallSnapshot : public test_proto::Snapshot<InstallSnapshot> {
 public:
     const std::string& data() const { return data_; }
     void set_data(const std::string& value) { data_ = value; }
+    const std::string& voters() const { return voters_; }
+    void set_voters(const std::string& value) { voters_ = value; }
 private:
     std::string data_;
+    std::string voters_;
 };
 class InstallSnapshotResponse : public test_proto::Snapshot<InstallSnapshotResponse> {
     TEST_PROTO_FIELD(int32_t, term)

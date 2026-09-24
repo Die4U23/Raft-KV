@@ -1,6 +1,10 @@
 // Production DrainClient/ExecuteNextCommand queue. Homemade FIFO is not CTest.
+#include <chrono>
 #include "common/command_type.h"
+#include "common/config_cache.h"
+#include "common/frame_mac.h"
 #include "common/session_queue.h"
+#include "common/shard.h"
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -91,6 +95,71 @@ static void TestClassifier() {
     Check(empty_client.type == CommandClass::ERROR, "empty client id was accepted");
     auto huge = ClassifyCommand({"SET", "k", "v", std::string(129, 'a'), "1"});
     Check(huge.type == CommandClass::ERROR, "oversized client id was accepted");
+    auto cfg = ClassifyCommand({"CFGSET", "policy", "on"});
+    Check(cfg.type == CommandClass::WRITE, "CFGSET is WRITE");
+    auto cfg_get = ClassifyCommand({"CFGGET", "policy"});
+    Check(cfg_get.type == CommandClass::READ, "CFGGET is READ");
+    auto cache = ClassifyCommand({"CFGCACHE", "policy", "1000"});
+    Check(cache.type == CommandClass::LOCAL, "CFGCACHE is LOCAL");
+    auto auth = ClassifyCommand({"AUTH", "secret"});
+    Check(auth.type == CommandClass::LOCAL, "AUTH is LOCAL");
+    auto join = ClassifyCommand({"MEMBER", "JOIN", "10"});
+    Check(join.type == CommandClass::WRITE, "MEMBER JOIN is WRITE");
+    auto bad_peer = ClassifyCommand({"MEMBER", "LEAVE", "01"});
+    Check(bad_peer.type == CommandClass::ERROR, "leading-zero peer id was accepted");
+    auto reserved = ClassifyCommand({"SET", std::string("\0k", 2), "v"});
+    Check(reserved.type == CommandClass::ERROR && reserved.error == "ERR reserved key",
+          "reserved key was accepted");
+}
+
+static void TestCacheShardAndMac() {
+    ConfigCache cache;
+    const auto now = SteadyClock::now();
+    uint64_t version = 0;
+    std::string value;
+    Check(!cache.Fresh("policy", now, 1000, &version, &value), "empty cache was fresh");
+    cache.Store("policy", 3, "on", now);
+    Check(cache.Fresh("policy", now, 0, &version, &value) && version == 3 && value == "on",
+          "zero max-age missed a just-stored value");
+    Check(!cache.Fresh("policy", now + std::chrono::milliseconds(2), 1, &version, &value),
+          "stale cache was served");
+    Check(cache.Fresh("policy", now + std::chrono::milliseconds(2), 2, &version, &value),
+          "entry inside max-age was a miss");
+    cache.Invalidate("policy");
+    Check(!cache.Fresh("policy", now, 1000, &version, &value), "invalidate left the entry");
+
+    Check(ShardOf("any", 1) == 0, "one shard hashed the key");
+    int left = -1, right = -1;
+    for (int i = 0; i < 32 && left == right; ++i) {
+        left = ShardOf("key-" + std::to_string(i), 4);
+        right = ShardOf("key-" + std::to_string(i + 1), 4);
+    }
+    Check(left != right, "four shards put every sample key on the same group");
+    int shard = -1;
+    std::string payload;
+    const auto prefixed = PrefixShardPayload(4, 2, "abc");
+    Check(StripShardPayload(4, prefixed, &shard, &payload) && shard == 2 && payload == "abc",
+          "shard prefix did not round-trip");
+    Check(PrefixShardPayload(1, 0, "abc") == "abc", "one shard changed the payload");
+
+    const std::string frame = RaftCodec::Encode(RaftMsgType::kAppendEntries, 1, "payload");
+    Check(SealFrame("", frame) == frame, "empty token changed the frame");
+    const auto sealed = SealFrame("secret", frame);
+    Check(sealed != frame && sealed.compare(0, 4, "MAC1") == 0, "token did not seal the frame");
+    std::string opened;
+    size_t used = 0;
+    Check(UnsealFrame("secret", sealed.data(), sealed.size(), &opened, &used) == FrameSealStatus::Ok &&
+          opened == frame && used == sealed.size(), "sealed frame did not open");
+    auto tampered = sealed;
+    tampered.back() = static_cast<char>(tampered.back() ^ 0x1);
+    Check(UnsealFrame("secret", tampered.data(), tampered.size(), &opened, &used) == FrameSealStatus::Reject,
+          "tampered MAC was accepted");
+    const std::string key(20, '\x0b');
+    const auto mac = frame_mac::HmacSha256(key, "Hi There");
+    const char expect[] = "\xb0\x34\x4c\x61\xd8\xdb\x38\x53\x5c\xa8\xaf\xce\xaf\x0b\xf1\x2b"
+                          "\x88\x1d\xc2\x00\xc9\x83\x3d\xa7\x26\xe9\x37\x6c\x2e\x32\xcf\xf7";
+    Check(frame_mac::MacEqual(mac.data(), reinterpret_cast<const uint8_t*>(expect), 32),
+          "HMAC-SHA256 test vector mismatch");
 }
 
 static void TestReadIndexRedirectErrors() {
@@ -312,6 +381,7 @@ static void TestInvalidStopsWithoutEnqueue() {
 int main() {
     try {
         TestClassifier();
+        TestCacheShardAndMac();
         TestReadIndexRedirectErrors();
         TestSessionQueueLimits();
         TestErrorDoesNotOvertakeWrite();

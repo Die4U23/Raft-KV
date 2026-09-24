@@ -94,9 +94,13 @@ $BIN --node_id=2 --client_port=8082 --raft_port=9082 \
 
 三条命令需在三个终端分别运行。启动后用 `redis-cli -p 8080 INFO` 查看角色和 Leader。
 
-**可选配置**：
+**可选配置**（默认都保持原来的单组、无令牌、无租约行为）：
 - `--linearizable_reads=true`：启用 ReadIndex 线性一致读（默认 false）
 - `--leader_only_reads=true`：仅在 Leader 节点响应读请求（默认 false）
+- `--lease_reads=true`：在漂移上界内用 Leader 租约服务强一致读，窗口外退回 ReadIndex（默认 false）
+- `--shards=N`：同一组静态 peer 上的 Raft 组数量，1–64。1 时路径和帧字节不变（默认 1）
+- `--cluster_token=`：非空时在 Raft 帧外加 HMAC-SHA256；空则帧字节不变
+- `--client_token=`：非空时除 `AUTH` 外的命令要先认证；空则 `AUTH` 在执行期是未知命令
 
 ### 3. 读写
 
@@ -119,9 +123,17 @@ redis-cli -p 8080 DEL user:1
 | `DEL key` | 通过 Raft 删除，返回 `0` 或 `1` |
 | `DEL key client_id request_id` | 同上，重复序号返回上一次的 `0` 或 `1`，不再次删除 |
 | `SELECT namespace` | 为当前 TCP 连接选择逻辑命名空间 |
-| `INFO` | 查看角色、任期、Leader、提交/应用位置和过载指标 |
+| `CFGSET name value` | 通过 Raft 发布配置，成功返回新版本号 `:<version>` |
+| `CFGSET name value client_id request_id` | 同上。同一序号重试不升版本，返回上一次的版本号 |
+| `CFGROLLBACK name version` | 把该版本的值复制成一个新版本。没有这个版本时返回 `-ERR no such config version`，不消耗序号 |
+| `CFGROLLBACK name version client_id request_id` | 同上，序号规则与 `SET` 相同 |
+| `CFGGET name` | 读当前版本，回复 `*2`（版本号和值）。没有该名称时返回 `*-1`。`--linearizable_reads` 或 `--lease_reads` 时与 `GET` 走同一条强一致路径 |
+| `CFGCACHE name max_age_ms` | 只读本机缓存。年龄不超过 `max_age_ms` 才返回；否则 `-ERR config not fresh`，不把过期值当成功 |
+| `MEMBER JOIN id` / `MEMBER LEAVE id` | 一次加减一个已经在静态 peer 列表里的投票者。Leader 不能移除自己，也不能把投票者减空 |
+| `AUTH password` | `--client_token` 为空时执行期返回未知命令。非空且密码正确返回 `OK`；未认证时其他命令返回 `-ERR NOAUTH Authentication required` |
+| `INFO` | 查看角色、任期、Leader、提交/应用位置、过载指标、`shards` 和 `lease_reads` |
 
-`SELECT` 只在当前连接上生效，分别执行的 `redis-cli` 进程不会共享命名空间状态。
+`SELECT` 只在当前连接上生效，分别执行的 `redis-cli` 进程不会共享命名空间状态。以 NUL 开头的键是保留键，`SET`/`GET`/`DEL` 会拒绝。空键仍是普通用户键。
 
 ## 验证层级
 
@@ -134,7 +146,8 @@ redis-cli -p 8080 DEL user:1
 
 ## 当前边界
 
-- 集群是固定成员的单 Raft 组，没有动态成员变更和多分片。
+- 默认仍是一个 Raft 组，启动时静态 peer 全部是投票者。`MEMBER JOIN` / `MEMBER LEAVE` 一次一个：进入 joint 配置后，提交要旧集合和新集合都过半数；应用内部的 `MEMBER COMMIT` 后才切到新投票者。Leader 不能移除自己，不能把集合减空，也不能加入静态列表之外的主机。`--shards` 大于 1 时同一组 peer 上有多个 Raft 组，键按 FNV-1a 分片，各分片各自选主；`MEMBER` 要求本节点在每个分片上都是 Leader。默认 `--shards=1`，数据路径和帧字节不变。
+- `--cluster_token` 为空时 Raft 帧不变。非空时帧外是 `MAC1`、内层长度和 HMAC-SHA256，校验失败就关闭连接。`--client_token` 为空时客户端命令不认证。`--lease_reads` 默认关闭。打开后，投票者联系时间的多数派加上（150 ms − 10 ms）之前，Leader 把读排到当前提交位置，仍要等应用到那一位；恰好到达该窗口或窗口之外退回 ReadIndex。Follower 时钟快过这 10 ms 时，仍可能在 Leader 认为租约有效时开始竞选。
 - 已应用条目超过快照距离（默认 1024）后压缩日志。落后副本用 InstallSnapshot 追平，镜像按 1 MiB 分片，收齐后再安装。镜像再大也压缩；压缩和安装时整份镜像留在内存里。
 - `client_id` 为 1–128 字节且不能含 NUL，`request_id` 从 1 起按十进制连续递增、不补零。每个客户端只记住最新序号和那次回复。序号对不上时返回 `-ERR stale request id`，不改键。不带序号的 `SET`/`DEL` 仍会在重试时再执行一次。去重记录写进同一次状态机批次，并放进快照。
 - 已有验证不覆盖整机掉电、存储介质损坏、长时间压测或完整 Raft 正确性证明。
@@ -163,7 +176,12 @@ scripts/           Linux 构建与固定 Muduo 准备流程
 1. ✅ ~~ReadIndex 线性一致读~~：多数派确认读屏障，等待本地应用位置追上后再读取。默认关闭。选举截止时间和探针租约用同一把 `steady_clock`。隔离旧 Leader 在 CheckQuorum 到期后卸任，线性一致 GET 失败而不是返回过期值。
 2. ✅ ~~Pre-Vote~~：选举超时先进入 pre-candidate，不抬任期、不记 `votedFor`。只有多数派预投票才开始真正的选举。竞选失败后回到预投票，而不是再次抬任期。
 3. ✅ ~~快照 / InstallSnapshot / 日志压缩~~：应用后按距离导出 KV 镜像并截断日志前缀。落后副本按 1 MiB 分片接收 InstallSnapshot，收齐后安装。日志快照先于 KV 落盘，重启时用日志里的镜像补上尚未安装的状态。镜像变大不再跳过压缩。
-4. ✅ ~~客户端请求去重~~：`SET`/`DEL` 带上 `client_id` 和 `request_id` 后，超时重试返回上一次的回复，不把同一条写再执行一次。序号必须从 1 连续递增。不带序号的写入保持原来的语义。
+4. ✅ ~~客户端请求去重~~：`SET`/`DEL` 带上 `client_id` 和 `request_id` 后，超时重试返回上一次的回复，不把同一条写再执行一次。序号必须从 1 连续递增。不带序号的写入保持原来的语义。`CFGSET` / `CFGROLLBACK` 使用同一张会话表。
+5. ✅ ~~版本化配置~~：`CFGSET` 发布并返回新版本，`CFGROLLBACK` 把旧版本复制成新版本，`CFGGET` 读取当前版本，`CFGCACHE` 只在本地缓存还新鲜时返回。没有配置记录时快照仍是版本 2；有记录时快照带上配置节。
+6. ✅ ~~成员变更~~：joint consensus，一次加减一个已在静态 peer 列表里的投票者。投票者集合写入 Raft 日志，并随 InstallSnapshot 带走。
+7. ✅ ~~多分片~~：`--shards` 默认 1。大于 1 时每个分片有自己的日志、KV 和 Leader，帧内多一个分片号。
+8. ✅ ~~认证~~：`--cluster_token` 给 Raft 帧加 HMAC-SHA256；`--client_token` 要求客户端先 `AUTH`。两者默认都为空。
+9. ✅ ~~租约读~~：`--lease_reads` 默认关闭。窗口内不等待新的 ReadIndex 探针，仍等待 `lastApplied`；窗口外退回 ReadIndex。
 
 ## 依赖与来源
 

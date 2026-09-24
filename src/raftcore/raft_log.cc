@@ -6,6 +6,7 @@
 
 std::string RaftLog::SnapshotMetaKey() { return std::string("\x01snapmeta", 9); }
 std::string RaftLog::SnapshotDataKey() { return std::string("\x01snapdata", 9); }
+std::string RaftLog::MembershipKey() { return std::string("\x01members", 9); }
 void RaftLog::LoadSnapshot() {
     std::string meta, data;
     const auto meta_status = _db->Get(rocksdb::ReadOptions(), SnapshotMetaKey(), &meta);
@@ -43,7 +44,8 @@ RaftLog::RaftLog(const std::string& path) {
     std::unique_ptr<rocksdb::Iterator> it(_db->NewIterator(rocksdb::ReadOptions()));
     for (it->SeekToFirst(); it->Valid(); it->Next()) {
         const std::string key = it->key().ToString();
-        if (key == IndexToKey(0) || key == SnapshotMetaKey() || key == SnapshotDataKey()) continue;
+        if (key == IndexToKey(0) || key == SnapshotMetaKey() || key == SnapshotDataKey() ||
+            key == MembershipKey()) continue;
         raftcore::LogEntry entry;
         if (previous == std::numeric_limits<int64_t>::max() ||
             key != IndexToKey(previous + 1) ||
@@ -168,6 +170,18 @@ void RaftLog::SaveHardState(int32_t term, int32_t voted_for) {
             value[field * 4 + byte] = static_cast<char>((fields[field] >> (8 * byte)) & 0xff);
     RequireStorageOK(_db->Put(DurableWriteOptions(), IndexToKey(0), value),
                      "persist Raft hard state");
+}
+void RaftLog::SaveMembership(const std::string& blob) {
+    if (blob.empty()) throw std::runtime_error("empty membership record");
+    RequireStorageOK(_db->Put(DurableWriteOptions(), MembershipKey(), blob),
+                     "persist Raft membership");
+}
+bool RaftLog::LoadMembership(std::string* blob) const {
+    const auto status = _db->Get(rocksdb::ReadOptions(), MembershipKey(), blob);
+    if (status.IsNotFound()) return false;
+    RequireStorageOK(status, "read Raft membership");
+    if (blob->empty()) throw std::runtime_error("corrupt Raft membership");
+    return true;
 }
 bool RaftLog::LoadHardState(int32_t* term, int32_t* voted_for) {
     std::string value;

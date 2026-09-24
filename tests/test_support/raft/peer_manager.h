@@ -13,11 +13,12 @@ public:
     using Sink = std::function<void(int, int, RaftMsgType, const std::string&)>;
     PeerManager(int self, std::vector<PeerInfo> peers, Sink sink)
         : self_(self), peers_(std::move(peers)), sink_(std::move(sink)) {}
-    void Send(int peer, RaftMsgType type, const std::string& payload) {
+    void Send(int peer, RaftMsgType type, const std::string& payload, int shard = 0) {
+        (void)shard;
         sink_(self_, peer, type, payload);
     }
-    void Broadcast(RaftMsgType type, const std::string& payload) {
-        for (const auto& peer : peers_) if (peer.id != self_) Send(peer.id, type, payload);
+    void Broadcast(RaftMsgType type, const std::string& payload, int shard = 0) {
+        for (const auto& peer : peers_) if (peer.id != self_) Send(peer.id, type, payload, shard);
     }
 private:
     int self_;
