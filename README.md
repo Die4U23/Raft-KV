@@ -155,7 +155,7 @@ redis-cli -p 8080 DEL user:1
 - `client_id` 为 1–128 字节且不能含 NUL，`request_id` 从 1 起按十进制连续递增、不补零。每个客户端只记住最新序号和那次回复。序号对不上时返回 `-ERR stale request id`，不改键。默认不带序号的 `SET`/`DEL`/`CFGSET`/`CFGROLLBACK` 仍会在重试时再执行一次。`--require_request_id=true` 时，这些写入缺少序号会返回 `-ERR request id required`；`MEMBER` 不要求序号。去重记录写进同一次状态机批次，并放进快照。
 - 已有验证不覆盖整机掉电、存储介质损坏、长时间压测或完整 Raft 正确性证明。
 
-详细实现范围与验证边界见 [项目状态](docs/review-status.md)。
+详细实现范围与验证边界见 [项目状态](docs/review-status.md)。文档从哪份读起见 [docs/README.md](docs/README.md)。
 
 ## 项目导航
 
@@ -172,7 +172,7 @@ docs/benchmarks/   原始证据、核验脚本和结果边界
 scripts/           Linux 构建与固定 Muduo 准备流程
 ```
 
-进一步阅读：[测试说明](tests/README.md) · [构建说明](docs/linux-build.md) · [压测方法](docs/benchmark.md) · [读一致性保证](docs/read-consistency.md) · [更新日志](CHANGELOG.md)
+进一步阅读：[文档目录](docs/README.md) · [测试说明](tests/README.md) · [构建说明](docs/linux-build.md) · [压测方法](docs/benchmark.md) · [读一致性保证](docs/read-consistency.md) · [更新日志](CHANGELOG.md)
 
 ## 路线图
 

@@ -4,6 +4,10 @@
 
 截至 **2026-09-24**，下文按提交与代码核对记录。09-13 之后的条目曾漏记，已补录；不以合并说明或未归档压测数字作为收益证明。这些能力在本分支，不在 `main`（`531fcf4`），也不在标签 `v0.2.0`（`8f5142f`）。
 
+## 2026-09-24 — 文档目录
+
+主目录只留 README 和本更新日志。仍在用的说明留在 `docs/` 顶层，从 [docs/README.md](docs/README.md) 进入。2026-09-21 的完成度报告、ReadIndex 设计稿、架构检查和整理过程笔记移到 `docs/archive/`。那些文件的正文没有按后来的代码改写。
+
 ## 2026-09-24 — 成员变更范围、写入序号和快照内存
 
 可移植 CTest 16/16 通过。Linux 构建的 CTest 17/17 通过，三进程冒烟 10/10 通过。`cluster_linearizable.py` 这次没有重跑。
@@ -96,7 +100,7 @@
 
 ## 2026-09-22 — 架构检查与 P1/P2 修补（生产路径仍有残留）
 
-- 对提交 `831a91c` 做了架构检查，结论写入 [architecture-review-2026-09-22.md](docs/architecture-review-2026-09-22.md)。检查指出 ReadIndex 与连接队列存在正确性和资源边界缺陷，当时不能按 README 认定线性一致读已可靠完成。
+- 对提交 `831a91c` 做了架构检查，结论写入 [architecture-review-2026-09-22.md](docs/archive/architecture-review-2026-09-22.md)。检查指出 ReadIndex 与连接队列存在正确性和资源边界缺陷，当时不能按 README 认定线性一致读已可靠完成。
 - PR #9（`60ddf84`）修补审查中的 P1：
   - **F1**：AppendEntries 响应用 `rpc_id` 关联读轮次，不再把任意当前任期回复计入所有未确认 round。
   - **F2**：`--linearizable_reads=true` 时 Follower 的 GET 返回 `MOVED`，不再静默走本地读。
