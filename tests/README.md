@@ -38,6 +38,14 @@ Python 测试客户端仅使用标准库，兼容 Python 3.8+。以下命令检�
 python3 tests/cluster_smoke.py --self-test
 ```
 
+## 三节点演示
+
+`scripts/demo_three_nodes.py` 用下面同一套进程和 RESP 处理，只走一条路径：选出 Leader，`SET demo:user alice`，`CFGSET rollout canary`，SIGKILL 该 Leader，从新 Leader 读回键和配置版本。默认二进制是 `build-linux-repro/server/raft_kv_server`。它不代替本节的冒烟、分区、重启或过载脚本。
+
+```sh
+python3 scripts/demo_three_nodes.py --binary build-linux-repro/server/raft_kv_server
+```
+
 ## Linux 真实三节点 smoke test
 
 GitHub Actions 工作流 `.github/workflows/linux-cluster.yml` 在独立 job 中安装系统依赖、构建真实 Muduo/RocksDB 服务、运行 CTest 与 `cluster_smoke.py`，再运行 `tests/cluster_linearizable.py`：Leader 写后读、Follower `MOVED`、隔离旧 Leader 必须在 1 秒内返回读超时或 `MOVED`。套接字超时不算通过。该 job 不替代下面已归档的分区/重启/过载证据包。
@@ -74,7 +82,7 @@ python3 tests/cluster_smoke.py --binary build/raft_kv_server --timeout 90
 7. 用 `SIGKILL` 杀死当前 Leader，剩余两节点选出新 Leader，保留已确认数据并成功确认新写入。
 8. 旧 Leader 使用原来的成对 KV / Raft 日志目录重启；三节点最终都读到故障前后数据和命名空间数据，且应用进度达到故障后写入的提交位置。
 
-每次运行都新建临时数据目录，使用六个自动分配的本地空闲端口。脚本只终止自己启动的进程；退出时清理自己的临时数据，不访问已有集群目录。端口在启动对应节点前释放，仍存在很小的竞争窗口；绑定失败会使测试失败并保留日志。
+每次运行都新建临时数据目录，使用六个自动分配的本地空闲端口。脚本只终止自己启动的进程；退出时清理自己的临时数据，不访问已有集群目录。端口在启动对应节点前释放，仍有很小的竞争窗口。节点在跑起来前退出、连接被重置，或日志里出现 `Address already in use` 时，换一套端口再试一次。读到的值和回复不对时不重试，失败日志仍保留。
 
 默认整轮期限为 90 秒，单次网络请求也有期限。进程清理在期限之外，每个进程最多等待两次、每次 3 秒。日志和 `report.json` 写入 `build/cluster-smoke/run-*`，成功与失败均保留；可通过 `--artifacts /path/to/reports` 修改父目录。失败时还会打印各节点日志末尾，退出码为 `1`；完整通过为 `0`。`--self-test` 通过只代表客户端辅助代码通过，不能代表真实集群通过。
 

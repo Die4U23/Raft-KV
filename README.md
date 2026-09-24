@@ -94,6 +94,14 @@ $BIN --node_id=2 --client_port=8082 --raft_port=9082 \
 
 三条命令需在三个终端分别运行。启动后用 `redis-cli -p 8080 INFO` 查看角色和 Leader。
 
+一条命令跑完选举、写入、配置发布和杀掉 Leader 后的读取：
+
+```bash
+python3 scripts/demo_three_nodes.py --binary build-linux-repro/server/raft_kv_server
+```
+
+脚本自己分配端口和数据目录，结束时停掉自己启动的进程。它只演示这条路径，不代替 `tests/cluster_smoke.py`。
+
 **可选配置**（默认都保持原来的单组、无令牌、无租约行为）：
 - `--linearizable_reads=true`：启用 ReadIndex 线性一致读（默认 false）
 - `--leader_only_reads=true`：仅在 Leader 节点响应读请求（默认 false）

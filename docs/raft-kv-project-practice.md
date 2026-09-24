@@ -432,23 +432,32 @@ P99 描述报告所收集延迟样本的第 99 百分位，用来观察尾部等
 
 ## 十、接下来准备提高什么
 
-下表是 2026-09-14 列出的五项计划。2026-09-24 按代码核对：1、4、5 已在 `cursor/raft-snapshot-386d`（`284cc2a`）实现，第 2 项在本分支 `cursor/cluster-features-386d` 实现。`main`（`531fcf4`）已有 ReadIndex 和 Pre-Vote，没有快照、去重和下面的配置命令。标签 `v0.2.0` 指向 `8f5142f`，不是 `531fcf4`。第 3 项只完成了持续集成，没有单独的干净系统复现归档。
+下表是 2026-09-14 列出的五项计划。2026-09-24 按代码核对：1、4、5 已在 `cursor/raft-snapshot-386d`（`284cc2a`）实现，第 2 项在 `cursor/cluster-features-386d` 实现并已合进 `cursor/prd-progress-386d`。`main`（`531fcf4`）已有 ReadIndex 和 Pre-Vote，没有快照、去重和下面的配置命令。标签 `v0.2.0` 指向 `8f5142f`，不是 `531fcf4`。第 3 项有持续集成，以及 `scripts/demo_three_nodes.py` 这条可重复演示；干净系统从零安装的证据包仍然没有。
 
 | 优先级 | 计划 | 状态 | 对照 |
 | --- | --- | --- | --- |
 | 1 | **ReadIndex 强一致读** | 已完成 | `--linearizable_reads` 默认关闭。Leader 在本任期提交 no-op 后，用请求之后的 AppendEntries 确认多数派，再等 `lastApplied` 追上。CheckQuorum 让隔离旧 Leader 卸任。Linux 工作流里的 `tests/cluster_linearizable.py` 检查隔离旧 Leader 不能返回过期值 |
 | 2 | **版本化策略配置演示** | 已完成 | 本分支。`CFGSET` / `CFGROLLBACK` 是 Raft 写，成功回复新版本号。同一 `client_id` 和 `request_id` 重试不升版本。回滚把旧版本的值复制成新版本。不存在的版本返回 `-ERR no such config version`，不消耗序号。`CFGGET` 是读。`CFGCACHE` 只在缓存年龄不超过 `max_age_ms` 时返回，否则 `-ERR config not fresh`。没有配置记录时快照仍是版本 2；有记录时快照版本 3 |
-| 3 | **Linux CI 与演示入口** | 部分完成 | `portable.yml` 跑可移植 CTest；`linux-cluster.yml` 构建服务、跑冒烟，并跑隔离旧 Leader 的线性读。两者在 `pull_request` 和 `main` 的 push 上触发。干净机器从零安装的单独证据包、以及一份可重复的三节点演示入口，还没有归档 |
+| 3 | **Linux CI 与演示入口** | 部分完成 | `portable.yml` 跑可移植 CTest；`linux-cluster.yml` 构建服务、跑冒烟，并跑隔离旧 Leader 的线性读。两者在 `pull_request` 和 `main` 的 push 上触发。`scripts/demo_three_nodes.py` 在本机启动三个进程，写入一个键和一条配置，杀掉 Leader 后再从新 Leader 读回。干净机器从零安装的单独证据包还没有归档 |
 | 4 | **请求去重** | 已完成 | `SET`/`DEL` 可带 `client_id` 和从 1 连续递增的 `request_id`。结果与用户键同一批次落盘，并进入版本 2 快照。换 Leader 重试同一序号不会再执行。`--require_request_id` 默认关闭；关闭时不带序号的写入仍会再执行，打开后缺少序号返回 `-ERR request id required`。每个客户端只保留最新序号 |
 | 5 | **快照与日志回收** | 已完成 | 已应用条目超过 1024 后导出 KV 镜像并截断日志。镜像按 1 MiB 分片键存放，落后副本按块安装，收齐并确认合法后才截断日志。日志快照先于 KV 落盘，重启时按块补上 KV。旧的版本 1 快照元数据仍把整份镜像读进内存 |
 
 ReadIndex 的重点不只是增加一次心跳。需要明确何时可以相信当前读屏障，等待状态机应用到哪一个位置，以及等待期间角色变化如何结束请求。算法背景可参考 [Raft 论文第 8 节](https://raft.github.io/raft.pdf)；对外读写语义的描述方式可对照 [etcd API 一致性保证](https://etcd.io/docs/v3.6/learning/api_guarantees/)。
 
-动态成员变更、多分片、网络身份认证和租约读已在本分支实现，默认保持原来的行为：`--shards=1`，`--cluster_token` 和 `--client_token` 为空，`--lease_reads=false`，`--require_request_id=false`。`MEMBER JOIN id host port` 可以加入静态列表之外的主机，Leader 可以移除自己。一次只能有一个变更，不能把集合减空。多分片时各分片各自选主；本节点不是该分片 Leader 时把 `MEMBER` 转给那个 Leader，还不知道 Leader 时返回 `MOVED -1`。`--cluster_token` 非空时 Raft 帧外面加 HMAC-SHA256，校验失败就关掉连接。`--client_token` 非空时，除 `AUTH` 外的命令在认证前返回 `-ERR NOAUTH Authentication required`。`--lease_reads` 在投票者联系时间的多数派加上（150 ms − 10 ms）之内把读排到当前提交位置，仍要等 `lastApplied`；窗口外退回 ReadIndex。Follower 的时钟如果快过这个漂移上界，仍可能在 Leader 认为租约有效时开始竞选。其他网络故障、真实存储故障和长期运行验证仍未做。干净系统复现证据包仍未归档。
+动态成员变更、多分片、网络身份认证和租约读已在本分支实现，默认保持原来的行为：`--shards=1`，`--cluster_token` 和 `--client_token` 为空，`--lease_reads=false`，`--require_request_id=false`。`MEMBER JOIN id host port` 可以加入静态列表之外的主机，Leader 可以移除自己。一次只能有一个变更，不能把集合减空。多分片时各分片各自选主；本节点不是该分片 Leader 时把 `MEMBER` 转给那个 Leader，还不知道 Leader 时返回 `MOVED -1`。`--cluster_token` 非空时 Raft 帧外面加 HMAC-SHA256，校验失败就关掉连接。`--client_token` 非空时，除 `AUTH` 外的命令在认证前返回 `-ERR NOAUTH Authentication required`。`--lease_reads` 在投票者联系时间的多数派加上（150 ms − 10 ms）之内把读排到当前提交位置，仍要等 `lastApplied`；窗口外退回 ReadIndex。Follower 的时钟如果快过这个漂移上界，仍可能在 Leader 认为租约有效时开始竞选。其他网络故障、真实存储故障和长期运行验证仍未做。干净系统复现证据包仍未归档。可重复的三节点演示是 `scripts/demo_three_nodes.py`。
 
 ## 十一、持续更新日志
 
 以下按验收或归档日期倒序维护；同日记录按本次整理顺序排列。每次更新保留“问题或目标、改动、验证、结果、取舍、证据”六项。代码发布早于实测归档时，分别注明，避免把工具发布当成实验完成。
+
+### 2026-09-24｜三节点演示入口
+
+- **问题或目标**：第十节第 3 项有持续集成，还没有一条可以重复跑的三节点演示。
+- **本次改动**：新增 `scripts/demo_three_nodes.py`。它启动三个 `raft_kv_server`，写入 `demo:user` 和 `CFGSET rollout canary`，SIGKILL 当前 Leader，再从新 Leader 读回这两个值。进程和 RESP 处理复用 `tests/cluster_smoke.py`。
+- **验证环境与方法**：已有 Linux 构建的 `raft_kv_server`，本机跑这一条脚本。没有新的干净系统安装。
+- **实测结果**：脚本打印新旧 Leader，并在读回 `alice` 和配置版本后以 0 退出。没有新的性能数字。
+- **取舍与未完成事项**：这不是冒烟套件，也不代替 `cluster_linearizable.py`。干净系统从零安装的证据包仍然没有。`main` 和 `v0.2.0` 都没有这条脚本。
+- **关联提交**：在 `cursor/prd-progress-386d` 之上的演示分支。不在 `main` 的 `531fcf4`，也不在 `v0.2.0` 的 `8f5142f`。
 
 ### 2026-09-24｜放宽成员变更，并按块存放快照
 

@@ -4,6 +4,14 @@
 
 截至 **2026-09-24**，下文按提交与代码核对记录。09-13 之后的条目曾漏记，已补录；不以合并说明或未归档压测数字作为收益证明。这些能力在本分支，不在 `main`（`531fcf4`），也不在标签 `v0.2.0`（`8f5142f`）。
 
+## 2026-09-24 — 冒烟失败日志
+
+Linux 集群构建失败时，把该步骤日志的末尾打到标准错误。`cluster_smoke.py` 在节点启动后立刻退出、连接出错，或日志里出现 `Address already in use` 时，换一套端口再跑一次。读到的值和预期不同时不重试。
+
+## 2026-09-24 — 三节点演示入口
+
+`python3 scripts/demo_three_nodes.py --binary <raft_kv_server>` 启动三个进程，选出 Leader 后写入 `demo:user` 并 `CFGSET rollout canary`，用 SIGKILL 停掉 Leader，再从新 Leader 读回这两个值。脚本复用 `tests/cluster_smoke.py` 的进程和 RESP 处理，不代替冒烟套件。干净系统从零安装的证据包仍然没有。
+
 ## 2026-09-24 — 文档目录
 
 主目录只留 README 和本更新日志。仍在用的说明留在 `docs/` 顶层，从 [docs/README.md](docs/README.md) 进入。2026-09-21 的完成度报告、ReadIndex 设计稿、架构检查和整理过程笔记移到 `docs/archive/`。那些文件的正文没有按后来的代码改写。
