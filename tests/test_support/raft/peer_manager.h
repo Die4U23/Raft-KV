@@ -20,6 +20,10 @@ public:
     void Broadcast(RaftMsgType type, const std::string& payload, int shard = 0) {
         for (const auto& peer : peers_) if (peer.id != self_) Send(peer.id, type, payload, shard);
     }
+    void LearnPeer(const PeerInfo& peer) {
+        for (const auto& existing : peers_) if (existing.id == peer.id) return;
+        peers_.push_back(peer);
+    }
 private:
     int self_;
     std::vector<PeerInfo> peers_;

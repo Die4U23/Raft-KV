@@ -30,6 +30,15 @@ void PeerManager::SetMessageHandler(MessageHandler handler) {
     _handler = std::move(handler);
 }
 
+void PeerManager::LearnPeer(const PeerInfo& peer) {
+    for (const auto& existing : _all_peers)
+        if (existing.id == peer.id) return;
+    if (peer.id < 0 || peer.host.empty() || peer.raft_port < 1 || peer.raft_port > 65535)
+        return;
+    _all_peers.push_back(peer);
+    if (_started && peer.id > _self_id) ConnectToPeer(peer);
+}
+
 void PeerManager::Start() {
     _loop->assertInLoopThread();
     if (_started) return;

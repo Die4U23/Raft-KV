@@ -121,6 +121,15 @@ inline CommandClass ClassifyCommand(const std::vector<std::string>& args) {
             return {CommandClass::ERROR, "ERR invalid peer id"};
         return {CommandClass::WRITE, {}};
     }
+    if (op == "MEMBER" && args.size() == 5 && args[1] == "JOIN") {
+        int peer = 0, port = 0;
+        if (!ParsePeerIdText(args[2], &peer))
+            return {CommandClass::ERROR, "ERR invalid peer id"};
+        if (args[3].empty() || args[3].size() > 253 || args[3].find('\0') != std::string::npos ||
+            !ParsePeerIdText(args[4], &port) || port < 1 || port > 65535)
+            return {CommandClass::ERROR, "ERR invalid peer address"};
+        return {CommandClass::WRITE, {}};
+    }
     if (op == "CFGGET" && args.size() == 2) {
         if (args[1].empty() || ReservedUserKey(args[1]))
             return {CommandClass::ERROR, "ERR reserved key"};

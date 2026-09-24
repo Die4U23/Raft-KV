@@ -46,6 +46,7 @@ DEFINE_bool(lease_reads, false, "Serve a leader lease read inside the drift boun
 DEFINE_int32(shards, 1, "Raft groups on this peer set. 1 keeps one log, one KV, and the current frame bytes");
 DEFINE_string(cluster_token, "", "HMAC-SHA256 token for Raft frames. Empty keeps the current frame bytes");
 DEFINE_string(client_token, "", "Require AUTH before other commands. Empty leaves AUTH as an unknown command at execution");
+DEFINE_bool(require_request_id, false, "Reject SET, DEL, and config writes that have no client_id and request_id");
 DEFINE_int32(group_commit_ms, 1, "Partial batch collection window, 0..10 ms; full batches flush next loop turn");
 DEFINE_bool(async_apply, true, "Apply committed KV batches on a serial worker; Raft log writes stay synchronous");
 DEFINE_int32(max_clients, 1024, "Maximum concurrent client connections");
@@ -195,6 +196,12 @@ static void OnRaftMessage(int from, RaftMsgType type, const std::string& payload
         if (response.ParseFromString(payload)) raft->HandleInstallSnapshotResponse(from, response);
         break;
     }
+    case RaftMsgType::kMemberForward:
+        raft->HandleMemberForward(from, payload);
+        break;
+    case RaftMsgType::kMemberForwardResponse:
+        raft->HandleMemberForwardReply(from, payload);
+        break;
     }
 }
 static void DrainClient(const muduo::net::TcpConnectionPtr& conn,
@@ -354,13 +361,33 @@ static void SubmitWrite(const muduo::net::TcpConnectionPtr& conn,
             OnCommandComplete(conn, session);
             return;
         }
-        for (int i = 0; i < ShardCount(); ++i) {
-            if (!RaftAt(i)->MemberChangeAllowed(join, peer)) {
-                SendReply(conn, session, RaftAt(i)->IsLeader() ?
-                    Error("membership change rejected") :
-                    Error("MOVED " + std::to_string(RaftAt(i)->GetLeaderId())));
+        std::string host;
+        int port = 0;
+        if (args.size() == 5) {
+            host = args[3];
+            if (!ParsePeerIdText(args[4], &port)) {
+                SendReply(conn, session, Error("invalid peer address"));
                 OnCommandComplete(conn, session);
                 return;
+            }
+        }
+        struct Part { bool local; int shard; int leader; };
+        std::vector<Part> parts;
+        for (int i = 0; i < ShardCount(); ++i) {
+            RaftNode* raft = RaftAt(i);
+            if (raft->IsLeader()) {
+                if (!raft->MemberChangeAllowed(join, peer, host, port)) {
+                    SendReply(conn, session, Error("membership change rejected"));
+                    OnCommandComplete(conn, session);
+                    return;
+                }
+                parts.push_back({true, i, raft->GetLeaderId()});
+            } else if (raft->GetLeaderId() < 0) {
+                SendReply(conn, session, Error("MOVED -1"));
+                OnCommandComplete(conn, session);
+                return;
+            } else {
+                parts.push_back({false, i, raft->GetLeaderId()});
             }
         }
         struct Wait {
@@ -369,37 +396,52 @@ static void SubmitWrite(const muduo::net::TcpConnectionPtr& conn,
             std::string error;
         };
         auto wait = std::make_shared<Wait>();
-        wait->left = ShardCount();
+        wait->left = static_cast<int>(parts.size());
         std::weak_ptr<muduo::net::TcpConnection> weak_conn = conn;
         std::weak_ptr<ClientSession> weak_session = session;
-        for (int i = 0; i < ShardCount(); ++i) {
-            const auto index = RaftAt(i)->ProposeMemberChange(join, peer,
-                [wait, weak_conn, weak_session](bool ok, const std::string& response) {
-                    if (!ok) {
-                        wait->ok = false;
-                        wait->error = response;
-                    }
-                    if (--wait->left != 0) return;
-                    const auto c = weak_conn.lock();
-                    const auto s = weak_session.lock();
-                    if (!c || !s || !CanDeliverClientReply(c->connected(), s->closing)) {
-                        if (s) {
-                            s->executing = false;
-                            s->waiting = false;
-                        }
-                        return;
-                    }
-                    SendReply(c, s, wait->ok ? "+OK\r\n" : wait->error);
+        auto done = [wait, weak_conn, weak_session](bool ok, const std::string& response) {
+            if (!ok) {
+                wait->ok = false;
+                wait->error = response;
+            }
+            if (--wait->left != 0) return;
+            const auto c = weak_conn.lock();
+            const auto s = weak_session.lock();
+            if (!c || !s || !CanDeliverClientReply(c->connected(), s->closing)) {
+                if (s) {
+                    s->executing = false;
                     s->waiting = false;
-                    OnCommandComplete(c, s);
-                });
-            if (index < 0) {
-                SendReply(conn, session, Error("membership change rejected"));
-                OnCommandComplete(conn, session);
+                }
                 return;
             }
-        }
+            SendReply(c, s, wait->ok ? "+OK\r\n" : wait->error);
+            s->waiting = false;
+            OnCommandComplete(c, s);
+        };
         session->waiting = true;
+        for (size_t n = 0; n < parts.size(); ++n) {
+            const auto& part = parts[n];
+            const bool started = part.local
+                ? RaftAt(part.shard)->ProposeMemberChange(join, peer, done, host, port) > 0
+                : RaftAt(part.shard)->ForwardMemberChange(part.leader, join, peer, host, port, done);
+            if (started) continue;
+            wait->left -= static_cast<int>(parts.size() - n - 1);
+            done(false, part.local ? "-ERR membership change rejected\r\n"
+                                   : "-ERR MOVED " + std::to_string(part.leader) + "\r\n");
+            return;
+        }
+        return;
+    }
+    IdempotentRequest idem;
+    if (!ParseIdempotentWrite(args[0], args, &idem)) {
+        SendReply(conn, session, Error("invalid client id or request id"));
+        OnCommandComplete(conn, session);
+        return;
+    }
+    if (FLAGS_require_request_id && !idem.present &&
+        (args[0] == "SET" || args[0] == "DEL" || args[0] == "CFGSET" || args[0] == "CFGROLLBACK")) {
+        SendReply(conn, session, Error("request id required"));
+        OnCommandComplete(conn, session);
         return;
     }
     if (!RaftAt(shard)->IsLeader()) {

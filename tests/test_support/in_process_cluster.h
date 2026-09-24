@@ -200,7 +200,21 @@ public:
             raftcore::InstallSnapshotResponse rpc; Check(rpc.ParseFromString(message.payload), "snapshot reply decode");
             node.HandleInstallSnapshotResponse(message.from, rpc); break;
         }
+        case RaftMsgType::kMemberForward:
+            node.HandleMemberForward(message.from, message.payload); break;
+        case RaftMsgType::kMemberForwardResponse:
+            node.HandleMemberForwardReply(message.from, message.payload); break;
         }
+    }
+    // Start id with the current voter set, then the leader can JOIN it by address.
+    void AddNode(int id, const std::string& host, int port) {
+        std::vector<int> voters;
+        if (!members.empty()) voters = members.begin()->second->raft->ClusterVoters();
+        peers.push_back({id, host, port});
+        const auto saved = bootstrap_voters;
+        bootstrap_voters = voters;
+        Restart(id);
+        bootstrap_voters = saved;
     }
     void Pump() {
         int remaining = 10000;

@@ -136,8 +136,17 @@ static void SnapshotDropsPrefixAndReopens() {
               durable.count(IndexKey(2)) == 0 && durable.count(IndexKey(3)) == 1,
               "snapshot did not delete only the compacted prefix");
         Check(durable.count(std::string("\x01snapmeta", 9)) == 1 &&
-              durable.count(std::string("\x01snapdata", 9)) == 1,
-              "snapshot keys were not written beside the log");
+              durable.count(std::string("\x01snapdata", 9)) == 0,
+              "snapshot meta was not written beside the log");
+        bool stored = false;
+        for (const auto& item : durable) {
+            if (item.first.size() == 14 && item.first.compare(1, 5, "snapc") == 0 &&
+                item.second == "snap")
+                stored = true;
+        }
+        std::string slice;
+        log.ReadSnapshot(1, 2, &slice);
+        Check(stored && slice == "na", "snapshot image was not stored as a readable chunk");
         Throws([&] { log.TruncateSuffix(2); });
         Throws([&] { log.SaveSnapshot(1, 1, "back"); });
         Check(log.LastIndex() == 3 && log.SnapshotIndex() == 2 && log.Get(3, &entry),
@@ -175,6 +184,25 @@ static void SnapshotDropsPrefixAndReopens() {
           "reopen after a conflicting snapshot lost the compacted tail");
 }
 
+static void LegacySnapshotImageReloads() {
+    const std::string path = "raft-log/legacy-snap";
+    auto state = rocksdb::testing::StateFor(path);
+    std::string meta(13, '\0');
+    meta[0] = 1;
+    meta[8] = 2;
+    meta[9] = 1;
+    state->data[std::string("\x01snapmeta", 9)] = meta;
+    state->data[std::string("\x01snapdata", 9)] = "old";
+    std::string stray(1, '\x01');
+    stray.append("snapr");
+    stray.append(4, '\0');
+    state->data[stray] = "partial";
+    RaftLog log(path);
+    Check(log.SnapshotIndex() == 2 && log.SnapshotTerm() == 1 && log.SnapshotData() == "old" &&
+          state->data.count(stray) == 0,
+          "legacy snapshot did not reload or a partial chunk survived open");
+}
+
 static void ScanRejectsNonContiguousLog() {
     const std::string path = "raft-log/gap";
     {
@@ -195,6 +223,7 @@ int main() {
         RejectInvalidAppends();
         HardStateRoundTrip();
         SnapshotDropsPrefixAndReopens();
+        LegacySnapshotImageReloads();
         ScanRejectsNonContiguousLog();
         Check(checks >= 20, "too few RaftLog assertions");
         std::cout << "PASS: production RaftLog (" << checks << " checks)\n";

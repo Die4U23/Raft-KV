@@ -105,6 +105,10 @@ static void TestClassifier() {
     Check(auth.type == CommandClass::LOCAL, "AUTH is LOCAL");
     auto join = ClassifyCommand({"MEMBER", "JOIN", "10"});
     Check(join.type == CommandClass::WRITE, "MEMBER JOIN is WRITE");
+    auto addressed = ClassifyCommand({"MEMBER", "JOIN", "70", "127.0.0.1", "9070"});
+    Check(addressed.type == CommandClass::WRITE, "MEMBER JOIN host port is WRITE");
+    auto bad_address = ClassifyCommand({"MEMBER", "JOIN", "70", "", "9070"});
+    Check(bad_address.type == CommandClass::ERROR, "empty join host was accepted");
     auto bad_peer = ClassifyCommand({"MEMBER", "LEAVE", "01"});
     Check(bad_peer.type == CommandClass::ERROR, "leading-zero peer id was accepted");
     auto reserved = ClassifyCommand({"SET", std::string("\0k", 2), "v"});

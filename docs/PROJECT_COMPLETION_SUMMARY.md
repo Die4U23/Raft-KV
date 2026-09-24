@@ -221,11 +221,11 @@ Total Test time (real) = 0.17 sec
 |-------|------|------|------|
 | 1 | Pre-Vote / CheckQuorum | ✅ 完成 | 在 `main` 的 `531fcf4` 里。标签 `v0.2.0` 指向 `8f5142f` |
 | 2 | **ReadIndex 线性一致读** | ✅ 完成 | 在 `main`。默认关闭 |
-| 3 | 快照 / InstallSnapshot | ✅ 完成 | 在快照分支，尚未进入 `main`。1 MiB 分片；镜像再大也压缩 |
-| 4 | 客户端请求去重 | ✅ 完成 | 在快照分支，尚未进入 `main`。只保留每个客户端的最新序号 |
+| 3 | 快照 / InstallSnapshot | ✅ 完成 | 在快照分支，尚未进入 `main`。1 MiB 分片键；发送未完成时不压缩。旧版本 1 元数据仍整份读入 |
+| 4 | 客户端请求去重 | ✅ 完成 | 在快照分支，尚未进入 `main`。只保留每个客户端的最新序号。`--require_request_id` 默认关闭 |
 | 5 | 版本化配置 | ✅ 完成 | 本分支，尚未进入 `main`。`CFGSET` / `CFGGET` / `CFGROLLBACK` / `CFGCACHE` |
-| 6 | 动态成员变更 | ✅ 完成 | 本分支。joint consensus，一次一个，只能改静态 peer 列表里的 id |
-| 7 | 多分片 | ✅ 完成 | 本分支。`--shards` 默认 1，各分片各自选主 |
+| 6 | 动态成员变更 | ✅ 完成 | 本分支。joint consensus，一次一个。`MEMBER JOIN id host port` 可以加入列表外的主机，Leader 可以移除自己 |
+| 7 | 多分片 | ✅ 完成 | 本分支。`--shards` 默认 1，各分片各自选主。`MEMBER` 转给该分片的 Leader |
 | 8 | 网络身份认证 | ✅ 完成 | 本分支。两个令牌默认空，空令牌不改帧字节 |
 | 9 | 租约读 | ✅ 完成 | 本分支。`--lease_reads` 默认 false。漂移上界 10 ms |
 
@@ -238,18 +238,18 @@ Total Test time (real) = 0.17 sec
 
 2. **集群管理**:
    - 默认全体静态 peer 都是投票者
-   - `MEMBER JOIN` / `MEMBER LEAVE` 一次一个。Leader 不能移除自己，不能把集合减空，不能加入列表外的主机。提交要旧配置和新配置都过半数；应用 `MEMBER COMMIT` 后才切换
-   - `--shards` 默认 1。大于 1 时同一 peer 集合上有多个 Raft 组，键按 FNV-1a 分片，各分片各自选主
+   - `MEMBER JOIN` / `MEMBER LEAVE` 一次一个。`MEMBER JOIN id host port` 可以加入列表外的主机。Leader 可以移除自己。不能把集合减空。提交要旧配置和新配置都过半数；应用 `MEMBER COMMIT` 后才切换
+   - `--shards` 默认 1。大于 1 时同一 peer 集合上有多个 Raft 组，键按 FNV-1a 分片，各分片各自选主。本节点不是该分片 Leader 时把 `MEMBER` 转过去；还不知道 Leader 时返回 `MOVED -1`
    - `--cluster_token` 为空时帧不变；非空时帧外加 HMAC-SHA256，校验失败关闭连接
    - `--client_token` 为空时 `AUTH` 在执行期是未知命令；非空时其他命令要先认证
 
 3. **日志管理**:
    - 超过 1024 条已应用记录后压缩
-   - 压缩和安装时整份镜像留在内存里
+   - 新快照按 1 MiB 分片键存放。压缩、发送、接收和安装每次处理一块。旧的版本 1 快照元数据仍把整份镜像读进内存
 
 4. **客户端语义**:
    - 带 `client_id` 和 `request_id` 的 `SET`/`DEL` 重试返回上次回复
-   - 不带序号的写入，超时重试仍会再执行
+   - `--require_request_id` 默认关闭。关闭时不带序号的写入超时重试仍会再执行；打开后缺少序号返回 `-ERR request id required`
    - `CFGSET` / `CFGROLLBACK` 使用同一张会话表。缺少的回滚版本不消耗序号。`CFGCACHE` 过期时返回错误，不返回旧值
 
 ---
@@ -393,11 +393,11 @@ struct ReadIndexMetrics {
 
 #### 1. 快照与日志压缩
 
-2026-09-24 已在 `cursor/raft-snapshot-386d` 完成，尚未进入 `main`。已应用记录超过 1024 条后导出镜像并截断日志；InstallSnapshot 按 1 MiB 分片，收齐后安装；日志快照先于 KV 落盘。
+2026-09-24 已在 `cursor/raft-snapshot-386d` 完成，尚未进入 `main`。已应用记录超过 1024 条后导出镜像并截断日志；InstallSnapshot 按 1 MiB 分片，收齐后安装；日志快照先于 KV 落盘。本分支把新镜像按 1 MiB 分片键存放，不再在压缩和安装时拼成一整份字符串。旧的版本 1 元数据仍整份读入。
 
 #### 2. 客户端请求去重
 
-2026-09-24 已在同一分支完成，尚未进入 `main`。`client_id + request_id` 的结果随状态机和版本 2 快照持久化。每个客户端只保留最新序号，没有单独的过期清理窗口。不带序号的写入仍会再执行。
+2026-09-24 已在同一分支完成，尚未进入 `main`。`client_id + request_id` 的结果随状态机和版本 2 快照持久化。每个客户端只保留最新序号，没有单独的过期清理窗口。`--require_request_id` 默认关闭；关闭时不带序号的写入仍会再执行。
 
 #### 3. 租约读（可选）
 

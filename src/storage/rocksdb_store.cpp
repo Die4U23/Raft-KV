@@ -316,3 +316,71 @@ void RocksDBStore::ReplaceAll(int64_t index,
     RequireStorageOK(_db->Write(DurableWriteOptions(), &batch), "install KV snapshot");
     _last_applied.store(index, std::memory_order_release);
 }
+void RocksDBStore::VisitUserKeys(
+    const std::function<void(const std::string&, const std::string&)>& visit) const {
+    std::unique_ptr<rocksdb::Iterator> it(_db->NewIterator(rocksdb::ReadOptions()));
+    for (it->SeekToFirst(); it->Valid(); it->Next()) {
+        const std::string key = it->key().ToString();
+        if (!key.empty() && key[0] == '\0') continue;
+        visit(key, it->value().ToString());
+    }
+    RequireStorageOK(it->status(), "export KV snapshot");
+}
+void RocksDBStore::FlushSnapshotPuts() {
+    if (_snapshot_puts.empty()) return;
+    rocksdb::WriteBatch batch;
+    for (const auto& item : _snapshot_puts) batch.Put(item.first, item.second);
+    _snapshot_puts.clear();
+    RequireStorageOK(_db->Write(DurableWriteOptions(), &batch), "install KV snapshot");
+}
+void RocksDBStore::PrepareSnapshotInstall(int64_t index) {
+    if (index <= 0) throw std::runtime_error("invalid snapshot index");
+    if (index < LastApplied()) throw std::runtime_error("snapshot is behind the applied index");
+    _snapshot_install_index = index;
+    _snapshot_puts.clear();
+    const auto sessions = SessionPrefix();
+    const auto configs = ConfigPrefix();
+    const auto current = ConfigCurrentPrefix();
+    for (;;) {
+        std::vector<std::string> keys;
+        std::unique_ptr<rocksdb::Iterator> it(_db->NewIterator(rocksdb::ReadOptions()));
+        for (it->SeekToFirst(); it->Valid() && keys.size() < 32; it->Next()) {
+            const std::string key = it->key().ToString();
+            const bool user = !key.empty() && key[0] != '\0';
+            const bool session = key.size() >= sessions.size() &&
+                                 key.compare(0, sessions.size(), sessions) == 0;
+            const bool config =
+                (key.size() >= configs.size() && key.compare(0, configs.size(), configs) == 0) ||
+                (key.size() >= current.size() && key.compare(0, current.size(), current) == 0);
+            if (user || session || config) keys.push_back(key);
+        }
+        RequireStorageOK(it->status(), "scan KV before snapshot install");
+        if (keys.empty()) break;
+        rocksdb::WriteBatch batch;
+        for (const auto& key : keys) batch.Delete(key);
+        RequireStorageOK(_db->Write(DurableWriteOptions(), &batch), "install KV snapshot");
+    }
+}
+void RocksDBStore::QueueSnapshotPut(const std::string& key, const std::string& value) {
+    _snapshot_puts.emplace_back(key, value);
+    if (_snapshot_puts.size() >= 32) FlushSnapshotPuts();
+}
+void RocksDBStore::QueueSnapshotSession(const std::string& client, const std::string& raw) {
+    QueueSnapshotPut(SessionKey(client), raw);
+}
+void RocksDBStore::QueueSnapshotConfig(const std::string& name, uint64_t version,
+                                       const std::string& value, bool current) {
+    QueueSnapshotPut(ConfigHistoryKey(name, version), value);
+    if (current) QueueSnapshotPut(ConfigCurrentKey(name), EncodeSession(version, {}).substr(0, 8));
+}
+void RocksDBStore::FinishSnapshotInstall() {
+    std::string value(8, '\0');
+    auto encoded = static_cast<uint64_t>(_snapshot_install_index);
+    for (int i = 7; i >= 0; --i) {
+        value[static_cast<size_t>(i)] = static_cast<char>(encoded & 0xff);
+        encoded >>= 8;
+    }
+    _snapshot_puts.emplace_back(AppliedKey(), value);
+    FlushSnapshotPuts();
+    _last_applied.store(_snapshot_install_index, std::memory_order_release);
+}

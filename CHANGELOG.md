@@ -4,13 +4,23 @@
 
 截至 **2026-09-24**，下文按提交与代码核对记录。09-13 之后的条目曾漏记，已补录；不以合并说明或未归档压测数字作为收益证明。这些能力在本分支，不在 `main`（`531fcf4`），也不在标签 `v0.2.0`（`8f5142f`）。
 
+## 2026-09-24 — 成员变更范围、写入序号和快照内存
+
+可移植 CTest 16/16 通过。Linux 构建的 CTest 17/17 通过，三进程冒烟 10/10 通过。`cluster_linearizable.py` 这次没有重跑。
+
+- `MEMBER JOIN id host port` 记住一个原来不在静态 peer 列表里的主机，再把它加为投票者。只写 `MEMBER JOIN id` 时，该 id 必须已经在本进程的 peer 表里。`host` 不能含 NUL，`port` 为 1–65535。端点写在成员记录的版本 2 里；没有新端点时成员记录仍是版本 1。
+- Leader 可以 `MEMBER LEAVE` 自己。应用内部的 `MEMBER COMMIT` 之后，如果自己不再是投票者，就卸任。仍然不能把投票者减空，也不能在上一次变更未完成时再改。
+- `--shards` 大于 1 时，本节点是该分片 Leader 就地提案。否则把 `MEMBER` 转给那个分片当前的 Leader（Raft 帧类型 6 和 7）。还不知道 Leader 时返回 `MOVED -1`。
+- `--require_request_id` 默认 false。打开后，`SET` / `DEL` / `CFGSET` / `CFGROLLBACK` 缺少 `client_id` 和 `request_id` 时返回 `-ERR request id required`。`MEMBER` 不要求序号。默认关闭时，不带序号的写入重试仍会再执行。
+- 新的日志快照按 1 MiB 分片键写入，压缩、发送、接收和安装每次处理一块。发送尚未结束时不开始下一次压缩。接收方先在暂存键里收齐并检查镜像，确认合法后才截断日志。打开旧的版本 1 快照元数据时，仍会把那一份镜像读进内存。
+
 ## 2026-09-24 — 版本化配置、成员变更、多分片、认证、租约读
 
 默认都保持原来的行为：`--shards=1`，两个令牌为空，`--lease_reads=false`。可移植 CTest 16/16 通过。Linux 上 `raft_kv_server` 已重新链接；`linux-cluster.yml` 里的三进程冒烟和 `cluster_linearizable.py` 这次没有重跑。
 
 - `CFGSET name value` 经 Raft 发布配置，成功回复新版本号。`CFGROLLBACK name version` 把那个版本的值复制成一个新版本；没有该版本时返回 `-ERR no such config version`，不消耗 `request_id`。`CFGGET` 读当前版本。`CFGCACHE name max_age_ms` 只读本机缓存，年龄超过上限返回 `-ERR config not fresh`，不把过期值当成功。`CFGSET` / `CFGROLLBACK` 可以带与 `SET` 相同的 `client_id` 和 `request_id`，重试不升版本。以 NUL 开头的键在分类时拒绝；若已提交，状态机返回确定的 `-ERR reserved key`。没有配置记录时快照仍是 9 字节、版本字节为 2；有记录时快照版本为 3。版本 1 和版本 2 的安装会清掉配置。
-- `MEMBER JOIN` / `MEMBER LEAVE` 一次一个。追加时进入 joint 配置，提交要旧投票者和新投票者都过半数。该条目应用后，Leader 再追加内部的 `MEMBER COMMIT`；应用 COMMIT 才切到新集合并持久化。Leader 不能移除自己，不能把集合减空，不能加入静态 peer 列表之外的 id，也不能在上一次变更未完成时再改。非投票者不竞选，也不给票。投票者写入 Raft 日志的成员键，InstallSnapshot 的 `voters` 字段在安装完成时采纳；该字段为空则保持当前投票者，手写测试帧不用填。
-- `--shards` 为 1–64。大于 1 时同一组 peer 上有多份日志和 KV，键按 FNV-1a 选择分片，帧内的 protobuf 前多 4 字节分片号。各分片各自选主。`MEMBER` 先要求本节点在每个分片上都允许这次变更，再逐个分片提案。
+- `MEMBER JOIN` / `MEMBER LEAVE` 一次一个。追加时进入 joint 配置，提交要旧投票者和新投票者都过半数。该条目应用后，Leader 再追加内部的 `MEMBER COMMIT`；应用 COMMIT 才切到新集合并持久化。不能把集合减空，也不能在上一次变更未完成时再改。非投票者不竞选，也不给票。投票者写入 Raft 日志的成员键，InstallSnapshot 的 `voters` 字段在安装完成时采纳；该字段为空则保持当前投票者，手写测试帧不用填。加入列表外主机、Leader 自移除，以及按分片转发，见上面一节。
+- `--shards` 为 1–64。大于 1 时同一组 peer 上有多份日志和 KV，键按 FNV-1a 选择分片，帧内的 protobuf 前多 4 字节分片号。各分片各自选主。
 - `--cluster_token` 非空时，Raft 帧外是 `MAC1`、内层长度和 32 字节 HMAC-SHA256。校验失败关闭连接。空令牌不改帧字节。`--client_token` 非空时，未 `AUTH` 的连接除 `AUTH` 外返回 `-ERR NOAUTH Authentication required`；密码不对返回 `-ERR invalid password`。`AUTH` 不进 Raft。令牌为空时，`AUTH` 在执行期回复未知命令。
 - `--lease_reads` 与 `--linearizable_reads` 都会打开强一致读。投票者 AppendEntries 联系时间里，第 quorum 新的那一次加上（150 ms − 10 ms）之前，Leader 把读排到当前提交位置并增加 `lease_reads`，仍等 `lastApplied` 之后才读。恰好等于该窗口，或窗口之外，退回 ReadIndex，不增加 `lease_reads`。过载检查在这条快路径之前。Follower 时钟快过 10 ms 时，可能在 Leader 仍认为租约有效时开始竞选。
 

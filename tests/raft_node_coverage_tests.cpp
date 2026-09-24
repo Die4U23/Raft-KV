@@ -399,8 +399,12 @@ static void SnapshotCatchesUpLaggingFollower() {
     for (int64_t index = 1; index <= compacted; ++index)
         Check(log.count(IndexKey(index)) == 0, "compacted log index is still stored");
     Check(log.count(IndexKey(0)) == 1 && log.count(std::string("\x01snapmeta", 9)) == 1 &&
-          log.count(std::string("\x01snapdata", 9)) == 1,
-          "compaction removed hard state or skipped the snapshot keys");
+          log.count(std::string("\x01snapdata", 9)) == 0,
+          "compaction removed hard state or skipped the snapshot meta");
+    int stored_chunks = 0;
+    for (const auto& item : log)
+        if (item.first.size() == 14 && item.first.compare(1, 5, "snapc") == 0) ++stored_chunks;
+    Check(stored_chunks == 1, "compaction did not store the snapshot as one chunk");
     std::string value;
     Check(cluster.State(30).Get("default:k", &value) && value == "v" &&
           cluster.Node(30).GetSnapshotIndex() == 0,
@@ -581,8 +585,9 @@ static void SnapshotChunksReassembleAndRejectAGap() {
     cluster.Settle();
     const int64_t compacted = cluster.Node(10).GetSnapshotIndex();
     const int term = cluster.Node(10).GetCurrentTerm();
-    const auto blob = rocksdb::testing::StateFor(cluster.Path(10, "/log"))
-                          ->data.at(std::string("\x01snapdata", 9));
+    std::string blob;
+    for (const auto& item : rocksdb::testing::StateFor(cluster.Path(10, "/log"))->data)
+        if (item.first.size() == 14 && item.first.compare(1, 5, "snapc") == 0) blob = item.second;
     const size_t chunk = 8;
     Check(compacted >= 2 && blob.size() > chunk, "leader snapshot is too small to chunk");
     std::string value;

@@ -77,8 +77,19 @@ public:
     // appended. Commit needs a majority of both the old and new voter sets.
     // The leader then appends MEMBER COMMIT. Applying that entry leaves only
     // the new voters.
-    int64_t ProposeMemberChange(bool join, int peer_id, ProposeCallback callback);
-    bool MemberChangeAllowed(bool join, int peer_id) const;
+    // host and port are required when peer_id is not already in this process's
+    // peer list. Leave may name this node; after MEMBER COMMIT it stops being
+    // a voter and steps down. -1 not leader, -4 rejected. No callback on rejection.
+    int64_t ProposeMemberChange(bool join, int peer_id, ProposeCallback callback,
+                                const std::string& host = {}, int port = 0);
+    bool MemberChangeAllowed(bool join, int peer_id, const std::string& host = {},
+                             int port = 0) const;
+    // Ask leader to propose the change for this shard. The callback runs when
+    // that leader applies it, or when this node steps down.
+    bool ForwardMemberChange(int leader, bool join, int peer_id, const std::string& host,
+                             int port, ProposeCallback callback);
+    void HandleMemberForward(int from, const std::string& payload);
+    void HandleMemberForwardReply(int from, const std::string& payload);
     int64_t MatchIndexOf(int peer_id) const {
         const auto found = _match_index.find(peer_id);
         return found == _match_index.end() ? -1 : found->second;
@@ -127,9 +138,10 @@ private:
         RaftMsgType type = RaftMsgType::kAppendEntries;
         SteadyClock::time_point first_send;
         std::string payload;
-        // Copied when a snapshot transfer starts so a newer local snapshot
-        // cannot change the bytes of a chunk sequence already in flight.
-        std::string snapshot_image;
+        // Compact waits until this transfer ends. The image stays in chunk
+        // keys, and a newer snapshot must not replace those keys mid-send.
+        bool snapshot_active = false;
+        size_t snapshot_length = 0;
         size_t snapshot_offset = 0;
         size_t snapshot_chunk = 0;
         int32_t snapshot_term = 0;
@@ -174,6 +186,7 @@ private:
     void SendSnapshotChunk(int peer);
     void BroadcastAppendEntries();
     void MaybeCompact();
+    bool SnapshotSendActive() const;
     void AdvanceCommitIndex();
     void ApplyCommitted();
     void FinishApply(int64_t first, size_t count, const ApplyExecutor::Results& results,
@@ -190,6 +203,10 @@ private:
     int64_t MatchQuorum(const std::set<int>& config) const;
     void RefreshActiveMembership();
     void NoteAppliedMembership(int64_t first, size_t count);
+    void LearnPeer(int id, const std::string& host, int port);
+    void RememberMembershipPeers(const MembershipState& state);
+    void FailForwards(const std::string& result);
+    void StepDownIfRemoved();
     void MaybeAppendMemberCommit();
     static void FoldMembership(MembershipState* view, int64_t index, const std::string& command,
                                bool applied);
@@ -266,6 +283,7 @@ private:
     int _lease_drift_ms = kLeaseClockDriftMs;
     int _shard = 0;
     bool _appending_member_commit = false;
+    std::map<uint64_t, ProposeCallback> _forward_callbacks;
     MembershipState _durable;
     MembershipState _active;
 
@@ -283,6 +301,4 @@ private:
     static constexpr int kReadIndexTimeoutMs = 1000;
     int64_t _snapshot_distance = kSnapshotDistance;
     size_t _snapshot_chunk_bytes = kSnapshotChunkBytes;
-    // Chunks of the snapshot currently being received. Offset 0 replaces it.
-    std::string _snapshot_recv;
 };

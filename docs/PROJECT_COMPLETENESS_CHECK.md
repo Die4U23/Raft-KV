@@ -334,7 +334,7 @@ scripts/
 - 小规模生产环境
 
 ⚠️ **不推荐用于**:
-- 大规模生产环境（快照在功能分支，镜像仍整份留在内存；`main` 还没有快照）
+- 大规模生产环境（快照在功能分支；新镜像按 1 MiB 分片存放，旧版本 1 元数据仍整份读入。`main` 还没有快照）
 - 把默认 GET 当成线性一致读（需要显式打开 `--linearizable_reads`）
 - 需要分布式事务的场景
 
@@ -360,8 +360,8 @@ scripts/
 - ✅ 请求去重已在 `cursor/raft-snapshot-386d`，尚未进入 `main`
 
 长期（2-3 月）:
-- ✅ 快照与日志压缩已在 `cursor/raft-snapshot-386d`，尚未进入 `main`
-- ✅ 版本化配置、joint 成员变更、多分片、帧与客户端认证、租约读已在 `cursor/cluster-features-386d`，默认关闭或为空，尚未进入 `main`，也不在 `v0.2.0`
+- ✅ 快照与日志压缩已在 `cursor/raft-snapshot-386d`，尚未进入 `main`。本分支把新镜像按 1 MiB 分片键存放
+- ✅ 版本化配置、joint 成员变更、多分片、帧与客户端认证、租约读已在 `cursor/cluster-features-386d`，默认关闭或为空，尚未进入 `main`，也不在 `v0.2.0`。`MEMBER JOIN id host port` 可以加入列表外的主机，Leader 可以移除自己。`--require_request_id` 默认关闭
 - 📋 添加监控指标导出
 - 📋 容器化部署
 
