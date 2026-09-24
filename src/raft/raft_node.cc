@@ -1,5 +1,6 @@
 #include "raft/raft_node.h"
 #include "common/log.h"
+#include "common/request_deadline.h"
 #include "common/resp_parser.h"
 #include "raft/peers.h"
 #include <algorithm>
@@ -110,6 +111,7 @@ std::string RaftNode::MetricsInfo() const {
 
     info += "read_index_pending:" + std::to_string(PendingReadIndexCount()) + "\r\n";
     info += "lease_reads:" + std::to_string(_lease_reads) + "\r\n";
+    info += "request_timeout:" + std::to_string(_request_timeout) + "\r\n";
     info += "snapshot_index:" + std::to_string(_log->SnapshotIndex()) + "\r\n";
 
     return info;
@@ -236,7 +238,7 @@ void RaftNode::FailForwards(const std::string& result) {
     auto callbacks = std::move(_forward_callbacks);
     _forward_callbacks.clear();
     for (auto& item : callbacks)
-        if (item.second) item.second(false, result);
+        if (item.second.callback) item.second.callback(false, result);
 }
 void RaftNode::StepDownIfRemoved() {
     if (_state == LEADER && !IsClusterVoter(_node_id)) BecomeFollower(_current_term);
@@ -311,7 +313,7 @@ bool RaftNode::ForwardMemberChange(int leader, bool join, int peer_id, const std
     if (!_running || leader == _node_id || !IsRemotePeer(leader)) return false;
     if (_rpc_sequence == UINT64_MAX) throw std::runtime_error("Raft RPC sequence exhausted");
     const uint64_t rpc = ++_rpc_sequence;
-    _forward_callbacks.emplace(rpc, std::move(callback));
+    _forward_callbacks.emplace(rpc, Forward{std::move(callback), Now()});
     SendPeer(leader, RaftMsgType::kMemberForward,
              EncodeMemberForward(rpc, join, peer_id, host, port));
     return true;
@@ -343,7 +345,7 @@ void RaftNode::HandleMemberForwardReply(int from, const std::string& payload) {
     if (!DecodeMemberForwardReply(payload, &rpc, &ok, &reply)) return;
     const auto found = _forward_callbacks.find(rpc);
     if (found == _forward_callbacks.end()) return;
-    auto callback = std::move(found->second);
+    auto callback = std::move(found->second.callback);
     _forward_callbacks.erase(found);
     if (callback) callback(ok, reply);
 }
@@ -411,7 +413,7 @@ int64_t RaftNode::ProposeBatch(std::vector<Proposal> proposals) {
     ++_proposal_batches;
     for (size_t i = 0; i < proposals.size(); ++i)
         _pending.emplace(entries[i].index(), Pending{std::move(proposals[i].callback),
-                                                   proposals[i].command.size()});
+                                                   proposals[i].command.size(), Now()});
     _pending_bytes += bytes;
     _match_index[_node_id] = entries.back().index();
     RefreshActiveMembership();
@@ -1149,6 +1151,36 @@ void RaftNode::MaybeCompact() {
                             << "] compacted log through index=" << index
                             << " term=" << term;
 }
+void RaftNode::ExpireRequests() {
+    if (_request_timeout_ms <= 0 || !IsLeader()) return;
+    const auto now = Now();
+    std::vector<ProposeCallback> expired;
+    auto take = [&](ProposeCallback& callback, SteadyClock::time_point started) {
+        if (!RequestTimedOut(_request_timeout_ms, now - started)) return false;
+        if (callback) expired.push_back(std::move(callback));
+        ++_request_timeout;
+        return true;
+    };
+    for (auto it = _pending.begin(); it != _pending.end(); ) {
+        if (!take(it->second.callback, it->second.started)) {
+            ++it;
+            continue;
+        }
+        _pending_bytes -= it->second.bytes;
+        it = _pending.erase(it);
+    }
+    for (auto it = _forward_callbacks.begin(); it != _forward_callbacks.end(); ) {
+        if (!take(it->second.callback, it->second.started)) {
+            ++it;
+            continue;
+        }
+        it = _forward_callbacks.erase(it);
+    }
+    // The log entry stays. A later commit still applies it, but this callback
+    // has already answered the client, so apply will not reply a second time.
+    for (auto& callback : expired)
+        callback(false, "-ERR request timeout; outcome unknown\r\n");
+}
 void RaftNode::Tick() {
     if (!_running) return;
     if (_state != LEADER) {
@@ -1163,6 +1195,7 @@ void RaftNode::Tick() {
             _heartbeat_timer_ms = kHeartbeatIntervalMs;
         }
         CheckReadIndexTimeout();
+        ExpireRequests();
         CheckQuorum();
         if (!IsLeader()) return;
         FinishReadIndexRounds();
