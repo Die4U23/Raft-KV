@@ -2,7 +2,17 @@
 
 记录行为改动、验证状态与取舍。每次优化保留原始基线、实现和验收证据；没有实测对比时不填写性能提升比例。
 
-截至 **2026-09-23**，下文按提交与代码核对记录。09-13 之后的条目曾漏记，已补录；不以合并说明或未归档压测数字作为收益证明。
+截至 **2026-09-24**，下文按提交与代码核对记录。09-13 之后的条目曾漏记，已补录；不以合并说明或未归档压测数字作为收益证明。这些能力在本分支，不在 `main`（`531fcf4`），也不在标签 `v0.2.0`（`8f5142f`）。
+
+## 2026-09-24 — 版本化配置、成员变更、多分片、认证、租约读
+
+默认都保持原来的行为：`--shards=1`，两个令牌为空，`--lease_reads=false`。可移植 CTest 16/16 通过。Linux 上 `raft_kv_server` 已重新链接；`linux-cluster.yml` 里的三进程冒烟和 `cluster_linearizable.py` 这次没有重跑。
+
+- `CFGSET name value` 经 Raft 发布配置，成功回复新版本号。`CFGROLLBACK name version` 把那个版本的值复制成一个新版本；没有该版本时返回 `-ERR no such config version`，不消耗 `request_id`。`CFGGET` 读当前版本。`CFGCACHE name max_age_ms` 只读本机缓存，年龄超过上限返回 `-ERR config not fresh`，不把过期值当成功。`CFGSET` / `CFGROLLBACK` 可以带与 `SET` 相同的 `client_id` 和 `request_id`，重试不升版本。以 NUL 开头的键在分类时拒绝；若已提交，状态机返回确定的 `-ERR reserved key`。没有配置记录时快照仍是 9 字节、版本字节为 2；有记录时快照版本为 3。版本 1 和版本 2 的安装会清掉配置。
+- `MEMBER JOIN` / `MEMBER LEAVE` 一次一个。追加时进入 joint 配置，提交要旧投票者和新投票者都过半数。该条目应用后，Leader 再追加内部的 `MEMBER COMMIT`；应用 COMMIT 才切到新集合并持久化。Leader 不能移除自己，不能把集合减空，不能加入静态 peer 列表之外的 id，也不能在上一次变更未完成时再改。非投票者不竞选，也不给票。投票者写入 Raft 日志的成员键，InstallSnapshot 的 `voters` 字段在安装完成时采纳；该字段为空则保持当前投票者，手写测试帧不用填。
+- `--shards` 为 1–64。大于 1 时同一组 peer 上有多份日志和 KV，键按 FNV-1a 选择分片，帧内的 protobuf 前多 4 字节分片号。各分片各自选主。`MEMBER` 先要求本节点在每个分片上都允许这次变更，再逐个分片提案。
+- `--cluster_token` 非空时，Raft 帧外是 `MAC1`、内层长度和 32 字节 HMAC-SHA256。校验失败关闭连接。空令牌不改帧字节。`--client_token` 非空时，未 `AUTH` 的连接除 `AUTH` 外返回 `-ERR NOAUTH Authentication required`；密码不对返回 `-ERR invalid password`。`AUTH` 不进 Raft。令牌为空时，`AUTH` 在执行期回复未知命令。
+- `--lease_reads` 与 `--linearizable_reads` 都会打开强一致读。投票者 AppendEntries 联系时间里，第 quorum 新的那一次加上（150 ms − 10 ms）之前，Leader 把读排到当前提交位置并增加 `lease_reads`，仍等 `lastApplied` 之后才读。恰好等于该窗口，或窗口之外，退回 ReadIndex，不增加 `lease_reads`。过载检查在这条快路径之前。Follower 时钟快过 10 ms 时，可能在 Leader 仍认为租约有效时开始竞选。
 
 ## 2026-09-23 — 客户端请求去重
 

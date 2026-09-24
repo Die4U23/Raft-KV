@@ -24,6 +24,20 @@ std::string EncodeSession(uint64_t seq, const std::string& reply) {
     out += reply;
     return out;
 }
+std::string ConfigPrefix() { return std::string(1, '\0') + "raftkv:cfg:"; }
+std::string ConfigCurrentPrefix() { return std::string(1, '\0') + "raftkv:cfgcur:"; }
+std::string ConfigHistoryKey(const std::string& name, uint64_t version) {
+    return ConfigPrefix() + name + '\0' + EncodeSession(version, {}).substr(0, 8);
+}
+std::string ConfigCurrentKey(const std::string& name) { return ConfigCurrentPrefix() + name; }
+bool DecodeU64(const std::string& raw, uint64_t* value) {
+    if (raw.size() != 8) return false;
+    uint64_t parsed = 0;
+    for (unsigned char byte : raw) parsed = (parsed << 8) | byte;
+    if (parsed == 0) return false;
+    *value = parsed;
+    return true;
+}
 bool RocksDBStore::DecodeSessionValue(const std::string& raw, uint64_t* seq, std::string* reply) {
     if (raw.size() < 8) return false;
     uint64_t value = 0;
@@ -99,14 +113,22 @@ std::vector<bool> RocksDBStore::ApplyBatch(const std::vector<Mutation>& mutation
         case Mutation::Kind::Noop: break;
         default: throw std::runtime_error("invalid state machine mutation");
         }
+        if (mutation.config_write) {
+            if (mutation.config_version == 0 || mutation.key.empty() || mutation.key[0] == '\0')
+                throw std::runtime_error("invalid config update");
+            batch.Put(ConfigHistoryKey(mutation.key, mutation.config_version), mutation.value);
+            batch.Put(ConfigCurrentKey(mutation.key), EncodeSession(mutation.config_version, {}).substr(0, 8));
+        }
         if (!mutation.remember_session) continue;
-        if (mutation.session_seq == 0 || !ValidClientId(mutation.session_client) ||
-            (mutation.kind != Mutation::Kind::Put && mutation.kind != Mutation::Kind::Delete))
+        if (mutation.session_seq == 0 || !ValidClientId(mutation.session_client))
             throw std::runtime_error("invalid session update");
-        batch.Put(SessionKey(mutation.session_client),
-                  EncodeSession(mutation.session_seq,
-                                AppliedWriteReply(mutation.kind == Mutation::Kind::Delete,
-                                                  existed[i])));
+        std::string reply = mutation.session_reply;
+        if (reply.empty()) {
+            if (mutation.kind != Mutation::Kind::Put && mutation.kind != Mutation::Kind::Delete)
+                throw std::runtime_error("invalid session update");
+            reply = AppliedWriteReply(mutation.kind == Mutation::Kind::Delete, existed[i]);
+        }
+        batch.Put(SessionKey(mutation.session_client), EncodeSession(mutation.session_seq, reply));
     }
     std::string value(8, '\0');
     auto encoded = static_cast<uint64_t>(last);
@@ -164,9 +186,60 @@ std::vector<std::pair<std::string, std::string>> RocksDBStore::ExportSessions() 
     RequireStorageOK(it->status(), "export client sessions");
     return sessions;
 }
+bool RocksDBStore::ReadConfigVersion(const std::string& name, uint64_t version,
+                                    std::string* value) const {
+    if (version == 0 || name.empty() || name[0] == '\0') return false;
+    return Get(ConfigHistoryKey(name, version), value);
+}
+bool RocksDBStore::ReadCurrentConfig(const std::string& name, uint64_t* version,
+                                     std::string* value) const {
+    std::string raw;
+    if (!Get(ConfigCurrentKey(name), &raw)) return false;
+    if (!DecodeU64(raw, version) || !ReadConfigVersion(name, *version, value))
+        throw std::runtime_error("corrupt config record");
+    return true;
+}
+std::vector<RocksDBStore::ConfigHistory> RocksDBStore::ExportConfigs() const {
+    std::vector<ConfigHistory> configs;
+    const auto prefix = ConfigPrefix();
+    std::unique_ptr<rocksdb::Iterator> it(_db->NewIterator(rocksdb::ReadOptions()));
+    for (it->SeekToFirst(); it->Valid(); it->Next()) {
+        const std::string key = it->key().ToString();
+        if (key.size() < prefix.size() + 1 + 8 || key.compare(0, prefix.size(), prefix) != 0)
+            continue;
+        const auto split = key.find('\0', prefix.size());
+        if (split == std::string::npos || key.size() != split + 1 + 8)
+            throw std::runtime_error("corrupt config record");
+        const std::string name = key.substr(prefix.size(), split - prefix.size());
+        uint64_t version = 0;
+        if (name.empty() || name.find('\0') != std::string::npos ||
+            !DecodeU64(key.substr(split + 1), &version))
+            throw std::runtime_error("corrupt config record");
+        if (configs.empty() || configs.back().name != name)
+            configs.push_back(ConfigHistory{name, {}});
+        if (configs.back().name != name)
+            throw std::runtime_error("corrupt config record");
+        auto& versions = configs.back().versions;
+        if (!versions.empty() && versions.back().first + 1 != version)
+            throw std::runtime_error("corrupt config record");
+        if (versions.empty() && version != 1)
+            throw std::runtime_error("corrupt config record");
+        versions.emplace_back(version, it->value().ToString());
+    }
+    RequireStorageOK(it->status(), "export config history");
+    for (const auto& config : configs) {
+        uint64_t current = 0;
+        std::string value;
+        if (!ReadCurrentConfig(config.name, &current, &value) || config.versions.empty() ||
+            current != config.versions.back().first || value != config.versions.back().second)
+            throw std::runtime_error("corrupt config record");
+    }
+    return configs;
+}
 void RocksDBStore::ReplaceAll(int64_t index,
                               const std::vector<std::pair<std::string, std::string>>& entries,
-                              const std::vector<std::pair<std::string, std::string>>* sessions) {
+                              const std::vector<std::pair<std::string, std::string>>* sessions,
+                              const std::vector<ConfigHistory>* configs) {
     if (index <= 0) throw std::runtime_error("invalid snapshot index");
     if (index < LastApplied()) throw std::runtime_error("snapshot is behind the applied index");
     for (const auto& entry : entries) {
@@ -182,9 +255,23 @@ void RocksDBStore::ReplaceAll(int64_t index,
                 throw std::runtime_error("snapshot contains a corrupt client session");
         }
     }
+    if (configs) {
+        for (const auto& config : *configs) {
+            if (config.name.empty() || config.name[0] == '\0' || config.versions.empty())
+                throw std::runtime_error("snapshot contains a corrupt config record");
+            uint64_t expect = 1;
+            for (const auto& version : config.versions) {
+                if (version.first != expect) throw std::runtime_error("snapshot contains a corrupt config record");
+                ++expect;
+            }
+        }
+    }
     const auto prefix = SessionPrefix();
+    const auto config_prefix = ConfigPrefix();
+    const auto current_prefix = ConfigCurrentPrefix();
     std::vector<std::string> stale;
     std::vector<std::string> stale_sessions;
+    std::vector<std::string> stale_configs;
     std::unique_ptr<rocksdb::Iterator> it(_db->NewIterator(rocksdb::ReadOptions()));
     for (it->SeekToFirst(); it->Valid(); it->Next()) {
         const std::string key = it->key().ToString();
@@ -192,6 +279,11 @@ void RocksDBStore::ReplaceAll(int64_t index,
             if (sessions && key.size() >= prefix.size() &&
                 key.compare(0, prefix.size(), prefix) == 0)
                 stale_sessions.push_back(key);
+            if (configs && ((key.size() >= config_prefix.size() &&
+                             key.compare(0, config_prefix.size(), config_prefix) == 0) ||
+                            (key.size() >= current_prefix.size() &&
+                             key.compare(0, current_prefix.size(), current_prefix) == 0)))
+                stale_configs.push_back(key);
             continue;
         }
         stale.push_back(key);
@@ -200,10 +292,19 @@ void RocksDBStore::ReplaceAll(int64_t index,
     rocksdb::WriteBatch batch;
     for (const auto& key : stale) batch.Delete(key);
     for (const auto& key : stale_sessions) batch.Delete(key);
+    for (const auto& key : stale_configs) batch.Delete(key);
     for (const auto& entry : entries) batch.Put(entry.first, entry.second);
     if (sessions) {
         for (const auto& session : *sessions)
             batch.Put(SessionKey(session.first), session.second);
+    }
+    if (configs) {
+        for (const auto& config : *configs) {
+            for (const auto& version : config.versions)
+                batch.Put(ConfigHistoryKey(config.name, version.first), version.second);
+            batch.Put(ConfigCurrentKey(config.name),
+                      EncodeSession(config.versions.back().first, {}).substr(0, 8));
+        }
     }
     std::string value(8, '\0');
     auto encoded = static_cast<uint64_t>(index);

@@ -15,6 +15,7 @@
 #include "raft/raft_codec.h"
 #include "raft/peers.h"
 #include "common/peer_retry_policy.h"
+#include "common/shard.h"
 
 // PeerManager: 管理与其他 Raft 节点之间的 TCP 连接
 //
@@ -35,7 +36,8 @@ class PeerManager {
 public:
     using MessageHandler = std::function<void(int from_peer_id,
                                               RaftMsgType type,
-                                              const std::string& payload)>;
+                                              const std::string& payload,
+                                              int shard)>;
 
     PeerManager(muduo::net::EventLoop* loop,
                 int self_id,
@@ -45,13 +47,16 @@ public:
     ~PeerManager();
 
     void SetMessageHandler(MessageHandler handler);
+    void SetClusterToken(std::string token) { _cluster_token = std::move(token); }
+    // 1 leaves frames unchanged. Above 1, each payload is prefixed with its shard.
+    void SetShardCount(int shards) { _shard_count = shards; }
     void Start();
 
     // 发送 Raft RPC 到指定节点
-    void Send(int peer_id, RaftMsgType type, const std::string& payload);
+    void Send(int peer_id, RaftMsgType type, const std::string& payload, int shard = 0);
 
     // 广播到所有其他节点
-    void Broadcast(RaftMsgType type, const std::string& payload);
+    void Broadcast(RaftMsgType type, const std::string& payload, int shard = 0);
 
     int ClusterSize() const { return static_cast<int>(_all_peers.size()); }
     int SelfId() const { return _self_id; }
@@ -97,5 +102,7 @@ private:
     std::map<std::string, int> _connection_peers;
 
     MessageHandler _handler;
+    std::string _cluster_token;
+    int _shard_count = 1;
 
 };

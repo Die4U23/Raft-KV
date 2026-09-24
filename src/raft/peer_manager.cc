@@ -1,4 +1,5 @@
 #include "raft/peer_manager.h"
+#include "common/frame_mac.h"
 
 PeerManager::PeerManager(muduo::net::EventLoop* loop,
                          int self_id,
@@ -143,26 +144,32 @@ void PeerManager::OnClientMessage(const muduo::net::TcpConnectionPtr& conn,
 // ================================================================
 
 void PeerManager::Send(int peer_id, RaftMsgType type,
-                        const std::string& payload) {
+                        const std::string& payload, int shard) {
     auto it = _connections.find(peer_id);
     if (it == _connections.end() || !it->second || !it->second->connected()) {
         return;  // 静默丢弃（心跳会重试）
     }
+    if (_shard_count > 1 && (shard < 0 || shard >= _shard_count)) return;
 
+    std::string body;
+    try {
+        body = PrefixShardPayload(_shard_count, shard, payload);
+    } catch (const std::invalid_argument&) {
+        return;
+    }
+    std::string frame = SealFrame(_cluster_token, RaftCodec::Encode(type, _self_id, body));
     // A paused follower must not accumulate an unlimited number of RPC retries.
     // Defer whole frames; the Raft retry timer will try again after TCP drains.
     constexpr size_t max_queued = 4 * 1024 * 1024;
     const size_t queued = it->second->outputBuffer()->readableBytes();
-    if (queued > max_queued || payload.size() > max_queued - RaftCodec::kHeaderSize ||
-        payload.size() + RaftCodec::kHeaderSize > max_queued - queued) return;
-    std::string frame = RaftCodec::Encode(type, _self_id, payload);
+    if (queued > max_queued || frame.size() > max_queued - queued) return;
     it->second->send(frame);
 }
 
-void PeerManager::Broadcast(RaftMsgType type, const std::string& payload) {
+void PeerManager::Broadcast(RaftMsgType type, const std::string& payload, int shard) {
     for (const auto& peer : _all_peers) {
         if (peer.id == _self_id) continue;
-        Send(peer.id, type, payload);
+        Send(peer.id, type, payload, shard);
     }
 }
 
@@ -173,13 +180,34 @@ void PeerManager::Broadcast(RaftMsgType type, const std::string& payload) {
 void PeerManager::ParseAndDispatch(const muduo::net::TcpConnectionPtr& conn,
                                     muduo::net::Buffer* buf) {
     while (buf->readableBytes() >= 4) {
-        DecodedRaftMsg message;
+        std::string frame;
         size_t consumed = 0;
+        const auto sealed = UnsealFrame(_cluster_token, buf->peek(), buf->readableBytes(),
+                                        &frame, &consumed);
+        if (sealed == FrameSealStatus::NeedMore) return;
+        if (sealed == FrameSealStatus::Reject) {
+            LOG(ERROR) << "rejected Raft frame";
+            conn->forceClose();
+            return;
+        }
+        DecodedRaftMsg message;
+        size_t used = 0;
         try {
-            if (!RaftCodec::TryDecode(buf->peek(), buf->readableBytes(),
-                                      &message, &consumed)) return;
+            if (!RaftCodec::TryDecode(frame.data(), frame.size(), &message, &used) ||
+                used != frame.size()) {
+                LOG(ERROR) << "invalid Raft frame";
+                conn->forceClose();
+                return;
+            }
         } catch (const std::invalid_argument& error) {
             LOG(ERROR) << error.what();
+            conn->forceClose();
+            return;
+        }
+        int shard = 0;
+        std::string payload;
+        if (!StripShardPayload(_shard_count, message.payload, &shard, &payload)) {
+            LOG(ERROR) << "invalid Raft shard";
             conn->forceClose();
             return;
         }
@@ -189,7 +217,7 @@ void PeerManager::ParseAndDispatch(const muduo::net::TcpConnectionPtr& conn,
         }
         buf->retrieve(consumed);
         // Storage/consensus exceptions must reach the process boundary.
-        if (_handler) _handler(message.sender_id, message.type, message.payload);
+        if (_handler) _handler(message.sender_id, message.type, payload, shard);
     }
 }
 

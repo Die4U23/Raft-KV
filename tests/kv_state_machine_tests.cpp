@@ -1,6 +1,7 @@
 // Production KVStateMachine semantics. Batching is covered by storage_batch_tests;
 // these fail if Apply/Get/DEL replies, lastApplied, or command validation change.
 #include "raft/kv_state_machine.h"
+#include "common/command_type.h"
 #include "common/resp_parser.h"
 #include <iostream>
 #include <stdexcept>
@@ -225,6 +226,49 @@ static void IdempotentRetryDoesNotApplyTwice() {
           "version 1 snapshot kept a session and blocked the same request id");
 }
 
+static void VersionedConfigPublishesRollsBackAndSnapshots() {
+    KVStateMachine machine("kv-sm/config");
+    Check(machine.Apply(1, Command({"CFGSET", "policy", "a"})) == ":1\r\n", "CFGSET reply");
+    uint64_t version = 0;
+    std::string value;
+    Check(machine.GetConfig("policy", &version, &value) && version == 1 && value == "a",
+          "CFGSET did not publish version 1");
+    Check(machine.Apply(2, Command({"CFGSET", "policy", "b", "app", "1"})) == ":2\r\n",
+          "idempotent CFGSET reply");
+    Check(machine.Apply(3, Command({"CFGSET", "policy", "nope", "app", "1"})) == ":2\r\n",
+          "CFGSET retry did not return the cached version");
+    Check(machine.GetConfig("policy", &version, &value) && version == 2 && value == "b",
+          "CFGSET retry published another version");
+    Check(machine.Apply(4, Command({"CFGROLLBACK", "policy", "1", "app", "2"})) == ":3\r\n",
+          "rollback reply");
+    Check(machine.GetConfig("policy", &version, &value) && version == 3 && value == "a",
+          "rollback did not copy the old value forward");
+    Check(machine.Apply(5, Command({"CFGROLLBACK", "policy", "9", "app", "3"})) == NoSuchConfigReply(),
+          "missing version was applied");
+    Check(machine.GetConfig("policy", &version, &value) && version == 3 && value == "a",
+          "missing rollback changed the current value");
+    Check(machine.Apply(6, Command({"CFGSET", "policy", "c", "app", "3"})) == ":4\r\n",
+          "next request after a failed rollback did not run");
+    const auto reserved = std::string(1, '\0') + "secret";
+    Check(machine.Apply(7, Command({"SET", reserved, "x"})) == ReservedKeyReply(),
+          "reserved key was written");
+    Check(!machine.Get(reserved, &value), "reserved key became visible");
+    std::string blob;
+    Check(machine.TryExportSnapshot(&blob) && blob.size() > 9 && blob[0] == 3,
+          "config snapshot was not version 3");
+    KVStateMachine restored("kv-sm/config-restore");
+    Check(restored.TryInstallSnapshot(7, blob), "config snapshot rejected");
+    Check(restored.GetConfig("policy", &version, &value) && version == 4 && value == "c",
+          "config snapshot dropped history");
+    std::string empty;
+    KVStateMachine blank("kv-sm/config-blank");
+    Check(blank.TryExportSnapshot(&empty) && empty.size() == 9 && empty[0] == 2,
+          "empty snapshot changed size");
+    Check(restored.TryInstallSnapshot(8, empty), "version 2 snapshot rejected");
+    Check(!restored.GetConfig("policy", &version, &value),
+          "version 2 snapshot kept config history");
+}
+
 static void LegacyStoreWithoutMarkerIsRejected() {
     const std::string path = "kv-sm/legacy";
     auto state = rocksdb::testing::StateFor(path);
@@ -241,6 +285,7 @@ int main() {
         ApplyMatchesApplyBatchAndReopen();
         SnapshotExportInstallRoundTrip();
         IdempotentRetryDoesNotApplyTwice();
+        VersionedConfigPublishesRollsBackAndSnapshots();
         LegacyStoreWithoutMarkerIsRejected();
         Check(checks >= 20, "too few KV assertions");
         std::cout << "PASS: production KVStateMachine (" << checks << " checks)\n";

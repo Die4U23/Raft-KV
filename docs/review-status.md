@@ -63,8 +63,9 @@ ctest --test-dir build-portable --output-on-failure
 
 - 新状态机要求持久化 lastApplied 标记；旧的非空 KV 数据库没有该标记时会拒绝启动。保留原数据，验证时使用全新的、配套的 KV 与 Raft 日志目录。目前没有自动迁移方案。
 - AppendEntries 增加 rpc_id 校验，测试集群所有节点须使用同一版本重新构建。
-- GET 默认仍是本地读取；`--leader_only_reads=true` 只检查本机角色。`--linearizable_reads=true` 时 Leader 走 ReadIndex（请求之后的探针 ACK 才计入多数派），Follower 返回 `MOVED`。
+- GET 默认仍是本地读取；`--leader_only_reads=true` 只检查本机角色。`--linearizable_reads=true` 时 Leader 走 ReadIndex（请求之后的探针 ACK 才计入多数派），Follower 返回 `MOVED`。`--lease_reads=true` 时，在 140 ms 租约窗口内把读排到当前提交位置并仍等待应用；窗口外退回 ReadIndex。Follower 时钟快过 10 ms 时，这条租约并不安全。
 - 带 `client_id` 和 `request_id` 的 `SET`/`DEL` 只执行一次；不带序号的写入重试仍会再执行。每个客户端只保留最新序号。完整请求超时机制仍未实现。快照按默认 1024 条已应用记录触发，InstallSnapshot 按 1 MiB 分片，镜像再大也压缩，压缩和安装时整份镜像留在内存里。已有同步/异步应用对照保持同步持久化，未比较关闭同步持久化的性能，不能量化该持久化选项的独立成本。
+- 本分支另有版本化配置（`CFGSET` / `CFGGET` / `CFGROLLBACK` / `CFGCACHE`）、一次一个的 joint 成员变更、`--shards`（默认 1）、`--cluster_token` / `--client_token`（默认空）。这些都不在 `main`，也不在 `v0.2.0`。新主机必须已经在静态 peer 列表里，Leader 不能移除自己。可移植 CTest 16/16 通过；Linux 服务已重新链接，三进程冒烟这次没有重跑。
 
 ## 本轮额外修复
 

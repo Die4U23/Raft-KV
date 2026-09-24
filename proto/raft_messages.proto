@@ -52,6 +52,9 @@ message InstallSnapshot {
     bytes data = 6;
     uint64 offset = 7;
     bool done = 8;
+    // Applied voter set, frozen with the snapshot image. Empty keeps the
+    // receiver's current voters so older snapshots stay compatible.
+    bytes voters = 9;
 }
 
 message InstallSnapshotResponse {

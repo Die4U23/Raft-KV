@@ -12,6 +12,7 @@
 #include "raft/apply_executor.h"
 #include "raft/peer_manager.h"
 #include "raft/kv_state_machine.h"
+#include "raft/membership.h"
 #include "raftcore/raft_log.h"
 #include "raft_messages.pb.h"
 
@@ -61,6 +62,23 @@ public:
     void SetSnapshotChunkBytesForTest(size_t bytes) {
         _snapshot_chunk_bytes = bytes == 0 ? kSnapshotChunkBytes : bytes;
     }
+    // Voters are every peer until a membership change is applied. Call before Start.
+    void SetVotersForTest(const std::vector<int>& voters);
+    // 0 keeps the only group. The peer transport prefixes frames only when the
+    // process hosts more than one shard.
+    void SetReplicaShard(int shard) { _shard = shard; }
+    // Off by default. See kLeaseClockDriftMs.
+    void SetLeaseReads(bool enabled) { _lease_reads_enabled = enabled; }
+    bool IsClusterVoter(int id) const;
+    bool MembershipJoint() const { return _active.joint; }
+    std::vector<int> ClusterVoters() const;
+    // -1 not leader, -4 the change is not allowed. No callback on rejection.
+    // One change at a time. The log enters the joint config when this entry is
+    // appended. Commit needs a majority of both the old and new voter sets.
+    // The leader then appends MEMBER COMMIT. Applying that entry leaves only
+    // the new voters.
+    int64_t ProposeMemberChange(bool join, int peer_id, ProposeCallback callback);
+    bool MemberChangeAllowed(bool join, int peer_id) const;
     int64_t MatchIndexOf(int peer_id) const {
         const auto found = _match_index.find(peer_id);
         return found == _match_index.end() ? -1 : found->second;
@@ -91,6 +109,10 @@ public:
     static constexpr int kHeartbeatIntervalMs = 50;
     static constexpr int kMinElectionTimeoutMs = 150;
     static constexpr int kMaxElectionTimeoutMs = 300;
+    // Subtracted from the minimum election timeout before a lease read is served.
+    // Each process has its own clock. A follower that is ahead by more than this
+    // bound can campaign while the leader still treats the lease as valid.
+    static constexpr int kLeaseClockDriftMs = 10;
     // Compact after this many applied entries past the previous snapshot.
     static constexpr int64_t kSnapshotDistance = 1024;
     // One InstallSnapshot RPC. The receiver installs only after done.
@@ -112,6 +134,7 @@ private:
         size_t snapshot_chunk = 0;
         int32_t snapshot_term = 0;
         bool snapshot_done = false;
+        std::string snapshot_voters;
     };
 
     // ReadIndex request
@@ -156,7 +179,20 @@ private:
     void FinishApply(int64_t first, size_t count, const ApplyExecutor::Results& results,
                      uint64_t work_us, size_t bytes, uint64_t dispatch_us);
     void FailPending(const std::string& result);
-    int QuorumSize() const { return static_cast<int>(_all_peers.size()) / 2 + 1; }
+    void SendPeer(int peer, RaftMsgType type, const std::string& payload);
+    bool Singleton() const { return !_active.joint && _active.voters.size() == 1; }
+    static int Majority(size_t voters) { return static_cast<int>(voters) / 2 + 1; }
+    bool CountQuorum(const std::set<int>& config, const std::set<int>& votes) const;
+    bool HasVoteQuorum(const std::set<int>& votes) const;
+    bool FreshQuorum(const std::set<int>& config) const;
+    bool LeaseCovers(const std::set<int>& config) const;
+    bool LeaseValid() const;
+    int64_t MatchQuorum(const std::set<int>& config) const;
+    void RefreshActiveMembership();
+    void NoteAppliedMembership(int64_t first, size_t count);
+    void MaybeAppendMemberCommit();
+    static void FoldMembership(MembershipState* view, int64_t index, const std::string& command,
+                               bool applied);
 
     // ReadIndex internal methods
     size_t PendingReadIndexCount() const;
@@ -225,6 +261,13 @@ private:
     uint64_t _read_index_timeout = 0;
     uint64_t _read_index_not_leader = 0;
     uint64_t _read_index_overload = 0;
+    uint64_t _lease_reads = 0;
+    bool _lease_reads_enabled = false;
+    int _lease_drift_ms = kLeaseClockDriftMs;
+    int _shard = 0;
+    bool _appending_member_commit = false;
+    MembershipState _durable;
+    MembershipState _active;
 
     // Retry an unacknowledged heartbeat before the minimum election timeout.
     static constexpr int kRpcRetryMs = kHeartbeatIntervalMs;

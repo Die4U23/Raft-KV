@@ -31,7 +31,20 @@ RaftNode::RaftNode(int id, const std::vector<PeerInfo>& peers,
         _next_index[peer.id] = 1;
         _match_index[peer.id] = 0;
         _inflight[peer.id] = {};
+        _durable.voters.insert(peer.id);
     }
+    std::string membership;
+    if (_log->LoadMembership(&membership)) {
+        if (!DecodeMembership(membership, &_durable))
+            throw std::runtime_error("corrupt Raft membership");
+        for (int id : _durable.voters)
+            if (!_next_index.count(id))
+                throw std::runtime_error("persisted voter is outside the static membership");
+        for (int id : _durable.next)
+            if (!_next_index.count(id))
+                throw std::runtime_error("persisted voter is outside the static membership");
+    }
+    RefreshActiveMembership();
     if (_voted_for != -1 && !_next_index.count(_voted_for))
         throw std::runtime_error("persisted vote is outside the static membership");
 }
@@ -52,6 +65,7 @@ std::string RaftNode::MetricsInfo() const {
     info += "read_index_overload:" + std::to_string(_read_index_overload) + "\r\n";
 
     info += "read_index_pending:" + std::to_string(PendingReadIndexCount()) + "\r\n";
+    info += "lease_reads:" + std::to_string(_lease_reads) + "\r\n";
     info += "snapshot_index:" + std::to_string(_log->SnapshotIndex()) + "\r\n";
 
     return info;
@@ -77,6 +91,148 @@ void RaftNode::Stop() {
     FailPending("-ERR server stopped; outcome unknown\r\n");
     ClearReadIndexQueues("server stopped");
     _can_serve_read = false;
+}
+void RaftNode::SendPeer(int peer, RaftMsgType type, const std::string& payload) {
+    _peer_mgr->Send(peer, type, payload, _shard);
+}
+bool RaftNode::CountQuorum(const std::set<int>& config, const std::set<int>& votes) const {
+    int matched = 0;
+    for (int id : votes)
+        if (config.count(id) != 0) ++matched;
+    return matched >= Majority(config.size());
+}
+bool RaftNode::HasVoteQuorum(const std::set<int>& votes) const {
+    if (!CountQuorum(_active.voters, votes)) return false;
+    return !_active.joint || CountQuorum(_active.next, votes);
+}
+bool RaftNode::FreshQuorum(const std::set<int>& config) const {
+    const auto now = Now();
+    const auto window = std::chrono::milliseconds(kMinElectionTimeoutMs);
+    int fresh = 0;
+    for (int id : config) {
+        const auto found = _peer_active.find(id);
+        if (found != _peer_active.end() && now - found->second < window) ++fresh;
+    }
+    return fresh >= Majority(config.size());
+}
+bool RaftNode::LeaseCovers(const std::set<int>& config) const {
+    std::vector<SteadyClock::time_point> contacts;
+    contacts.reserve(config.size());
+    for (int id : config) {
+        const auto found = _peer_active.find(id);
+        if (found == _peer_active.end()) return false;
+        contacts.push_back(found->second);
+    }
+    std::sort(contacts.begin(), contacts.end(), std::greater<SteadyClock::time_point>());
+    const auto hold = std::chrono::milliseconds(kMinElectionTimeoutMs - _lease_drift_ms);
+    return Now() < contacts[static_cast<size_t>(Majority(config.size()) - 1)] + hold;
+}
+bool RaftNode::LeaseValid() const {
+    if (!_lease_reads_enabled || !IsLeader() || !_can_serve_read) return false;
+    if (!LeaseCovers(_active.voters)) return false;
+    return !_active.joint || LeaseCovers(_active.next);
+}
+int64_t RaftNode::MatchQuorum(const std::set<int>& config) const {
+    std::vector<int64_t> matched;
+    matched.reserve(config.size());
+    for (int id : config) matched.push_back(_match_index.at(id));
+    std::sort(matched.begin(), matched.end(), std::greater<int64_t>());
+    return matched[static_cast<size_t>(Majority(config.size()) - 1)];
+}
+void RaftNode::FoldMembership(MembershipState* view, int64_t index, const std::string& command,
+                              bool applied) {
+    MemberCommand member;
+    bool ok = false;
+    if (!ParseMemberCommand(command, &member, &ok)) return;
+    if (!ok) throw std::runtime_error("invalid membership command");
+    if (member.kind == MemberKind::Commit) {
+        if (!view->joint) throw std::runtime_error("membership commit without a joint config");
+        if (!applied) {
+            view->commit_appended = true;
+            return;
+        }
+        view->voters = view->next;
+        view->joint = false;
+        view->next.clear();
+        view->change_index = 0;
+        view->commit_appended = false;
+        return;
+    }
+    if (view->joint) throw std::runtime_error("overlapping membership change");
+    view->next = view->voters;
+    if (member.kind == MemberKind::Join) {
+        if (!view->next.insert(member.peer).second)
+            throw std::runtime_error("joining peer is already a voter");
+    } else {
+        if (view->next.erase(member.peer) == 0 || view->next.empty())
+            throw std::runtime_error("leaving peer is not a voter");
+    }
+    view->joint = true;
+    view->change_index = index;
+    view->commit_appended = false;
+}
+void RaftNode::RefreshActiveMembership() {
+    _active = _durable;
+    _active.commit_appended = false;
+    for (int64_t index = _last_applied + 1; index <= _log->LastIndex(); ++index) {
+        raftcore::LogEntry entry;
+        if (!_log->Get(index, &entry)) throw std::runtime_error("missing membership log entry");
+        FoldMembership(&_active, index, entry.command(), false);
+    }
+}
+void RaftNode::NoteAppliedMembership(int64_t first, size_t count) {
+    bool touched = false;
+    for (size_t i = 0; i < count; ++i) {
+        raftcore::LogEntry entry;
+        const int64_t index = first + static_cast<int64_t>(i);
+        if (!_log->Get(index, &entry)) throw std::runtime_error("missing applied membership entry");
+        MemberCommand member;
+        bool ok = false;
+        if (!ParseMemberCommand(entry.command(), &member, &ok)) continue;
+        FoldMembership(&_durable, index, entry.command(), true);
+        touched = true;
+    }
+    if (touched) _log->SaveMembership(EncodeMembership(_durable));
+    RefreshActiveMembership();
+}
+void RaftNode::MaybeAppendMemberCommit() {
+    if (_appending_member_commit || !IsLeader() || !_active.joint || _active.commit_appended)
+        return;
+    if (_active.change_index <= 0 || _commit_index < _active.change_index) return;
+    _appending_member_commit = true;
+    Propose(MemberCommandText(MemberKind::Commit, 0), {});
+    _appending_member_commit = false;
+}
+bool RaftNode::IsClusterVoter(int id) const {
+    if (_active.voters.count(id) != 0) return true;
+    return _active.joint && _active.next.count(id) != 0;
+}
+std::vector<int> RaftNode::ClusterVoters() const {
+    return {_active.voters.begin(), _active.voters.end()};
+}
+bool RaftNode::MemberChangeAllowed(bool join, int peer_id) const {
+    if (!IsLeader() || _active.joint || _active.commit_appended) return false;
+    if (peer_id < 0 || _next_index.count(peer_id) == 0) return false;
+    if (join) return _active.voters.count(peer_id) == 0;
+    return peer_id != _node_id && _active.voters.count(peer_id) != 0 && _active.voters.size() >= 2;
+}
+int64_t RaftNode::ProposeMemberChange(bool join, int peer_id, ProposeCallback callback) {
+    if (!IsLeader()) return -1;
+    if (!MemberChangeAllowed(join, peer_id)) return -4;
+    return Propose(MemberCommandText(join ? MemberKind::Join : MemberKind::Leave, peer_id),
+                   std::move(callback));
+}
+void RaftNode::SetVotersForTest(const std::vector<int>& voters) {
+    if (_running) throw std::runtime_error("voters cannot change after start");
+    MembershipState state;
+    for (int id : voters) {
+        if (_next_index.count(id) == 0) throw std::invalid_argument("voter is not a peer");
+        state.voters.insert(id);
+    }
+    if (state.voters.empty()) throw std::invalid_argument("empty voter set");
+    _durable = state;
+    _active = state;
+    _log->SaveMembership(EncodeMembership(_durable));
 }
 bool RaftNode::IsRemotePeer(int id) const {
     return id != _node_id && _next_index.count(id) != 0;
@@ -133,6 +289,7 @@ int64_t RaftNode::ProposeBatch(std::vector<Proposal> proposals) {
                                                    proposals[i].command.size()});
     _pending_bytes += bytes;
     _match_index[_node_id] = entries.back().index();
+    RefreshActiveMembership();
     BroadcastAppendEntries();
     AdvanceCommitIndex(); // also permits a single-member cluster
     return first;
@@ -161,7 +318,7 @@ void RaftNode::BecomeFollower(int32_t term) {
 }
 void RaftNode::BecomePreCandidate() {
     // A single node is already a quorum of one. Skip the extra round trip.
-    if (QuorumSize() == 1) {
+    if (Singleton()) {
         BecomeCandidate();
         return;
     }
@@ -181,7 +338,7 @@ void RaftNode::BecomePreCandidate() {
     request.set_prevote(true);
     std::string payload;
     request.SerializeToString(&payload);
-    _peer_mgr->Broadcast(RaftMsgType::kRequestVote, payload);
+    _peer_mgr->Broadcast(RaftMsgType::kRequestVote, payload, _shard);
 }
 void RaftNode::BecomeCandidate() {
     if (_current_term == INT32_MAX) throw std::runtime_error("Raft term exhausted");
@@ -194,7 +351,7 @@ void RaftNode::BecomeCandidate() {
     ResetElectionTimer();
     EventLog(LogLevel::Info) << "RaftNode[" << _node_id << "] becomes candidate term="
                             << _current_term;
-    if (QuorumSize() == 1) {
+    if (Singleton()) {
         BecomeLeader();
         return;
     }
@@ -205,7 +362,7 @@ void RaftNode::BecomeCandidate() {
     request.set_last_log_term(_log->LastTerm());
     std::string payload;
     request.SerializeToString(&payload);
-    _peer_mgr->Broadcast(RaftMsgType::kRequestVote, payload);
+    _peer_mgr->Broadcast(RaftMsgType::kRequestVote, payload, _shard);
 }
 void RaftNode::BecomeLeader() {
     _state = LEADER;
@@ -241,21 +398,15 @@ void RaftNode::NotePeerContact(int peer) {
 void RaftNode::CheckQuorum() {
     // The leader counts itself. Everyone else must have answered an
     // AppendEntries RPC in this term inside the minimum election timeout.
+    // A joint config steps down when either voter set loses its majority.
     NotePeerContact(_node_id);
-    if (QuorumSize() <= 1) return;
+    if (Singleton()) return;
     const auto now = Now();
     const auto window = std::chrono::milliseconds(kMinElectionTimeoutMs);
     if (now - _leader_since < window) return;
-    int fresh = 0;
-    for (const auto& peer : _all_peers) {
-        const auto found = _peer_active.find(peer.id);
-        if (found != _peer_active.end() && now - found->second < window)
-            ++fresh;
-    }
-    if (fresh >= QuorumSize()) return;
+    if (FreshQuorum(_active.voters) && (!_active.joint || FreshQuorum(_active.next))) return;
     EventLog(LogLevel::Warning) << "RaftNode[" << _node_id << "] check quorum failed term="
-                               << _current_term << " fresh=" << fresh
-                               << " need=" << QuorumSize();
+                               << _current_term;
     BecomeFollower(_current_term);
 }
 bool RaftNode::IsLogUpToDate(int64_t index, int64_t term) const {
@@ -273,8 +424,14 @@ void RaftNode::HandleRequestVote(int from, const raftcore::RequestVote& request)
         response.set_prevote(prevote);
         std::string payload;
         response.SerializeToString(&payload);
-        _peer_mgr->Send(from, RaftMsgType::kRequestVoteResponse, payload);
+        SendPeer(from, RaftMsgType::kRequestVoteResponse, payload);
     };
+    // A node that is in neither configuration does not grant a vote or campaign.
+    if (!IsClusterVoter(_node_id)) {
+        if (!prevote && request.term() > _current_term) BecomeFollower(request.term());
+        reply(false);
+        return;
+    }
     // The leader has heard from itself. Granting a pre-vote would let a peer
     // that can still reach this leader start a disruptive election.
     if (prevote && _state == LEADER) {
@@ -338,14 +495,14 @@ void RaftNode::HandleRequestVoteResponse(int from, const raftcore::RequestVoteRe
         // A peer that is already ahead took the branch above and stepped us down.
         if (response.prevote() && response.vote_granted() && response.term() <= _current_term) {
             _votes.insert(from);
-            if (static_cast<int>(_votes.size()) >= QuorumSize()) BecomeCandidate();
+            if (HasVoteQuorum(_votes)) BecomeCandidate();
         }
         return;
     }
     if (_state != CANDIDATE || response.prevote() || response.term() != _current_term) return;
     if (response.vote_granted()) {
         _votes.insert(from);
-        if (static_cast<int>(_votes.size()) >= QuorumSize()) BecomeLeader();
+        if (HasVoteQuorum(_votes)) BecomeLeader();
     }
 }
 void RaftNode::HandleAppendEntries(int from, const raftcore::AppendEntries& request) {
@@ -387,6 +544,7 @@ void RaftNode::HandleAppendEntries(int from, const raftcore::AppendEntries& requ
                     if (entry.index() <= _commit_index)
                         throw std::runtime_error("attempt to replace committed Raft entry");
                     _log->TruncateSuffix(entry.index());
+                    RefreshActiveMembership();
                 }
                 if (entry.index() > _log->LastIndex()) appended.push_back(entry);
             }
@@ -406,6 +564,7 @@ void RaftNode::HandleAppendEntries(int from, const raftcore::AppendEntries& requ
             }
             const int64_t matched = request.prev_log_index() + request.entries_size();
             _commit_index = std::max(_commit_index, std::min(request.leader_commit(), matched));
+            if (!appended.empty()) RefreshActiveMembership();
             ApplyCommitted();
             response.set_success(true);
             response.set_last_log_index(matched);
@@ -413,7 +572,7 @@ void RaftNode::HandleAppendEntries(int from, const raftcore::AppendEntries& requ
     }
     std::string payload;
     response.SerializeToString(&payload);
-    _peer_mgr->Send(from, RaftMsgType::kAppendEntriesResponse, payload);
+    SendPeer(from, RaftMsgType::kAppendEntriesResponse, payload);
 }
 void RaftNode::HandleAppendEntriesResponse(int from,
                                           const raftcore::AppendEntriesResponse& response) {
@@ -485,7 +644,7 @@ void RaftNode::HandleInstallSnapshot(int from, const raftcore::InstallSnapshot& 
         response.set_success(success);
         std::string payload;
         response.SerializeToString(&payload);
-        _peer_mgr->Send(from, RaftMsgType::kInstallSnapshotResponse, payload);
+        SendPeer(from, RaftMsgType::kInstallSnapshotResponse, payload);
     };
     if (request.term() > _current_term ||
         (request.term() == _current_term && _state != FOLLOWER))
@@ -541,6 +700,14 @@ void RaftNode::HandleInstallSnapshot(int from, const raftcore::InstallSnapshot& 
     }
     const std::string image = std::move(_snapshot_recv);
     _snapshot_recv.clear();
+    MembershipState incoming_voters;
+    const bool have_voters = !request.voters().empty();
+    if (have_voters && !DecodeMembership(request.voters(), &incoming_voters)) {
+        EventLog(LogLevel::Warning) << "RaftNode[" << _node_id
+                                   << "] rejected malformed membership in snapshot from " << from;
+        reply(false);
+        return;
+    }
     if (!_sm->IsSnapshot(image)) {
         EventLog(LogLevel::Warning) << "RaftNode[" << _node_id
                                    << "] rejected malformed snapshot from " << from;
@@ -555,6 +722,17 @@ void RaftNode::HandleInstallSnapshot(int from, const raftcore::InstallSnapshot& 
     }
     if (_commit_index < index) _commit_index = index;
     if (_commit_index > _log->LastIndex()) _commit_index = _log->LastIndex();
+    if (have_voters) {
+        for (int id : incoming_voters.voters)
+            if (_next_index.count(id) == 0)
+                throw std::runtime_error("snapshot voter is outside the static membership");
+        for (int id : incoming_voters.next)
+            if (_next_index.count(id) == 0)
+                throw std::runtime_error("snapshot voter is outside the static membership");
+        _durable = incoming_voters;
+        _log->SaveMembership(EncodeMembership(_durable));
+        RefreshActiveMembership();
+    }
     ApplyCommitted();
     EventLog(LogLevel::Info) << "RaftNode[" << _node_id
                             << "] installed snapshot index=" << index
@@ -601,13 +779,14 @@ void RaftNode::SendInstallSnapshot(int peer) {
         if (flight.elapsed_ms >= kRpcRetryMs) {
             flight.elapsed_ms = 0;
             ++_replication_retry_attempts;
-            _peer_mgr->Send(peer, flight.type, flight.payload);
+            SendPeer(peer, flight.type, flight.payload);
         }
         return;
     }
     if (flight.snapshot_image.empty()) {
         if (_log->SnapshotIndex() <= 0 || _log->SnapshotData().empty()) return;
         flight.snapshot_image = _log->SnapshotData();
+        flight.snapshot_voters = EncodeMembership(_durable);
         flight.snapshot_offset = 0;
         flight.snapshot_term = _log->SnapshotTerm();
         flight.last_index = _log->SnapshotIndex();
@@ -633,6 +812,7 @@ void RaftNode::SendSnapshotChunk(int peer) {
     request.set_offset(flight.snapshot_offset);
     request.set_data(flight.snapshot_image.substr(flight.snapshot_offset, n));
     request.set_done(flight.snapshot_offset + n == flight.snapshot_image.size());
+    if (!flight.snapshot_voters.empty()) request.set_voters(flight.snapshot_voters);
     flight.type = RaftMsgType::kInstallSnapshot;
     flight.id = request.rpc_id();
     flight.elapsed_ms = 0;
@@ -641,7 +821,7 @@ void RaftNode::SendSnapshotChunk(int peer) {
     flight.snapshot_done = request.done();
     request.SerializeToString(&flight.payload);
     flight.first_send = SteadyClock::now();
-    _peer_mgr->Send(peer, RaftMsgType::kInstallSnapshot, flight.payload);
+    SendPeer(peer, RaftMsgType::kInstallSnapshot, flight.payload);
 }
 void RaftNode::SendAppendEntries(int peer) {
     auto& flight = _inflight.at(peer);
@@ -649,7 +829,7 @@ void RaftNode::SendAppendEntries(int peer) {
         if (flight.elapsed_ms >= kRpcRetryMs) {
             flight.elapsed_ms = 0;
             ++_replication_retry_attempts;
-            _peer_mgr->Send(peer, flight.type, flight.payload);
+            SendPeer(peer, flight.type, flight.payload);
         }
         return;
     }
@@ -692,7 +872,7 @@ void RaftNode::SendAppendEntries(int peer) {
     request.SerializeToString(&flight.payload);
     flight.first_send = SteadyClock::now();
     BindReadIndexProbe(peer, flight.id);
-    _peer_mgr->Send(peer, RaftMsgType::kAppendEntries, flight.payload);
+    SendPeer(peer, RaftMsgType::kAppendEntries, flight.payload);
 }
 void RaftNode::BroadcastAppendEntries() {
     for (const auto& peer : _all_peers)
@@ -700,11 +880,10 @@ void RaftNode::BroadcastAppendEntries() {
 }
 void RaftNode::AdvanceCommitIndex() {
     // Raft §5.3, §5.4: Leader only commits entries from current term by counting replicas
-    // Entry at index N is safe to commit if replicated on majority and term[N] == currentTerm
-    std::vector<int64_t> matched;
-    for (const auto& peer : _all_peers) matched.push_back(_match_index.at(peer.id));
-    std::sort(matched.begin(), matched.end(), std::greater<int64_t>());
-    const int64_t candidate = matched[static_cast<size_t>(QuorumSize() - 1)];
+    // Entry at index N is safe to commit if replicated on majority and term[N] == currentTerm.
+    // A joint configuration also needs a majority of the new voter set.
+    int64_t candidate = MatchQuorum(_active.voters);
+    if (_active.joint) candidate = std::min(candidate, MatchQuorum(_active.next));
     if (candidate > _commit_index && _log->GetTerm(candidate) == _current_term)
         _commit_index = candidate;
     ApplyCommitted();
@@ -774,6 +953,7 @@ void RaftNode::FinishApply(int64_t first, size_t count, const ApplyExecutor::Res
     if (first != _last_applied + 1 || results.size() != count)
         throw std::runtime_error("out-of-order state machine completion");
     _last_applied += static_cast<int64_t>(count);
+    NoteAppliedMembership(first, count);
     ++_apply_batches;
     _kv_apply.Observe(work_us, count, bytes);
     _apply_dispatch.Observe(dispatch_us);
@@ -802,6 +982,7 @@ void RaftNode::FinishApply(int64_t first, size_t count, const ApplyExecutor::Res
     }
     for (auto& callback : callbacks) callback.first(true, callback.second);
     MaybeCompact();
+    MaybeAppendMemberCommit();
 }
 void RaftNode::MaybeCompact() {
     if (!_running || !_storage_healthy || _snapshot_distance <= 0) return;
@@ -831,7 +1012,7 @@ void RaftNode::MaybeCompact() {
 void RaftNode::Tick() {
     if (!_running) return;
     if (_state != LEADER) {
-        if (Now() >= _election_deadline) BecomePreCandidate();
+        if (Now() >= _election_deadline && IsClusterVoter(_node_id)) BecomePreCandidate();
     }
     if (_state == LEADER) {
         for (auto& item : _inflight)
@@ -890,6 +1071,17 @@ bool RaftNode::RequestReadIndex(ReadIndexCallback callback) {
         return false;
     }
 
+    if (_lease_reads_enabled && LeaseValid()) {
+        ++_lease_reads;
+        ReadIndexRequest req;
+        req.read_index = _commit_index;
+        req.callback = std::move(callback);
+        req.created_at = Now();
+        _pending_reads.push_back(std::move(req));
+        if (!_completing_reads) ProcessPendingReads();
+        return true;
+    }
+
     ReadIndexRequest req;
     req.read_index = _commit_index;
     req.callback = std::move(callback);
@@ -917,7 +1109,7 @@ void RaftNode::TryStartReadRound() {
         _heartbeat_rounds.push_back(std::move(round));
         _heartbeat_in_flight = true;
 
-        if (QuorumSize() != 1)
+        if (!Singleton())
             break;
         auto& started = _heartbeat_rounds.back();
         started.confirmed = true;
@@ -956,7 +1148,7 @@ void RaftNode::AckReadIndexProbe(int from, uint64_t rpc_id) {
             return;
         }
         round.acks.insert(from);
-        if (static_cast<int>(round.acks.size()) >= QuorumSize()) {
+        if (HasVoteQuorum(round.acks)) {
             round.confirmed = true;
             ProcessConfirmedRound(round);
         }
