@@ -4,8 +4,50 @@
 #include "raft/peers.h"
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <limits>
 #include <stdexcept>
+
+namespace {
+class LogBytes : public ByteSource {
+public:
+    LogBytes(const RaftLog* log, bool staging)
+        : _log(log),
+          _size(staging ? log->StagingSize() : log->SnapshotSize()),
+          _staging(staging) {}
+    bool Read(char* out, size_t n) override {
+        size_t filled = 0;
+        while (filled < n) {
+            if (_buf_pos >= _buf.size()) {
+                if (_offset >= _size) return false;
+                const size_t want = std::min(RaftLog::kStoreChunkBytes, _size - _offset);
+                if (_staging) _log->ReadStaging(_offset, want, &_buf);
+                else _log->ReadSnapshot(_offset, want, &_buf);
+                _buf_pos = 0;
+                if (_buf.size() != want) return false;
+            }
+            const size_t take = std::min(n - filled, _buf.size() - _buf_pos);
+            std::memcpy(out + filled, _buf.data() + _buf_pos, take);
+            _buf_pos += take;
+            _offset += take;
+            filled += take;
+        }
+        return true;
+    }
+    void Rewind() override {
+        _offset = 0;
+        _buf.clear();
+        _buf_pos = 0;
+    }
+private:
+    const RaftLog* _log;
+    size_t _size;
+    bool _staging;
+    size_t _offset = 0;
+    std::string _buf;
+    size_t _buf_pos = 0;
+};
+}
 
 RaftNode::RaftNode(int id, const std::vector<PeerInfo>& peers,
                    muduo::net::EventLoop*, const std::string& log_path,
@@ -21,7 +63,8 @@ RaftNode::RaftNode(int id, const std::vector<PeerInfo>& peers,
     // The log snapshot is written before the KV install. A crash in between
     // leaves the image in the log and a KV that still ends at an older index.
     if (_log->SnapshotIndex() > _last_applied) {
-        _sm->InstallSnapshot(_log->SnapshotIndex(), _log->SnapshotData());
+        LogBytes image(_log.get(), false);
+        _sm->InstallSnapshot(_log->SnapshotIndex(), &image);
         _last_applied = _sm->LastApplied();
     }
     _commit_index = _last_applied;
@@ -37,12 +80,13 @@ RaftNode::RaftNode(int id, const std::vector<PeerInfo>& peers,
     if (_log->LoadMembership(&membership)) {
         if (!DecodeMembership(membership, &_durable))
             throw std::runtime_error("corrupt Raft membership");
+        RememberMembershipPeers(_durable);
         for (int id : _durable.voters)
             if (!_next_index.count(id))
-                throw std::runtime_error("persisted voter is outside the static membership");
+                throw std::runtime_error("persisted voter is outside the known peers");
         for (int id : _durable.next)
             if (!_next_index.count(id))
-                throw std::runtime_error("persisted voter is outside the static membership");
+                throw std::runtime_error("persisted voter is outside the known peers");
     }
     RefreshActiveMembership();
     if (_voted_for != -1 && !_next_index.count(_voted_for))
@@ -89,6 +133,7 @@ void RaftNode::Stop() {
     _state = FOLLOWER;
     _leader_id = -1;
     FailPending("-ERR server stopped; outcome unknown\r\n");
+    FailForwards("-ERR server stopped; outcome unknown\r\n");
     ClearReadIndexQueues("server stopped");
     _can_serve_read = false;
 }
@@ -163,6 +208,7 @@ void RaftNode::FoldMembership(MembershipState* view, int64_t index, const std::s
     if (member.kind == MemberKind::Join) {
         if (!view->next.insert(member.peer).second)
             throw std::runtime_error("joining peer is already a voter");
+        if (!member.host.empty()) view->endpoints[member.peer] = {member.host, member.port};
     } else {
         if (view->next.erase(member.peer) == 0 || view->next.empty())
             throw std::runtime_error("leaving peer is not a voter");
@@ -171,12 +217,43 @@ void RaftNode::FoldMembership(MembershipState* view, int64_t index, const std::s
     view->change_index = index;
     view->commit_appended = false;
 }
+void RaftNode::LearnPeer(int id, const std::string& host, int port) {
+    if (id == _node_id || _next_index.count(id) != 0) return;
+    if (!ValidEndpoint(host, port))
+        throw std::invalid_argument("invalid learned peer");
+    _all_peers.push_back({id, host, port});
+    _next_index[id] = _log->LastIndex() + 1;
+    _match_index[id] = 0;
+    _inflight[id] = {};
+    _peer_mgr->LearnPeer({id, host, port});
+}
+void RaftNode::RememberMembershipPeers(const MembershipState& state) {
+    for (const auto& endpoint : state.endpoints)
+        if (_next_index.count(endpoint.first) == 0)
+            LearnPeer(endpoint.first, endpoint.second.host, endpoint.second.port);
+}
+void RaftNode::FailForwards(const std::string& result) {
+    auto callbacks = std::move(_forward_callbacks);
+    _forward_callbacks.clear();
+    for (auto& item : callbacks)
+        if (item.second) item.second(false, result);
+}
+void RaftNode::StepDownIfRemoved() {
+    if (_state == LEADER && !IsClusterVoter(_node_id)) BecomeFollower(_current_term);
+}
 void RaftNode::RefreshActiveMembership() {
+    RememberMembershipPeers(_durable);
     _active = _durable;
     _active.commit_appended = false;
     for (int64_t index = _last_applied + 1; index <= _log->LastIndex(); ++index) {
         raftcore::LogEntry entry;
         if (!_log->Get(index, &entry)) throw std::runtime_error("missing membership log entry");
+        MemberCommand member;
+        bool ok = false;
+        if (ParseMemberCommand(entry.command(), &member, &ok) && ok &&
+            member.kind == MemberKind::Join && !member.host.empty() &&
+            _next_index.count(member.peer) == 0)
+            LearnPeer(member.peer, member.host, member.port);
         FoldMembership(&_active, index, entry.command(), false);
     }
 }
@@ -210,17 +287,65 @@ bool RaftNode::IsClusterVoter(int id) const {
 std::vector<int> RaftNode::ClusterVoters() const {
     return {_active.voters.begin(), _active.voters.end()};
 }
-bool RaftNode::MemberChangeAllowed(bool join, int peer_id) const {
+bool RaftNode::MemberChangeAllowed(bool join, int peer_id, const std::string& host, int port) const {
     if (!IsLeader() || _active.joint || _active.commit_appended) return false;
-    if (peer_id < 0 || _next_index.count(peer_id) == 0) return false;
-    if (join) return _active.voters.count(peer_id) == 0;
-    return peer_id != _node_id && _active.voters.count(peer_id) != 0 && _active.voters.size() >= 2;
+    if (peer_id < 0) return false;
+    const bool known = _next_index.count(peer_id) != 0;
+    if (join) {
+        if (_active.voters.count(peer_id) != 0 || peer_id == _node_id) return false;
+        if (known) return host.empty();
+        return ValidEndpoint(host, port);
+    }
+    return known && _active.voters.count(peer_id) != 0 && _active.voters.size() >= 2;
 }
-int64_t RaftNode::ProposeMemberChange(bool join, int peer_id, ProposeCallback callback) {
+int64_t RaftNode::ProposeMemberChange(bool join, int peer_id, ProposeCallback callback,
+                                      const std::string& host, int port) {
     if (!IsLeader()) return -1;
-    if (!MemberChangeAllowed(join, peer_id)) return -4;
-    return Propose(MemberCommandText(join ? MemberKind::Join : MemberKind::Leave, peer_id),
+    if (!MemberChangeAllowed(join, peer_id, host, port)) return -4;
+    if (join && !host.empty()) LearnPeer(peer_id, host, port);
+    return Propose(MemberCommandText(join ? MemberKind::Join : MemberKind::Leave, peer_id, host, port),
                    std::move(callback));
+}
+bool RaftNode::ForwardMemberChange(int leader, bool join, int peer_id, const std::string& host,
+                                   int port, ProposeCallback callback) {
+    if (!_running || leader == _node_id || !IsRemotePeer(leader)) return false;
+    if (_rpc_sequence == UINT64_MAX) throw std::runtime_error("Raft RPC sequence exhausted");
+    const uint64_t rpc = ++_rpc_sequence;
+    _forward_callbacks.emplace(rpc, std::move(callback));
+    SendPeer(leader, RaftMsgType::kMemberForward,
+             EncodeMemberForward(rpc, join, peer_id, host, port));
+    return true;
+}
+void RaftNode::HandleMemberForward(int from, const std::string& payload) {
+    if (!_running || !IsRemotePeer(from)) return;
+    uint64_t rpc = 0;
+    bool join = false;
+    int peer = 0, port = 0;
+    std::string host;
+    if (!DecodeMemberForward(payload, &rpc, &join, &peer, &host, &port)) return;
+    auto reply = [&](bool ok, const std::string& body) {
+        SendPeer(from, RaftMsgType::kMemberForwardResponse, EncodeMemberForwardReply(rpc, ok, body));
+    };
+    if (!IsLeader()) {
+        reply(false, "-ERR not leader\r\n");
+        return;
+    }
+    const auto index = ProposeMemberChange(join, peer, [this, from, rpc](bool ok, const std::string& body) {
+        SendPeer(from, RaftMsgType::kMemberForwardResponse, EncodeMemberForwardReply(rpc, ok, body));
+    }, host, port);
+    if (index < 0) reply(false, "-ERR membership change rejected\r\n");
+}
+void RaftNode::HandleMemberForwardReply(int from, const std::string& payload) {
+    if (!_running || !IsRemotePeer(from)) return;
+    uint64_t rpc = 0;
+    bool ok = false;
+    std::string reply;
+    if (!DecodeMemberForwardReply(payload, &rpc, &ok, &reply)) return;
+    const auto found = _forward_callbacks.find(rpc);
+    if (found == _forward_callbacks.end()) return;
+    auto callback = std::move(found->second);
+    _forward_callbacks.erase(found);
+    if (callback) callback(ok, reply);
 }
 void RaftNode::SetVotersForTest(const std::vector<int>& voters) {
     if (_running) throw std::runtime_error("voters cannot change after start");
@@ -308,6 +433,7 @@ void RaftNode::BecomeFollower(int32_t term) {
     for (auto& item : _inflight) item.second = {};
     ResetElectionTimer();
     FailPending("-ERR leadership lost; outcome unknown\r\n");
+    FailForwards("-ERR leadership lost; outcome unknown\r\n");
     // Clear ReadIndex queues on step down
     ClearReadIndexQueues("leadership lost");
     _can_serve_read = false;
@@ -675,22 +801,23 @@ void RaftNode::HandleInstallSnapshot(int from, const raftcore::InstallSnapshot& 
                                  << "] snapshot conflicts with applied index " << _last_applied;
         throw std::runtime_error("snapshot conflicts with applied log");
     }
-    if (request.offset() > _snapshot_recv.size() ||
+    if (request.offset() > static_cast<uint64_t>(_log->StagingSize()) ||
         request.data().size() > std::numeric_limits<size_t>::max() - static_cast<size_t>(request.offset())) {
-        _snapshot_recv.clear();
+        _log->ClearStaging();
         reply(false);
         return;
     }
     const size_t offset = static_cast<size_t>(request.offset());
     if (offset == 0) {
-        _snapshot_recv = request.data();
-    } else if (offset == _snapshot_recv.size()) {
-        _snapshot_recv.append(request.data());
-    } else if (offset + request.data().size() <= _snapshot_recv.size() &&
-               _snapshot_recv.compare(offset, request.data().size(), request.data()) == 0) {
-        // Retransmit of a chunk that is already in the buffer.
+        _log->ClearStaging();
+        if (!request.data().empty()) _log->StageSnapshotBytes(0, request.data());
+    } else if (offset == _log->StagingSize()) {
+        if (!request.data().empty()) _log->StageSnapshotBytes(offset, request.data());
+    } else if ((request.data().empty() && offset <= _log->StagingSize()) ||
+               _log->StagingMatches(offset, request.data())) {
+        // Retransmit of a chunk that is already staged.
     } else {
-        _snapshot_recv.clear();
+        _log->ClearStaging();
         reply(false);
         return;
     }
@@ -698,8 +825,6 @@ void RaftNode::HandleInstallSnapshot(int from, const raftcore::InstallSnapshot& 
         reply(true);
         return;
     }
-    const std::string image = std::move(_snapshot_recv);
-    _snapshot_recv.clear();
     MembershipState incoming_voters;
     const bool have_voters = !request.voters().empty();
     if (have_voters && !DecodeMembership(request.voters(), &incoming_voters)) {
@@ -708,27 +833,32 @@ void RaftNode::HandleInstallSnapshot(int from, const raftcore::InstallSnapshot& 
         reply(false);
         return;
     }
-    if (!_sm->IsSnapshot(image)) {
-        EventLog(LogLevel::Warning) << "RaftNode[" << _node_id
-                                   << "] rejected malformed snapshot from " << from;
-        reply(false);
-        return;
+    {
+        LogBytes staged(_log.get(), true);
+        if (!_sm->CheckSnapshot(&staged)) {
+            _log->ClearStaging();
+            EventLog(LogLevel::Warning) << "RaftNode[" << _node_id
+                                       << "] rejected malformed snapshot from " << from;
+            reply(false);
+            return;
+        }
     }
-    _log->SaveSnapshot(index, snap_term, image);
+    _log->PromoteStaging(index, snap_term);
     if (_last_applied < index) {
-        if (!_sm->TryInstallSnapshot(index, image))
-            throw std::runtime_error("durable snapshot failed to install");
+        LogBytes stored(_log.get(), false);
+        _sm->InstallSnapshot(index, &stored);
         _last_applied = _sm->LastApplied();
     }
     if (_commit_index < index) _commit_index = index;
     if (_commit_index > _log->LastIndex()) _commit_index = _log->LastIndex();
     if (have_voters) {
+        RememberMembershipPeers(incoming_voters);
         for (int id : incoming_voters.voters)
             if (_next_index.count(id) == 0)
-                throw std::runtime_error("snapshot voter is outside the static membership");
+                throw std::runtime_error("snapshot voter is outside the known peers");
         for (int id : incoming_voters.next)
             if (_next_index.count(id) == 0)
-                throw std::runtime_error("snapshot voter is outside the static membership");
+                throw std::runtime_error("snapshot voter is outside the known peers");
         _durable = incoming_voters;
         _log->SaveMembership(EncodeMembership(_durable));
         RefreshActiveMembership();
@@ -783,9 +913,10 @@ void RaftNode::SendInstallSnapshot(int peer) {
         }
         return;
     }
-    if (flight.snapshot_image.empty()) {
-        if (_log->SnapshotIndex() <= 0 || _log->SnapshotData().empty()) return;
-        flight.snapshot_image = _log->SnapshotData();
+    if (!flight.snapshot_active) {
+        if (_log->SnapshotIndex() <= 0 || _log->SnapshotSize() == 0) return;
+        flight.snapshot_active = true;
+        flight.snapshot_length = _log->SnapshotSize();
         flight.snapshot_voters = EncodeMembership(_durable);
         flight.snapshot_offset = 0;
         flight.snapshot_term = _log->SnapshotTerm();
@@ -795,13 +926,15 @@ void RaftNode::SendInstallSnapshot(int peer) {
 }
 void RaftNode::SendSnapshotChunk(int peer) {
     auto& flight = _inflight.at(peer);
-    if (flight.snapshot_image.empty() || flight.snapshot_offset > flight.snapshot_image.size()) {
+    if (!flight.snapshot_active || flight.snapshot_offset >= flight.snapshot_length) {
         flight = {};
         return;
     }
     const size_t chunk_bytes = _snapshot_chunk_bytes == 0 ? kSnapshotChunkBytes
                                                           : _snapshot_chunk_bytes;
-    const size_t n = std::min(chunk_bytes, flight.snapshot_image.size() - flight.snapshot_offset);
+    const size_t n = std::min(chunk_bytes, flight.snapshot_length - flight.snapshot_offset);
+    std::string chunk;
+    _log->ReadSnapshot(flight.snapshot_offset, n, &chunk);
     raftcore::InstallSnapshot request;
     request.set_term(_current_term);
     request.set_leader_id(_node_id);
@@ -810,8 +943,8 @@ void RaftNode::SendSnapshotChunk(int peer) {
     if (_rpc_sequence == UINT64_MAX) throw std::runtime_error("Raft RPC sequence exhausted");
     request.set_rpc_id(++_rpc_sequence);
     request.set_offset(flight.snapshot_offset);
-    request.set_data(flight.snapshot_image.substr(flight.snapshot_offset, n));
-    request.set_done(flight.snapshot_offset + n == flight.snapshot_image.size());
+    request.set_data(chunk);
+    request.set_done(flight.snapshot_offset + n == flight.snapshot_length);
     if (!flight.snapshot_voters.empty()) request.set_voters(flight.snapshot_voters);
     flight.type = RaftMsgType::kInstallSnapshot;
     flight.id = request.rpc_id();
@@ -983,22 +1116,29 @@ void RaftNode::FinishApply(int64_t first, size_t count, const ApplyExecutor::Res
     for (auto& callback : callbacks) callback.first(true, callback.second);
     MaybeCompact();
     MaybeAppendMemberCommit();
+    StepDownIfRemoved();
+}
+bool RaftNode::SnapshotSendActive() const {
+    for (const auto& item : _inflight)
+        if (item.second.snapshot_active) return true;
+    return false;
 }
 void RaftNode::MaybeCompact() {
     if (!_running || !_storage_healthy || _snapshot_distance <= 0) return;
+    if (SnapshotSendActive()) return;
     if (_last_applied <= _log->SnapshotIndex()) return;
     if (_last_applied - _log->SnapshotIndex() < _snapshot_distance) return;
     const int64_t index = _last_applied;
     const int64_t term = _log->GetTerm(index);
     if (term <= 0 || term > INT32_MAX) return;
-    std::string data;
-    if (!_sm->TryExportSnapshot(&data)) {
+    RaftLog::SnapshotWriter writer(_log.get());
+    if (!_sm->WriteSnapshot(&writer)) {
         EventLog(LogLevel::Warning) << "RaftNode[" << _node_id
                                    << "] snapshot export failed index=" << index;
         return;
     }
     try {
-        _log->SaveSnapshot(index, static_cast<int32_t>(term), data);
+        writer.Commit(index, static_cast<int32_t>(term));
     } catch (const std::exception& e) {
         _storage_healthy = false;
         EventLog(LogLevel::Error) << "RaftNode[" << _node_id

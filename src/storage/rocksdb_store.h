@@ -3,8 +3,10 @@
 #include <rocksdb/write_batch.h>
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 class RocksDBStore {
@@ -60,8 +62,21 @@ public:
                     const std::vector<std::pair<std::string, std::string>>& entries,
                     const std::vector<std::pair<std::string, std::string>>* sessions = nullptr,
                     const std::vector<ConfigHistory>* configs = nullptr);
+    void VisitUserKeys(const std::function<void(const std::string& key,
+                                                const std::string& value)>& visit) const;
+    // Deletes user keys, sessions, and config history before the streamed puts.
+    // lastApplied moves only in FinishSnapshotInstall.
+    void PrepareSnapshotInstall(int64_t index);
+    void QueueSnapshotPut(const std::string& key, const std::string& value);
+    void QueueSnapshotSession(const std::string& client, const std::string& raw);
+    void QueueSnapshotConfig(const std::string& name, uint64_t version,
+                             const std::string& value, bool current);
+    void FinishSnapshotInstall();
 private:
     static std::string AppliedKey();
+    void FlushSnapshotPuts();
     std::unique_ptr<rocksdb::DB> _db;
     std::atomic<int64_t> _last_applied{0};
+    std::vector<std::pair<std::string, std::string>> _snapshot_puts;
+    int64_t _snapshot_install_index = 0;
 };

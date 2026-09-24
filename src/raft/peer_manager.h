@@ -50,6 +50,9 @@ public:
     void SetClusterToken(std::string token) { _cluster_token = std::move(token); }
     // 1 leaves frames unchanged. Above 1, each payload is prefixed with its shard.
     void SetShardCount(int shards) { _shard_count = shards; }
+    // Dial a peer that was not in the process's original list. Higher ids are
+    // connected from here; a lower id connects to us.
+    void LearnPeer(const PeerInfo& peer);
     void Start();
 
     // 发送 Raft RPC 到指定节点

@@ -95,6 +95,11 @@ public:
         batch.Put(key, value);
         return Write(options, &batch);
     }
+    Status Delete(const WriteOptions& options, const std::string& key) {
+        WriteBatch batch;
+        batch.Delete(key);
+        return Write(options, &batch);
+    }
     Status Write(const WriteOptions& options, WriteBatch* batch) {
         if (testing::Consume(state_->fail_writes)) return Status::IOError();
         auto staged = state_->data;

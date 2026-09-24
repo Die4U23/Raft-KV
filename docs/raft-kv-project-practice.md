@@ -51,14 +51,14 @@ KV 存储适合承载这类练习。它的业务接口相对简单：保存一�
 | --- | --- | --- | --- |
 | `SET`、`GET`、`DEL` | 已实现；`DEL` 按键是否存在返回 1 或 0 | 本地协议/核心测试，Linux 三节点冒烟 | 支持项目定义的命令子集，不是完整 Redis 服务 |
 | 命名空间 | 已实现；`SELECT` 选择当前连接的命名空间 | 同连接命令顺序及空间隔离检查 | 新连接默认 `default`；只是逻辑键空间划分，不含权限和资源隔离 |
-| 选举、日志复制、多数派提交 | 已实现。默认仍是一个 Raft 组，启动时静态 peer 都是投票者。本分支可以一次加减一个已在静态列表里的投票者，也可以用 `--shards` 在同一组 peer 上跑多个 Raft 组 | 真实三进程冒烟仍是默认单组。进程内 `cluster_features_tests` 覆盖离开后的投票者、快照安装后被移出的节点不再竞选，以及非投票者加入后计入法定人数 | 一次只能有一个成员变更。Leader 不能移除自己，不能把集合减空，也不能加入静态列表之外的主机。`--shards` 大于 1 时各分片各自选主。默认 `--shards=1` |
+| 选举、日志复制、多数派提交 | 已实现。默认仍是一个 Raft 组，启动时静态 peer 都是投票者。本分支可以一次加减一个投票者，`MEMBER JOIN id host port` 可以加入静态列表之外的主机，也可以用 `--shards` 在同一组 peer 上跑多个 Raft 组 | 真实三进程冒烟仍是默认单组。进程内 `cluster_features_tests` 覆盖离开后的投票者、Leader 移除自己、按地址加入、Follower 把成员变更转给 Leader，以及快照安装后被移出的节点不再竞选 | 一次只能有一个成员变更，不能把集合减空。各分片各自选主；本节点不是该分片 Leader 时把 `MEMBER` 转过去。默认 `--shards=1` |
 | RocksDB 存储与应用位置恢复 | 已实现；KV 与 `lastApplied` 同批同步写入 | 本地错误注入与恢复测试，Linux 进程强制退出后恢复 | 要使用配套数据目录；没有整机掉电或设备损坏实测 |
 | 批量写入、串行异步应用 | 已实现；异步应用默认开启 | 顺序、回调、配额测试及真实 Linux 运行 | Raft 日志写入与本地读仍可能阻塞事件循环 |
 | 过载保护 | 已实现；限制连接、队列、提案及缓冲字节 | 指定阈值下的准入拒绝、`BUSY`、恢复清零和约 60 秒观察 | 应用配额不是进程内存上限，短时观察不等于长期稳定 |
 | `INFO` 与阶段耗时 | 已实现；角色、任期、提交/应用位置、队列和耗时计数 | 阶段差分、CPU 和报告身份核验 | 没有 Prometheus 导出，阶段计数器不提供请求延迟直方图 |
-| ReadIndex 强一致读 | 计划中 | 尚未完成对应实现和验收 | 当前 `GET` 是本地读 |
-| 请求去重 | 计划中 | 尚未完成对应实现和验收 | 超时或回复丢失后的重试可能重复执行 |
-| 快照、日志回收、动态成员变更 | 快照与日志回收已在父分支完成。本分支补上 joint consensus：投票者写入 Raft 日志，并随 InstallSnapshot 带走 | 可移植 CTest 覆盖快照分片、成员离开与加入。这次没有重跑 Linux 三进程冒烟 | 一次一个变更，新主机必须已经在静态 peer 列表里。镜像压缩和安装时仍整份留在内存里 |
+| ReadIndex 强一致读 | 已实现。`--linearizable_reads` 默认关闭 | 进程内探针测试，以及 Linux 工作流里的隔离旧 Leader 检查 | 默认 `GET` 仍是本地读 |
+| 请求去重 | 已实现。带 `client_id` 和 `request_id` 的写入重试返回上次回复 | 进程内重复 `DEL`、换 Leader 和快照安装后的重试 | 每个客户端只保留最新序号。`--require_request_id` 默认关闭；关闭时不带序号的写入仍会再执行 |
+| 快照、日志回收、动态成员变更 | 快照按 1 MiB 分片键存放。成员变更是 joint consensus，投票者随 InstallSnapshot 带走。`MEMBER JOIN id host port` 可以加入新主机 | 可移植 CTest 覆盖快照分片、分片收齐、缺片拒绝、旧版本 1 镜像重开、成员离开、自移除和按地址加入 | 一次一个变更。发送未完成时不压缩。旧的版本 1 快照元数据仍把整份镜像读进内存 |
 
 实现入口见[归档源码](https://github.com/Die4U23/Raft-KV/tree/051ca62/src)，验证依据见[本地改造记录](https://github.com/Die4U23/Raft-KV/blob/051ca62/LOCAL_REVIEW_STATUS.md)及第六节逐项报告。
 
@@ -439,16 +439,25 @@ P99 描述报告所收集延迟样本的第 99 百分位，用来观察尾部等
 | 1 | **ReadIndex 强一致读** | 已完成 | `--linearizable_reads` 默认关闭。Leader 在本任期提交 no-op 后，用请求之后的 AppendEntries 确认多数派，再等 `lastApplied` 追上。CheckQuorum 让隔离旧 Leader 卸任。Linux 工作流里的 `tests/cluster_linearizable.py` 检查隔离旧 Leader 不能返回过期值 |
 | 2 | **版本化策略配置演示** | 已完成 | 本分支。`CFGSET` / `CFGROLLBACK` 是 Raft 写，成功回复新版本号。同一 `client_id` 和 `request_id` 重试不升版本。回滚把旧版本的值复制成新版本。不存在的版本返回 `-ERR no such config version`，不消耗序号。`CFGGET` 是读。`CFGCACHE` 只在缓存年龄不超过 `max_age_ms` 时返回，否则 `-ERR config not fresh`。没有配置记录时快照仍是版本 2；有记录时快照版本 3 |
 | 3 | **Linux CI 与演示入口** | 部分完成 | `portable.yml` 跑可移植 CTest；`linux-cluster.yml` 构建服务、跑冒烟，并跑隔离旧 Leader 的线性读。两者在 `pull_request` 和 `main` 的 push 上触发。干净机器从零安装的单独证据包、以及一份可重复的三节点演示入口，还没有归档 |
-| 4 | **请求去重** | 已完成 | `SET`/`DEL` 可带 `client_id` 和从 1 连续递增的 `request_id`。结果与用户键同一批次落盘，并进入版本 2 快照。换 Leader 重试同一序号不会再执行。不带序号的写入仍会再执行。每个客户端只保留最新序号 |
-| 5 | **快照与日志回收** | 已完成 | 已应用条目超过 1024 后导出 KV 镜像并截断日志。落后副本按 1 MiB 分片安装，收齐后才写入。日志快照先于 KV 落盘，重启用日志镜像补上 KV。镜像再大也压缩，压缩和安装时整份留在内存里 |
+| 4 | **请求去重** | 已完成 | `SET`/`DEL` 可带 `client_id` 和从 1 连续递增的 `request_id`。结果与用户键同一批次落盘，并进入版本 2 快照。换 Leader 重试同一序号不会再执行。`--require_request_id` 默认关闭；关闭时不带序号的写入仍会再执行，打开后缺少序号返回 `-ERR request id required`。每个客户端只保留最新序号 |
+| 5 | **快照与日志回收** | 已完成 | 已应用条目超过 1024 后导出 KV 镜像并截断日志。镜像按 1 MiB 分片键存放，落后副本按块安装，收齐并确认合法后才截断日志。日志快照先于 KV 落盘，重启时按块补上 KV。旧的版本 1 快照元数据仍把整份镜像读进内存 |
 
 ReadIndex 的重点不只是增加一次心跳。需要明确何时可以相信当前读屏障，等待状态机应用到哪一个位置，以及等待期间角色变化如何结束请求。算法背景可参考 [Raft 论文第 8 节](https://raft.github.io/raft.pdf)；对外读写语义的描述方式可对照 [etcd API 一致性保证](https://etcd.io/docs/v3.6/learning/api_guarantees/)。
 
-动态成员变更、多分片、网络身份认证和租约读已在本分支实现，默认保持原来的行为：`--shards=1`，`--cluster_token` 和 `--client_token` 为空，`--lease_reads=false`。一次只能变更一个已经在静态 peer 列表里的投票者，Leader 不能移除自己。多分片时各分片各自选主。`--cluster_token` 非空时 Raft 帧外面加 HMAC-SHA256，校验失败就关掉连接。`--client_token` 非空时，除 `AUTH` 外的命令在认证前返回 `-ERR NOAUTH Authentication required`。`--lease_reads` 在投票者联系时间的多数派加上（150 ms − 10 ms）之内把读排到当前提交位置，仍要等 `lastApplied`；窗口外退回 ReadIndex。Follower 的时钟如果快过这个漂移上界，仍可能在 Leader 认为租约有效时开始竞选。其他网络故障、真实存储故障和长期运行验证仍未做。干净系统复现证据包仍未归档。
+动态成员变更、多分片、网络身份认证和租约读已在本分支实现，默认保持原来的行为：`--shards=1`，`--cluster_token` 和 `--client_token` 为空，`--lease_reads=false`，`--require_request_id=false`。`MEMBER JOIN id host port` 可以加入静态列表之外的主机，Leader 可以移除自己。一次只能有一个变更，不能把集合减空。多分片时各分片各自选主；本节点不是该分片 Leader 时把 `MEMBER` 转给那个 Leader，还不知道 Leader 时返回 `MOVED -1`。`--cluster_token` 非空时 Raft 帧外面加 HMAC-SHA256，校验失败就关掉连接。`--client_token` 非空时，除 `AUTH` 外的命令在认证前返回 `-ERR NOAUTH Authentication required`。`--lease_reads` 在投票者联系时间的多数派加上（150 ms − 10 ms）之内把读排到当前提交位置，仍要等 `lastApplied`；窗口外退回 ReadIndex。Follower 的时钟如果快过这个漂移上界，仍可能在 Leader 认为租约有效时开始竞选。其他网络故障、真实存储故障和长期运行验证仍未做。干净系统复现证据包仍未归档。
 
 ## 十一、持续更新日志
 
 以下按验收或归档日期倒序维护；同日记录按本次整理顺序排列。每次更新保留“问题或目标、改动、验证、结果、取舍、证据”六项。代码发布早于实测归档时，分别注明，避免把工具发布当成实验完成。
+
+### 2026-09-24｜放宽成员变更，并按块存放快照
+
+- **问题或目标**：上一节留下的限制是：不能加入静态列表外的主机，Leader 不能移除自己，`MEMBER` 要求本节点领导每个分片，不带序号的写入总会再执行，快照镜像在压缩和安装时整份留在内存里。
+- **本次改动**：`MEMBER JOIN id host port` 记住新主机。Leader 可以 `MEMBER LEAVE` 自己，COMMIT 应用后卸任。本节点不是某个分片的 Leader 时，把 `MEMBER` 转给那个分片的 Leader。`--require_request_id` 默认关闭；打开后，缺少序号的 `SET` / `DEL` / `CFGSET` / `CFGROLLBACK` 被拒绝。新快照按 1 MiB 分片键写入日志库，压缩、发送、接收和安装每次处理一块。
+- **验证环境与方法**：可移植 CTest 16/16 通过，含按地址加入、Leader 自移除、Follower 转发、快照分片收齐，以及旧版本 1 快照重开。Linux 构建 CTest 17/17 通过。`tests/cluster_smoke.py` 对这次链接的 `raft_kv_server` 10/10 通过。`cluster_linearizable.py` 这次没有重跑。
+- **实测结果**：默认 `--require_request_id=false` 时，原来的可移植用例和三进程冒烟仍然通过。没有新的性能数字。
+- **取舍与未完成事项**：不带序号的写入在标志关闭时仍会再执行。Follower 时钟快过 10 ms 时，租约读仍不安全。旧的版本 1 快照元数据仍把整份镜像读进内存。`main` 和 `v0.2.0` 都没有这些改动。
+- **关联提交**：仍在本分支 `cursor/cluster-features-386d`。不在 `main` 的 `531fcf4`，也不在 `v0.2.0` 的 `8f5142f`。
 
 ### 2026-09-24｜版本化配置、成员变更、多分片、认证与租约读
 

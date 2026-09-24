@@ -123,12 +123,64 @@ static void JoinedNonVoterEntersTheQuorum() {
           "new voter did not apply the committed write");
 }
 
+static void NewPeerJoinsByAddress() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.AddNode(70, "127.0.0.1", 9070);
+    Check(!cluster.Node(10).IsClusterVoter(70), "new peer started as a voter");
+    Check(cluster.Node(10).ProposeMemberChange(true, 70, {}, "127.0.0.1", 9070) > 0,
+          "join by address was rejected");
+    cluster.Pump();
+    cluster.Settle();
+    Check(cluster.Node(70).IsClusterVoter(70) && cluster.Node(30).IsClusterVoter(70),
+          "address join did not enter the voter set");
+    Check(cluster.Node(10).ProposeMemberChange(true, 70, {}, "127.0.0.1", 9070) == -4,
+          "second address join was accepted");
+}
+
+static void LeaderCanRemoveItself() {
+    Cluster cluster;
+    cluster.Elect(10);
+    Check(cluster.Node(10).ProposeMemberChange(false, 10, {}) > 0, "self leave was rejected");
+    cluster.Pump();
+    cluster.Settle();
+    Check(!cluster.Node(10).IsLeader() && !cluster.Node(10).IsClusterVoter(10),
+          "removed leader stayed in the voter set");
+    Check(cluster.Node(30).IsClusterVoter(30) && !cluster.Node(30).IsClusterVoter(10),
+          "follower kept the removed leader");
+    const int leader = cluster.ElectAmong({30, 50});
+    Check(cluster.Node(leader).Propose(Command({"SET", "default:k", "left"}), {}) > 0,
+          "remaining pair rejected a write");
+    cluster.Pump();
+    const int other = leader == 30 ? 50 : 30;
+    std::string value;
+    Check(cluster.State(other).Get("default:k", &value) && value == "left",
+          "remaining pair did not commit");
+}
+
+static void FollowerForwardsMembershipToTheLeader() {
+    Cluster cluster;
+    cluster.Elect(10);
+    bool applied = false;
+    Check(cluster.Node(30).ForwardMemberChange(10, false, 50, {}, 0, [&](bool ok, const std::string& reply) {
+        applied = ok && reply == "+OK\r\n";
+    }), "forward was not sent");
+    cluster.Pump();
+    cluster.Settle();
+    Check(applied, "forwarded leave did not apply");
+    Check(!cluster.Node(10).IsClusterVoter(50) && !cluster.Node(30).IsClusterVoter(50),
+          "forwarded leave did not drop 50");
+}
+
 int main() {
     try {
         ConfigCommandReplicates();
         LeaseReadServesWithoutProbeAndWaitsForApply();
         RemovedVoterCannotCampaignAndSnapshotKeepsTheSet();
         JoinedNonVoterEntersTheQuorum();
+        NewPeerJoinsByAddress();
+        LeaderCanRemoveItself();
+        FollowerForwardsMembershipToTheLeader();
         std::cout << "PASS: config, lease, and membership\n";
         return 0;
     } catch (const std::exception& error) {
