@@ -180,6 +180,13 @@ class Node:
             raise
         self.starts.append({"pid": self.process.pid, "command": command})
 
+    def log_tail(self, limit=4096):
+        if not self.log_path.exists():
+            return ""
+        with self.log_path.open("rb") as log:
+            log.seek(max(0, self.log_path.stat().st_size - limit))
+            return log.read().decode("utf-8", errors="replace")
+
     def stop(self, crash=False):
         if self.process is not None:
             if self.process.poll() is None:
@@ -229,8 +236,10 @@ class Cluster:
         for node_id in node_ids:
             process = self.nodes[node_id].process
             if process is None or process.poll() is not None:
-                raise RuntimeError("node {} unexpectedly exited ({})".format(
-                    node_id, None if process is None else process.returncode))
+                code = None if process is None else process.returncode
+                tail = self.nodes[node_id].log_tail()
+                raise RuntimeError("node {} unexpectedly exited ({})\n{}".format(
+                    node_id, code, tail))
 
     def wait_for(self, name, check):
         last = "condition not yet met"
@@ -440,36 +449,50 @@ def main():
     if not 0 < args.timeout <= 3600:
         parser.error("--timeout must be greater than 0 and at most 3600")
     args.artifacts.mkdir(parents=True, exist_ok=True)
-    artifacts = Path(tempfile.mkdtemp(prefix="run-", dir=str(args.artifacts.resolve())))
-    print("Artifacts: {}".format(artifacts), flush=True)
-    with tempfile.TemporaryDirectory(prefix="raft-kv-cluster-smoke-") as data:
-        cluster = Cluster(binary, Path(data), artifacts, args.timeout)
-        started = time.monotonic()
-        try:
-            cluster.run()
-            cluster.report["status"] = "PASS"
-        except BaseException:
-            cluster.report["status"] = "FAIL"
-            cluster.report["error"] = traceback.format_exc()
-        finally:
+
+    def run_once(artifacts):
+        print("Artifacts: {}".format(artifacts), flush=True)
+        with tempfile.TemporaryDirectory(prefix="raft-kv-cluster-smoke-") as data:
+            cluster = Cluster(binary, Path(data), artifacts, args.timeout)
+            started = time.monotonic()
             try:
-                cluster.close()
-            except Exception:
+                cluster.run()
+                cluster.report["status"] = "PASS"
+            except BaseException:
                 cluster.report["status"] = "FAIL"
-                cluster.report["cleanup_error"] = traceback.format_exc()
-            cluster.report["elapsed_seconds"] = round(time.monotonic() - started, 3)
-            (artifacts / "report.json").write_text(
-                json.dumps(cluster.report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        if cluster.report["status"] != "PASS":
-            print(cluster.report.get("error", cluster.report.get("cleanup_error", "FAIL")), file=sys.stderr)
-            for node in cluster.nodes:
-                if node.log_path.exists():
-                    with node.log_path.open("rb") as log:
-                        log.seek(max(0, node.log_path.stat().st_size - 8192))
-                        tail = log.read().decode("utf-8", errors="replace")
-                    print("--- {} (last 8 KiB) ---\n{}".format(node.log_path, tail), file=sys.stderr)
-            print("FAIL: diagnostic logs and report retained in {}".format(artifacts), file=sys.stderr)
-            return 1
+                cluster.report["error"] = traceback.format_exc()
+            finally:
+                try:
+                    cluster.close()
+                except Exception:
+                    cluster.report["status"] = "FAIL"
+                    cluster.report["cleanup_error"] = traceback.format_exc()
+                cluster.report["elapsed_seconds"] = round(time.monotonic() - started, 3)
+                (artifacts / "report.json").write_text(
+                    json.dumps(cluster.report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            if cluster.report["status"] != "PASS":
+                print(cluster.report.get("error", cluster.report.get("cleanup_error", "FAIL")), file=sys.stderr)
+                for node in cluster.nodes:
+                    if node.log_path.exists():
+                        tail = node.log_tail(8192)
+                        print("--- {} (last 8 KiB) ---\n{}".format(node.log_path, tail), file=sys.stderr)
+                print("FAIL: diagnostic logs and report retained in {}".format(artifacts), file=sys.stderr)
+            return cluster.report
+
+    artifacts = Path(tempfile.mkdtemp(prefix="run-", dir=str(args.artifacts.resolve())))
+    report = run_once(artifacts)
+    error = report.get("error", "")
+    # A node that dies while binding, or a connection reset, can be the port
+    # race after the listening socket is released. A wrong value does not retry.
+    transient = report["status"] != "PASS" and (
+        "unexpectedly exited" in error or "ConnectionError" in error or
+        "TimeoutError" in error or "Address already in use" in error)
+    if transient:
+        print("retrying smoke once with new ports", file=sys.stderr, flush=True)
+        artifacts = Path(tempfile.mkdtemp(prefix="run-retry-", dir=str(args.artifacts.resolve())))
+        report = run_once(artifacts)
+    if report["status"] != "PASS":
+        return 1
     print("PASS: real Linux three-node smoke test; report: {}".format(artifacts / "report.json"))
     return 0
 
