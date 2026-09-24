@@ -38,6 +38,14 @@ Python 测试客户端仅使用标准库，兼容 Python 3.8+。以下命令检�
 python3 tests/cluster_smoke.py --self-test
 ```
 
+## 三节点演示
+
+`scripts/demo_three_nodes.py` 用下面同一套进程和 RESP 处理，只走一条路径：选出 Leader，`SET demo:user alice`，`CFGSET rollout canary`，SIGKILL 该 Leader，从新 Leader 读回键和配置版本。默认二进制是 `build-linux-repro/server/raft_kv_server`。它不代替本节的冒烟、分区、重启或过载脚本。
+
+```sh
+python3 scripts/demo_three_nodes.py --binary build-linux-repro/server/raft_kv_server
+```
+
 ## Linux 真实三节点 smoke test
 
 GitHub Actions 工作流 `.github/workflows/linux-cluster.yml` 在独立 job 中安装系统依赖、构建真实 Muduo/RocksDB 服务、运行 CTest 与 `cluster_smoke.py`，再运行 `tests/cluster_linearizable.py`：Leader 写后读、Follower `MOVED`、隔离旧 Leader 必须在 1 秒内返回读超时或 `MOVED`。套接字超时不算通过。该 job 不替代下面已归档的分区/重启/过载证据包。
