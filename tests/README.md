@@ -48,7 +48,7 @@ python3 scripts/demo_three_nodes.py --binary build-linux-repro/server/raft_kv_se
 
 ## Linux 真实三节点 smoke test
 
-GitHub Actions 工作流 `.github/workflows/linux-cluster.yml` 在独立 job 中安装系统依赖、构建真实 Muduo/RocksDB 服务、运行 CTest 与 `cluster_smoke.py`，再运行 `tests/cluster_linearizable.py`：Leader 写后读、Follower `MOVED`、隔离旧 Leader 必须在 1 秒内返回读超时或 `MOVED`。套接字超时不算通过。该 job 不替代下面已归档的分区/重启/过载证据包。
+GitHub Actions 工作流 `.github/workflows/linux-cluster.yml` 在独立 job 中安装系统依赖、构建真实 Muduo/RocksDB 服务、运行 CTest 与 `cluster_smoke.py`，再运行 `tests/cluster_linearizable.py`：Leader 写后读、Follower `MOVED`、隔离旧 Leader 必须在 1 秒内返回读超时或 `MOVED`。分区后的写入要等新 Leader 先提交本任期的条目，避免在第一条确认回来之前把 `leadership lost` 当成集群写失败。套接字超时不算通过。该 job 不替代下面已归档的分区/重启/过载证据包。
 
 当前重连优化另增加真实 `peer_manager_transport_tests`，仅在服务依赖可用的构建中启用。新版 Linux 构建、CTest 7/7（含该测试）、冒烟 10 项与分区 5 个阶段已完成并[归档核验](../docs/benchmarks/reconnect-validation.md)；见[优化验收说明](../docs/optimizations/peer-reconnect-backoff.md)。下述归档结果属于优化前版本。
 

@@ -63,12 +63,47 @@ def run_linearizable(cluster):
         cluster.step('follower GET returns MOVED when linearizable_reads is on')
 
         majority = [node for node in range(3) if node != leader]
+        before_commit = int(cluster.info(leader)['commit_index'])
         mesh.partition([[leader], majority])
-        new_leader = cluster.wait_for('majority election', lambda: cluster.leader(majority))
-        cluster.report['majority_leader'] = new_leader
-        with cluster.client(new_leader) as client:
-            expect(client.command('SET', 'k', 'new'), 'OK', 'majority SET')
-            expect(client.command('GET', 'k'), b'new', 'majority GET')
+
+        def majority_committed():
+            # INFO reports a leader as soon as it wins the election, before the
+            # no-op of this term is acknowledged. CheckQuorum steps that leader
+            # down if the acknowledgement misses the election timeout, and a
+            # write accepted in that window returns leadership lost.
+            chosen = cluster.leader(majority)
+            if chosen is None:
+                return None
+            commit = int(cluster.report['last_info'][str(chosen)]['commit_index'])
+            if commit <= before_commit:
+                return None
+            return chosen
+
+        served = False
+        last_reply = None
+        for _ in range(4):
+            new_leader = cluster.wait_for('majority election', majority_committed)
+            cluster.report['majority_leader'] = new_leader
+            with cluster.client(new_leader) as client:
+                reply = client.command('SET', 'k', 'new')
+                last_reply = reply
+                if reply != 'OK':
+                    if isinstance(reply, RespError) and (
+                            'leadership lost' in reply.message or reply.message.startswith('ERR MOVED')):
+                        continue
+                    expect(reply, 'OK', 'majority SET')
+                got = client.command('GET', 'k')
+                last_reply = got
+                if got == b'new':
+                    served = True
+                    break
+                if isinstance(got, RespError) and any(
+                        token in got.message for token in (
+                            'leadership lost', 'MOVED', 'read index timeout', 'not leader')):
+                    continue
+                expect(got, b'new', 'majority GET')
+        if not served:
+            expect(last_reply, b'new', 'majority GET')
         cluster.step('majority serves the post-partition write')
 
         stale = None
@@ -132,6 +167,10 @@ def main():
                 cluster.report['cleanup_error'] = traceback.format_exc()
         if cluster.report.get('status') != 'PASS':
             print(cluster.report.get('error', 'FAIL'), file=sys.stderr)
+            for node in cluster.nodes:
+                if node.log_path.exists():
+                    print('--- {} (last 8 KiB) ---\n{}'.format(
+                        node.log_path, node.log_tail(8192)), file=sys.stderr)
             return 1
     print('PASS: Linux linearizable-read isolation; artifacts: {}'.format(artifacts))
     return 0
