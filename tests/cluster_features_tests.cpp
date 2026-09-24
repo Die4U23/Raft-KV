@@ -113,6 +113,28 @@ static void LeaseReadExpiresFromSendTimeWhenAckIsDelayed() {
           "stale acknowledgement was counted as a lease read");
 }
 
+// CheckQuorum stays on reply-arrival time. Anchoring it at the send time
+// steps a live leader down once the round trip exceeds the drift budget.
+static void DelayedAckKeepsCheckQuorum() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    cluster.messages.clear();
+    for (int tick = 0; tick < 5; ++tick) cluster.Node(10).Tick();
+    auto appends = TakeAppendsFrom(cluster, 10);
+    Check(appends.size() == 2, "heartbeat did not reach both followers");
+    const int one_way = 30;
+    for (int id : {10, 30, 50}) cluster.Advance(id, one_way);
+    std::vector<Message> acks;
+    for (const auto& append : appends)
+        acks.push_back(DeliverAppendAndTakeAck(cluster, append));
+    for (int id : {10, 30, 50}) cluster.Advance(id, one_way);
+    for (const auto& ack : acks) cluster.Deliver(ack);
+    cluster.Advance(10, RaftNode::kMinElectionTimeoutMs - 1);
+    cluster.Node(10).Tick();
+    Check(cluster.Node(10).IsLeader(), "check quorum expired at the send time");
+}
+
 static void RemovedVoterCannotCampaignAndSnapshotKeepsTheSet() {
     Cluster cluster;
     cluster.Elect(10);
@@ -230,6 +252,7 @@ int main() {
         ConfigCommandReplicates();
         LeaseReadServesWithoutProbeAndWaitsForApply();
         LeaseReadExpiresFromSendTimeWhenAckIsDelayed();
+        DelayedAckKeepsCheckQuorum();
         RemovedVoterCannotCampaignAndSnapshotKeepsTheSet();
         JoinedNonVoterEntersTheQuorum();
         NewPeerJoinsByAddress();

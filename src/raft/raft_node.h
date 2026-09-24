@@ -265,7 +265,11 @@ private:
     // fixed 10 ms, so an early timer wakeup cannot open a ReadIndex window.
     SteadyClock::time_point _election_deadline{};
     SteadyClock::time_point _leader_since{};
+    // CheckQuorum: arrival time of a same-term reply. A slow reply must not
+    // make a live leader step down.
     std::map<int, SteadyClock::time_point> _peer_active;
+    // Lease reads: first send time of a matched AppendEntries or snapshot RPC.
+    std::map<int, SteadyClock::time_point> _lease_contact;
     std::function<SteadyClock::time_point()> _clock;
     int _heartbeat_timer_ms = 0;
     struct Pending {

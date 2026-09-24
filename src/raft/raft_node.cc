@@ -165,9 +165,14 @@ bool RaftNode::FreshQuorum(const std::set<int>& config) const {
 bool RaftNode::LeaseCovers(const std::set<int>& config) const {
     std::vector<SteadyClock::time_point> contacts;
     contacts.reserve(config.size());
+    const auto now = Now();
     for (int id : config) {
-        const auto found = _peer_active.find(id);
-        if (found == _peer_active.end()) return false;
+        if (id == _node_id) {
+            contacts.push_back(now);
+            continue;
+        }
+        const auto found = _lease_contact.find(id);
+        if (found == _lease_contact.end()) return false;
         contacts.push_back(found->second);
     }
     std::sort(contacts.begin(), contacts.end(), std::greater<SteadyClock::time_point>());
@@ -432,6 +437,7 @@ void RaftNode::BecomeFollower(int32_t term) {
     _leader_id = -1;
     _votes.clear();
     _peer_active.clear();
+    _lease_contact.clear();
     for (auto& item : _inflight) item.second = {};
     ResetElectionTimer();
     FailPending("-ERR leadership lost; outcome unknown\r\n");
@@ -497,6 +503,7 @@ void RaftNode::BecomeLeader() {
     _leader_id = _node_id;
     _leader_since = Now();
     _peer_active.clear();
+    _lease_contact.clear();
     NotePeerContact(_node_id);
     EventLog(LogLevel::Info) << "RaftNode[" << _node_id << "] becomes leader term="
                             << _current_term << " commit=" << _commit_index;
@@ -524,15 +531,15 @@ void RaftNode::NotePeerContact(int peer) {
     _peer_active[peer] = Now();
 }
 void RaftNode::NotePeerAck(int peer, SteadyClock::time_point sent_at) {
-    const auto found = _peer_active.find(peer);
-    if (found == _peer_active.end() || sent_at > found->second)
-        _peer_active[peer] = sent_at;
+    const auto found = _lease_contact.find(peer);
+    if (found == _lease_contact.end() || sent_at > found->second)
+        _lease_contact[peer] = sent_at;
 }
 void RaftNode::CheckQuorum() {
-    // The leader counts itself at Now(). A remote voter counts from the send
-    // time of a matched AppendEntries or InstallSnapshot, so this window
-    // closes before that follower can start an election. A joint config
-    // steps down when either voter set loses its majority.
+    // The leader counts itself. Everyone else must have answered in this term
+    // inside the minimum election timeout, measured when the reply arrived.
+    // Lease reads use the send time instead, in _lease_contact. A joint
+    // config steps down when either voter set loses its majority.
     NotePeerContact(_node_id);
     if (Singleton()) return;
     const auto now = Now();
@@ -717,6 +724,7 @@ void RaftNode::HandleAppendEntriesResponse(int from,
     }
     if (!IsLeader() || response.term() != _current_term) return;
 
+    NotePeerContact(from);
     // Expire a probe round as soon as a late response arrives. Waiting for the
     // next Tick left the read hanging after the lease had already elapsed.
     CheckReadIndexTimeout();
@@ -887,6 +895,7 @@ void RaftNode::HandleInstallSnapshotResponse(int from,
         return;
     }
     if (!IsLeader() || response.term() != _current_term) return;
+    NotePeerContact(from);
     auto& flight = _inflight.at(from);
     if (!flight.id || flight.type != RaftMsgType::kInstallSnapshot ||
         response.rpc_id() != flight.id) return;

@@ -444,7 +444,7 @@ P99 描述报告所收集延迟样本的第 99 百分位，用来观察尾部等
 
 ReadIndex 的重点不只是增加一次心跳。需要明确何时可以相信当前读屏障，等待状态机应用到哪一个位置，以及等待期间角色变化如何结束请求。算法背景可参考 [Raft 论文第 8 节](https://raft.github.io/raft.pdf)；对外读写语义的描述方式可对照 [etcd API 一致性保证](https://etcd.io/docs/v3.6/learning/api_guarantees/)。
 
-动态成员变更、多分片、网络身份认证和租约读已在本分支实现，默认保持原来的行为：`--shards=1`，`--cluster_token` 和 `--client_token` 为空，`--lease_reads=false`，`--require_request_id=false`。`MEMBER JOIN id host port` 可以加入静态列表之外的主机，Leader 可以移除自己。一次只能有一个变更，不能把集合减空。多分片时各分片各自选主；本节点不是该分片 Leader 时把 `MEMBER` 转给那个 Leader，还不知道 Leader 时返回 `MOVED -1`。`--cluster_token` 非空时 Raft 帧外面加 HMAC-SHA256，校验失败就关掉连接。`--client_token` 非空时，除 `AUTH` 外的命令在认证前返回 `-ERR NOAUTH Authentication required`。`--lease_reads` 把远程投票者的联系时间记成已确认 AppendEntries 或 InstallSnapshot 的发送时刻。多数派里第 quorum 新的那一次加上（150 ms − 10 ms）之前，把读排到当前提交位置，仍要等 `lastApplied`；窗口外退回 ReadIndex。回程延迟不再把租约延长到跟随者最早能竞选之后。跟随者的时钟如果在一个选举超时里快过 10 ms，仍可能在 Leader 认为租约有效时开始竞选。`--request_timeout_ms` 默认 0。大于 0 时，已经进入日志的命令到期后只回复一次 `-ERR request timeout; outcome unknown`，条目留下，恢复多数派后仍会提交；还没提案的队列项到期后丢掉，回复 `-ERR request timeout`。打开旧的版本 1 日志快照时，会把那一个整份键读出来拆成 1 MiB 分片，写成版本 2 后删掉原键，日志对象不再留着整份镜像。其他网络故障、真实存储故障和长期运行验证仍未做。干净系统复现证据包仍未归档。可重复的三节点演示是 `scripts/demo_three_nodes.py`。
+动态成员变更、多分片、网络身份认证和租约读已在本分支实现，默认保持原来的行为：`--shards=1`，`--cluster_token` 和 `--client_token` 为空，`--lease_reads=false`，`--require_request_id=false`。`MEMBER JOIN id host port` 可以加入静态列表之外的主机，Leader 可以移除自己。一次只能有一个变更，不能把集合减空。多分片时各分片各自选主；本节点不是该分片 Leader 时把 `MEMBER` 转给那个 Leader，还不知道 Leader 时返回 `MOVED -1`。`--cluster_token` 非空时 Raft 帧外面加 HMAC-SHA256，校验失败就关掉连接。`--client_token` 非空时，除 `AUTH` 外的命令在认证前返回 `-ERR NOAUTH Authentication required`。`--lease_reads` 把远程投票者的租约联系时间记成已确认 AppendEntries 或 InstallSnapshot 的发送时刻。多数派里第 quorum 新的那一次加上（150 ms − 10 ms）之前，把读排到当前提交位置，仍要等 `lastApplied`；窗口外退回 ReadIndex。回程延迟不再把租约延长到跟随者最早能竞选之后。CheckQuorum 仍按应答到达时刻计算。跟随者的时钟如果在一个选举超时里快过 10 ms，仍可能在 Leader 认为租约有效时开始竞选。`--request_timeout_ms` 默认 0。大于 0 时，已经进入日志的命令到期后只回复一次 `-ERR request timeout; outcome unknown`，条目留下，恢复多数派后仍会提交；还没提案的队列项到期后丢掉，回复 `-ERR request timeout`。打开旧的版本 1 日志快照时，会把那一个整份键读出来拆成 1 MiB 分片，写成版本 2 后删掉原键，日志对象不再留着整份镜像。其他网络故障、真实存储故障和长期运行验证仍未做。干净系统复现证据包仍未归档。可重复的三节点演示是 `scripts/demo_three_nodes.py`。
 
 ## 十一、持续更新日志
 
@@ -453,9 +453,9 @@ ReadIndex 的重点不只是增加一次心跳。需要明确何时可以相信�
 ### 2026-09-24｜租约联系时间改成发送时刻
 
 - **问题或目标**：租约把联系时间记在应答到达时。跟随者在收到 AppendEntries 或 InstallSnapshot 时就重置选举计时，回程还要再走一段。10 ms 漂移已经从 150 ms 里扣掉，回程只要大于 0，租约就可能盖过跟随者最早的竞选。
-- **本次改动**：rpc 序号对得上时，把该投票者的联系时间改成这一次 RPC 第一次发出的时刻，只往前移。重试不刷新。对不上的应答不改联系时间。Leader 自己仍记当前时刻。复制延迟统计仍用进程单调钟。
+- **本次改动**：rpc 序号对得上时，把该投票者的租约联系时间改成这一次 RPC 第一次发出的时刻，只往前移。重试不刷新。对不上的应答不改租约。Leader 自己仍记当前时刻。CheckQuorum 仍用应答到达时刻。复制延迟统计仍用进程单调钟。
 - **验证环境与方法**：可移植进程内集群。心跳发出后，去程和回程各把三台节点的钟拨 30 ms，再拨到跟随者最早能竞选的时刻。同一条旧应答再投递一次。Linux 三进程冒烟这次没有重跑。
-- **实测结果**：发送后 60 ms 租约仍本地完成读。到达跟随者最早竞选时刻后不再本地完成，旧应答也不把租约续上。可移植 CTest 16/16 通过。没有新的性能数字。
+- **实测结果**：发送后 60 ms 租约仍本地完成读。到达跟随者最早竞选时刻后不再本地完成，旧应答也不把租约续上。应答晚 60 ms 时，再过 149 ms CheckQuorum 仍保持 Leader。可移植 CTest 16/16 通过。本机三进程 `cluster_linearizable.py` 里，分区后的多数派 `SET` 返回 `OK`。没有新的性能数字。
 - **取舍与未完成事项**：跟随者的时钟如果在一个选举超时里快过 10 ms，租约读仍不安全。这 10 ms 只留给时钟，不再同时支付网络延迟。这一节不在标签 `v0.3.0`，也不在 `main` 的 `531fcf4` 或 `v0.2.0` 的 `8f5142f`。
 
 ### 2026-09-24｜旧快照打开时改成分片
