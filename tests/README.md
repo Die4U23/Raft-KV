@@ -17,7 +17,7 @@ ctest --test-dir build-protocol --output-on-failure
 - `core_tests` 编译实际 RaftNode、RaftLog、KVStateMachine 与 RocksDBStore 源码，通过可控消息队列测试多数派、重复投票、复制、重启、日志冲突、丢失回复与存储失败。
 - `kv_state_machine_tests` 检查 SET/覆盖/DEL 回复、空命令 no-op、已提交命令大小写、非法日志命令拒绝、缺少 lastApplied 标记的旧库拒绝启动、KV 快照导出/安装、删除旧键和坏镜像拒绝，以及 `client_id + request_id` 重试不重复执行、快照带走会话、版本 1 快照清掉会话。配置用例检查发布、幂等重试不升版本、回滚复制成新版本、缺失版本不消耗序号、保留键、版本 3 快照往返，以及空的版本 2 快照清掉配置。
 - `cluster_features_tests` 检查配置命令复制、租约读在窗口内不发探针且仍等待应用、窗口外退回 ReadIndex、被移出的投票者安装快照后不再竞选、后加入的非投票者进入法定人数、按地址加入静态列表外的主机、Leader 移除自己，以及 Follower 把成员变更转给 Leader。
-- `raft_log_tests` 检查追加、截断、硬状态往返、GetTerm 边界、非连续日志在打开时失败，以及快照删除前缀、保留后缀、冲突任期丢掉后缀。新快照按分片键存放并能按区间读出；旧的版本 1 元数据仍能重开，未完成的暂存分片在打开时丢掉。
+- `raft_log_tests` 检查追加、截断、硬状态往返、GetTerm 边界、非连续日志在打开时失败，以及快照删除前缀、保留后缀、冲突任期丢掉后缀。新快照按分片键存放并能按区间读出。旧的版本 1 元数据在打开时拆成 1 MiB 分片并改成版本 2，整份键被删掉，后缀日志仍在；未完成的暂存分片在打开时丢掉。
 - `raft_node_coverage_tests` 检查 Follower/停机/不健康/超限提案返回值、选举日志新旧与一任一次性投票、非法 RequestVote 忽略、Candidate 收到更高任期心跳后转为 Follower，Pre-Vote（隔离节点不抬任期、恢复后不打断原 Leader、落后节点仍能完成选举、预投票不落盘、Leader 拒绝预投票、落选后回到预投票），以及快照：落后副本安装镜像后再复制后缀、Leader KV 从日志快照恢复、任期匹配的旧快照不倒回已应用的键、坏镜像不抬任期、已应用日志与快照任期冲突时失败停止、分片收齐后安装、缺片被拒绝，换 Leader 后同一 `request_id` 不重复写入，以及请求超时只回复一次、日志条目在分区恢复后仍会提交。
 - `readindex_tests` 用生产 RaftNode 检查探针 rpc_id、请求前 ACK 及其重试无效、超过最短选举超时的探针 ACK 在投递时即失败、应用落后等待、超时、10000 条过载，以及隔离旧 Leader 不能仅凭自身确认完成线性一致读。
 - `replication_logic_tests` / `replication_partition_tests` / `replication_edge_cases_unit` 用生产 RaftNode 检查复制 ACK、分区多数派与日志冲突边界。

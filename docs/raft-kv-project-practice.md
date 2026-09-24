@@ -58,7 +58,7 @@ KV 存储适合承载这类练习。它的业务接口相对简单：保存一�
 | `INFO` 与阶段耗时 | 已实现；角色、任期、提交/应用位置、队列和耗时计数 | 阶段差分、CPU 和报告身份核验 | 没有 Prometheus 导出，阶段计数器不提供请求延迟直方图 |
 | ReadIndex 强一致读 | 已实现。`--linearizable_reads` 默认关闭 | 进程内探针测试，以及 Linux 工作流里的隔离旧 Leader 检查 | 默认 `GET` 仍是本地读 |
 | 请求去重 | 已实现。带 `client_id` 和 `request_id` 的写入重试返回上次回复 | 进程内重复 `DEL`、换 Leader 和快照安装后的重试 | 每个客户端只保留最新序号。`--require_request_id` 默认关闭；关闭时不带序号的写入仍会再执行 |
-| 快照、日志回收、动态成员变更 | 快照按 1 MiB 分片键存放。成员变更是 joint consensus，投票者随 InstallSnapshot 带走。`MEMBER JOIN id host port` 可以加入新主机 | 可移植 CTest 覆盖快照分片、分片收齐、缺片拒绝、旧版本 1 镜像重开、成员离开、自移除和按地址加入 | 一次一个变更。发送未完成时不压缩。旧的版本 1 快照元数据仍把整份镜像读进内存 |
+| 快照、日志回收、动态成员变更 | 快照按 1 MiB 分片键存放。成员变更是 joint consensus，投票者随 InstallSnapshot 带走。`MEMBER JOIN id host port` 可以加入新主机 | 可移植 CTest 覆盖快照分片、分片收齐、缺片拒绝、旧版本 1 镜像重开、成员离开、自移除和按地址加入 | 一次一个变更。发送未完成时不压缩。打开旧的版本 1 快照时先读出那一个整份键，拆成 1 MiB 分片并改成版本 2，然后删掉原键。日志对象不再留着整份镜像 |
 
 实现入口见[归档源码](https://github.com/Die4U23/Raft-KV/tree/051ca62/src)，验证依据见[本地改造记录](https://github.com/Die4U23/Raft-KV/blob/051ca62/LOCAL_REVIEW_STATUS.md)及第六节逐项报告。
 
@@ -440,15 +440,24 @@ P99 描述报告所收集延迟样本的第 99 百分位，用来观察尾部等
 | 2 | **版本化策略配置演示** | 已完成 | 本分支。`CFGSET` / `CFGROLLBACK` 是 Raft 写，成功回复新版本号。同一 `client_id` 和 `request_id` 重试不升版本。回滚把旧版本的值复制成新版本。不存在的版本返回 `-ERR no such config version`，不消耗序号。`CFGGET` 是读。`CFGCACHE` 只在缓存年龄不超过 `max_age_ms` 时返回，否则 `-ERR config not fresh`。没有配置记录时快照仍是版本 2；有记录时快照版本 3 |
 | 3 | **Linux CI 与演示入口** | 部分完成 | `portable.yml` 跑可移植 CTest；`linux-cluster.yml` 构建服务、跑冒烟，并跑隔离旧 Leader 的线性读。两者在 `pull_request` 和 `main` 的 push 上触发。`scripts/demo_three_nodes.py` 在本机启动三个进程，写入一个键和一条配置，杀掉 Leader 后再从新 Leader 读回。干净机器从零安装的单独证据包还没有归档 |
 | 4 | **请求去重** | 已完成 | `SET`/`DEL` 可带 `client_id` 和从 1 连续递增的 `request_id`。结果与用户键同一批次落盘，并进入版本 2 快照。换 Leader 重试同一序号不会再执行。`--require_request_id` 默认关闭；关闭时不带序号的写入仍会再执行，打开后缺少序号返回 `-ERR request id required`。每个客户端只保留最新序号 |
-| 5 | **快照与日志回收** | 已完成 | 已应用条目超过 1024 后导出 KV 镜像并截断日志。镜像按 1 MiB 分片键存放，落后副本按块安装，收齐并确认合法后才截断日志。日志快照先于 KV 落盘，重启时按块补上 KV。旧的版本 1 快照元数据仍把整份镜像读进内存 |
+| 5 | **快照与日志回收** | 已完成 | 已应用条目超过 1024 后导出 KV 镜像并截断日志。镜像按 1 MiB 分片键存放，落后副本按块安装，收齐并确认合法后才截断日志。日志快照先于 KV 落盘，重启时按块补上 KV。打开旧的版本 1 快照时先读出那一个整份键，拆成 1 MiB 分片并改成版本 2，然后删掉原键 |
 
 ReadIndex 的重点不只是增加一次心跳。需要明确何时可以相信当前读屏障，等待状态机应用到哪一个位置，以及等待期间角色变化如何结束请求。算法背景可参考 [Raft 论文第 8 节](https://raft.github.io/raft.pdf)；对外读写语义的描述方式可对照 [etcd API 一致性保证](https://etcd.io/docs/v3.6/learning/api_guarantees/)。
 
-动态成员变更、多分片、网络身份认证和租约读已在本分支实现，默认保持原来的行为：`--shards=1`，`--cluster_token` 和 `--client_token` 为空，`--lease_reads=false`，`--require_request_id=false`。`MEMBER JOIN id host port` 可以加入静态列表之外的主机，Leader 可以移除自己。一次只能有一个变更，不能把集合减空。多分片时各分片各自选主；本节点不是该分片 Leader 时把 `MEMBER` 转给那个 Leader，还不知道 Leader 时返回 `MOVED -1`。`--cluster_token` 非空时 Raft 帧外面加 HMAC-SHA256，校验失败就关掉连接。`--client_token` 非空时，除 `AUTH` 外的命令在认证前返回 `-ERR NOAUTH Authentication required`。`--lease_reads` 在投票者联系时间的多数派加上（150 ms − 10 ms）之内把读排到当前提交位置，仍要等 `lastApplied`；窗口外退回 ReadIndex。Follower 的时钟如果快过这个漂移上界，仍可能在 Leader 认为租约有效时开始竞选。`--request_timeout_ms` 默认 0。大于 0 时，已经进入日志的命令到期后只回复一次 `-ERR request timeout; outcome unknown`，条目留下，恢复多数派后仍会提交；还没提案的队列项到期后丢掉，回复 `-ERR request timeout`。其他网络故障、真实存储故障和长期运行验证仍未做。干净系统复现证据包仍未归档。可重复的三节点演示是 `scripts/demo_three_nodes.py`。
+动态成员变更、多分片、网络身份认证和租约读已在本分支实现，默认保持原来的行为：`--shards=1`，`--cluster_token` 和 `--client_token` 为空，`--lease_reads=false`，`--require_request_id=false`。`MEMBER JOIN id host port` 可以加入静态列表之外的主机，Leader 可以移除自己。一次只能有一个变更，不能把集合减空。多分片时各分片各自选主；本节点不是该分片 Leader 时把 `MEMBER` 转给那个 Leader，还不知道 Leader 时返回 `MOVED -1`。`--cluster_token` 非空时 Raft 帧外面加 HMAC-SHA256，校验失败就关掉连接。`--client_token` 非空时，除 `AUTH` 外的命令在认证前返回 `-ERR NOAUTH Authentication required`。`--lease_reads` 在投票者联系时间的多数派加上（150 ms − 10 ms）之内把读排到当前提交位置，仍要等 `lastApplied`；窗口外退回 ReadIndex。Follower 的时钟如果快过这个漂移上界，仍可能在 Leader 认为租约有效时开始竞选。`--request_timeout_ms` 默认 0。大于 0 时，已经进入日志的命令到期后只回复一次 `-ERR request timeout; outcome unknown`，条目留下，恢复多数派后仍会提交；还没提案的队列项到期后丢掉，回复 `-ERR request timeout`。打开旧的版本 1 日志快照时，会把那一个整份键读出来拆成 1 MiB 分片，写成版本 2 后删掉原键，日志对象不再留着整份镜像。其他网络故障、真实存储故障和长期运行验证仍未做。干净系统复现证据包仍未归档。可重复的三节点演示是 `scripts/demo_three_nodes.py`。
 
 ## 十一、持续更新日志
 
 以下按验收或归档日期倒序维护；同日记录按本次整理顺序排列。每次更新保留“问题或目标、改动、验证、结果、取舍、证据”六项。代码发布早于实测归档时，分别注明，避免把工具发布当成实验完成。
+
+### 2026-09-24｜旧快照打开时改成分片
+
+- **问题或目标**：版本 1 的日志快照把整份镜像放在一个键里。打开之后，`RaftLog` 会一直留着那份字符串。
+- **本次改动**：打开这种日志时，先丢掉未完成的暂存分片，再按 1 MiB 写成现在的分片键，元数据改成版本 2，并删掉原来的整份键。改完后按区间读取。
+- **验证环境与方法**：可移植 CTest。`raft_log_tests` 放入一份比 1 MiB 多 3 字节的版本 1 镜像，检查打开后的元数据、分片块数、末尾字节和再次打开后的后缀日志。Linux 三进程冒烟这次没有重跑。
+- **实测结果**：可移植 CTest 16/16 通过。元数据变成版本 2，整份键消失，分片是两块，末尾仍是 `old`。没有新的性能数字。
+- **取舍与未完成事项**：这一次打开仍要读出那个旧键才能拆开，拆开后就释放。Follower 时钟快过 10 ms 时，租约读仍不安全。这一节不在标签 `v0.3.0`，也不在 `main` 的 `531fcf4` 或 `v0.2.0` 的 `8f5142f`。
+- **关联提交**：在 `cursor/prd-progress-386d` 的 `4351589` 之上。
 
 ### 2026-09-24｜写入等待超时
 

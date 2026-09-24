@@ -41,11 +41,10 @@ void RaftLog::LoadSnapshot() {
     _snapshot_index = static_cast<int64_t>(index);
     _snapshot_term = static_cast<int32_t>(term);
     if (meta[0] == 1) {
-        const auto data_status = _db->Get(rocksdb::ReadOptions(), SnapshotDataKey(), &_legacy_snapshot);
+        const auto data_status = _db->Get(rocksdb::ReadOptions(), SnapshotDataKey(), &_legacy_image);
         RequireStorageOK(data_status, "read Raft snapshot data");
-        if (_legacy_snapshot.empty()) throw std::runtime_error("corrupt Raft snapshot");
-        _snapshot_size = _legacy_snapshot.size();
-        _snapshot_chunks = 1;
+        if (_legacy_image.empty()) throw std::runtime_error("corrupt Raft snapshot");
+        _snapshot_size = _legacy_image.size();
         return;
     }
     if (meta.size() != 21) throw std::runtime_error("corrupt Raft snapshot");
@@ -74,6 +73,7 @@ RaftLog::RaftLog(const std::string& path) {
     RequireStorageOK(status, "open Raft log");
     LoadSnapshot();
     DiscardPartialChunks();
+    MigrateLegacySnapshot();
 
     // Validate the durable sequence instead of interpreting hard state as a log.
     // Entries begin at the snapshot index. The snapshot keys are not log indexes.
@@ -253,15 +253,21 @@ void RaftLog::ReadRange(char kind, uint32_t generation, size_t size, size_t offs
         n -= take;
     }
 }
-void RaftLog::ReadSnapshot(size_t offset, size_t n, std::string* out) const {
-    if (!_legacy_snapshot.empty()) {
-        out->clear();
-        if (n == 0) return;
-        if (offset > _snapshot_size || n > _snapshot_size - offset)
-            throw std::runtime_error("snapshot read out of range");
-        out->assign(_legacy_snapshot, offset, n);
-        return;
+void RaftLog::MigrateLegacySnapshot() {
+    if (_legacy_image.empty()) return;
+    const uint32_t generation = NextGeneration();
+    uint32_t count = 0;
+    for (size_t offset = 0; offset < _legacy_image.size(); offset += kStoreChunkBytes) {
+        const size_t n = std::min(kStoreChunkBytes, _legacy_image.size() - offset);
+        WriteChunk('c', generation, count, _legacy_image.substr(offset, n));
+        ++count;
     }
+    const int64_t index = _snapshot_index;
+    const int32_t term = _snapshot_term;
+    const size_t bytes = _legacy_image.size();
+    FinishSnapshot(index, term, bytes, count, generation);
+}
+void RaftLog::ReadSnapshot(size_t offset, size_t n, std::string* out) const {
     ReadRange('c', _snapshot_generation, _snapshot_size, offset, n, out);
 }
 std::string RaftLog::SnapshotData() const {
@@ -360,7 +366,8 @@ void RaftLog::FinishSnapshot(int64_t index, int32_t term, size_t bytes, uint32_t
         _last_index = index;
         _last_term = term;
     }
-    _legacy_snapshot.clear();
+    _legacy_image.clear();
+    _legacy_image.shrink_to_fit();
     _snapshot_index = index;
     _snapshot_term = term;
     _snapshot_size = bytes;
@@ -381,7 +388,7 @@ void RaftLog::DiscardPartialChunks() {
             uint32_t generation = 0;
             for (int i = 6; i < 10; ++i)
                 generation = (generation << 8) | static_cast<uint8_t>(key[static_cast<size_t>(i)]);
-            const bool current = _legacy_snapshot.empty() && _snapshot_index > 0 &&
+            const bool current = _legacy_image.empty() && _snapshot_index > 0 &&
                                  generation == _snapshot_generation && generation != 0;
             if (!current) drop.push_back(key);
         }

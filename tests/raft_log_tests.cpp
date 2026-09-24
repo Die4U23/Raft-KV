@@ -191,16 +191,42 @@ static void LegacySnapshotImageReloads() {
     meta[0] = 1;
     meta[8] = 2;
     meta[9] = 1;
+    const std::string image = std::string(RaftLog::kStoreChunkBytes, 'a') + "old";
     state->data[std::string("\x01snapmeta", 9)] = meta;
-    state->data[std::string("\x01snapdata", 9)] = "old";
+    state->data[std::string("\x01snapdata", 9)] = image;
     std::string stray(1, '\x01');
     stray.append("snapr");
     stray.append(4, '\0');
     state->data[stray] = "partial";
-    RaftLog log(path);
-    Check(log.SnapshotIndex() == 2 && log.SnapshotTerm() == 1 && log.SnapshotData() == "old" &&
-          state->data.count(stray) == 0,
-          "legacy snapshot did not reload or a partial chunk survived open");
+    {
+        RaftLog log(path);
+        std::string tail;
+        log.ReadSnapshot(RaftLog::kStoreChunkBytes, 3, &tail);
+        int chunks = 0;
+        size_t largest = 0;
+        for (const auto& item : state->data) {
+            if (item.first.size() >= 6 && item.first[0] == '\x01' &&
+                item.first.compare(1, 5, "snapc") == 0) {
+                ++chunks;
+                if (item.second.size() > largest) largest = item.second.size();
+            }
+        }
+        const std::string& stored = state->data[std::string("\x01snapmeta", 9)];
+        Check(log.SnapshotIndex() == 2 && log.SnapshotTerm() == 1 &&
+              tail == "old" && log.SnapshotData() == image &&
+              state->data.count(stray) == 0 &&
+              state->data.count(std::string("\x01snapdata", 9)) == 0 &&
+              stored.size() == 21 && stored[0] == 2 &&
+              chunks == 2 && largest == RaftLog::kStoreChunkBytes,
+              "legacy snapshot was not rewritten into chunks");
+        log.Append(Entry(3, 1, "after"));
+    }
+    RaftLog reopened(path);
+    raftcore::LogEntry entry;
+    Check(reopened.SnapshotData() == image && reopened.LastIndex() == 3 &&
+          reopened.Get(3, &entry) && entry.command() == "after" &&
+          state->data.count(std::string("\x01snapdata", 9)) == 0,
+          "rewritten legacy snapshot did not reopen with its suffix");
 }
 
 static void ScanRejectsNonContiguousLog() {

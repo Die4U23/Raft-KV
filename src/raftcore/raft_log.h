@@ -68,6 +68,9 @@ private:
     static std::string SnapshotGenKey();
     static std::string ChunkKey(char kind, uint32_t generation, uint32_t index);
     void LoadSnapshot();
+    // Version 1 stores the image in one key. Split it into chunk keys on open
+    // and drop that key, so the log object does not keep the image.
+    void MigrateLegacySnapshot();
     uint32_t NextGeneration() const;
     void WriteChunk(char kind, uint32_t generation, uint32_t index, const std::string& data);
     void ReadChunk(char kind, uint32_t generation, uint32_t index, std::string* out) const;
@@ -87,6 +90,6 @@ private:
     uint32_t _snapshot_generation = 0;
     size_t _staging_size = 0;
     uint32_t _staging_chunks = 0;
-    // Only set when opening a snapshot written before chunked storage.
-    std::string _legacy_snapshot;
+    // Version 1 image, kept only until MigrateLegacySnapshot finishes.
+    std::string _legacy_image;
 };
