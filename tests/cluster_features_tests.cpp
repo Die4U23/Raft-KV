@@ -60,6 +60,81 @@ static void LeaseReadServesWithoutProbeAndWaitsForApply() {
     Check(Metric(cluster.Node(10), "lease_reads") == served, "expired lease was counted as a lease read");
 }
 
+// The follower starts its election timer when the RPC arrives. Stamping
+// contact at ACK arrival let a slow return path keep the lease alive after
+// that follower could campaign. Contact is the first send time instead.
+static void LeaseReadExpiresFromSendTimeWhenAckIsDelayed() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    cluster.Node(10).SetLeaseReads(true);
+    cluster.messages.clear();
+    for (int tick = 0; tick < 5; ++tick) cluster.Node(10).Tick();
+    auto appends = TakeAppendsFrom(cluster, 10);
+    Check(appends.size() == 2, "heartbeat did not reach both followers");
+
+    const int one_way = 30;
+    auto advance_all = [&](int ms) {
+        for (int id : {10, 30, 50}) cluster.Advance(id, ms);
+    };
+    advance_all(one_way);
+    std::vector<Message> acks;
+    for (const auto& append : appends)
+        acks.push_back(DeliverAppendAndTakeAck(cluster, append));
+    advance_all(one_way);
+    for (const auto& ack : acks) cluster.Deliver(ack);
+
+    bool served = false;
+    Check(cluster.Node(10).RequestReadIndex([&](bool success, int64_t, const std::string&) {
+        served = success;
+    }), "lease inside the send-time window was rejected");
+    Check(served, "send-time lease refused a read before the hold elapsed");
+    Check(cluster.messages.empty(), "in-window lease read sent a probe");
+    const auto reads = Metric(cluster.Node(10), "lease_reads");
+    Check(reads == 1, "in-window lease was not counted");
+
+    // Follower received the heartbeat one_way after the send, so its earliest
+    // campaign is kMinElectionTimeoutMs after that. The leader clock moves
+    // with it. Arrival-time contact would still cover this instant.
+    advance_all(RaftNode::kMinElectionTimeoutMs - one_way);
+    bool late = false;
+    Check(cluster.Node(10).RequestReadIndex([&](bool, int64_t, const std::string&) { late = true; }),
+          "read after the follower's earliest campaign was rejected");
+    Check(!late, "lease stayed valid until the delayed acknowledgement");
+    Check(Metric(cluster.Node(10), "lease_reads") == reads,
+          "post-campaign read was counted as a lease read");
+
+    cluster.Deliver(acks.front());
+    bool stale = false;
+    Check(cluster.Node(10).RequestReadIndex([&](bool, int64_t, const std::string&) { stale = true; }),
+          "read after a stale acknowledgement was rejected");
+    Check(!stale, "a mismatched acknowledgement refreshed the lease");
+    Check(Metric(cluster.Node(10), "lease_reads") == reads,
+          "stale acknowledgement was counted as a lease read");
+}
+
+// CheckQuorum stays on reply-arrival time. Anchoring it at the send time
+// steps a live leader down once the round trip exceeds the drift budget.
+static void DelayedAckKeepsCheckQuorum() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    cluster.messages.clear();
+    for (int tick = 0; tick < 5; ++tick) cluster.Node(10).Tick();
+    auto appends = TakeAppendsFrom(cluster, 10);
+    Check(appends.size() == 2, "heartbeat did not reach both followers");
+    const int one_way = 30;
+    for (int id : {10, 30, 50}) cluster.Advance(id, one_way);
+    std::vector<Message> acks;
+    for (const auto& append : appends)
+        acks.push_back(DeliverAppendAndTakeAck(cluster, append));
+    for (int id : {10, 30, 50}) cluster.Advance(id, one_way);
+    for (const auto& ack : acks) cluster.Deliver(ack);
+    cluster.Advance(10, RaftNode::kMinElectionTimeoutMs - 1);
+    cluster.Node(10).Tick();
+    Check(cluster.Node(10).IsLeader(), "check quorum expired at the send time");
+}
+
 static void RemovedVoterCannotCampaignAndSnapshotKeepsTheSet() {
     Cluster cluster;
     cluster.Elect(10);
@@ -176,6 +251,8 @@ int main() {
     try {
         ConfigCommandReplicates();
         LeaseReadServesWithoutProbeAndWaitsForApply();
+        LeaseReadExpiresFromSendTimeWhenAckIsDelayed();
+        DelayedAckKeepsCheckQuorum();
         RemovedVoterCannotCampaignAndSnapshotKeepsTheSet();
         JoinedNonVoterEntersTheQuorum();
         NewPeerJoinsByAddress();

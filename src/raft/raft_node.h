@@ -125,8 +125,14 @@ public:
     static constexpr int kMinElectionTimeoutMs = 150;
     static constexpr int kMaxElectionTimeoutMs = 300;
     // Subtracted from the minimum election timeout before a lease read is served.
-    // Each process has its own clock. A follower that is ahead by more than this
-    // bound can campaign while the leader still treats the lease as valid.
+    // A remote voter's contact is the send time of the AppendEntries or
+    // InstallSnapshot RPC this leader has since matched, not the time the
+    // acknowledgement arrived. The follower resets its election timer when
+    // that RPC arrives, later by the one-way delay, so a return-path delay
+    // cannot extend the lease past the follower's earliest campaign. A
+    // follower clock that runs more than this bound fast over one election
+    // timeout can still campaign while the leader treats the lease as valid.
+    // The bound does not also pay for network delay.
     static constexpr int kLeaseClockDriftMs = 10;
     // Compact after this many applied entries past the previous snapshot.
     static constexpr int64_t kSnapshotDistance = 1024;
@@ -140,7 +146,10 @@ private:
         int elapsed_ms = 0;
         size_t entries = 0;
         RaftMsgType type = RaftMsgType::kAppendEntries;
+        // Latency samples use the process steady clock. sent_at uses Now(),
+        // including the test clock, and stays at the first transmission.
         SteadyClock::time_point first_send;
+        SteadyClock::time_point sent_at{};
         std::string payload;
         // Compact waits until this transfer ends. The image stays in chunk
         // keys, and a newer snapshot must not replace those keys mid-send.
@@ -182,6 +191,8 @@ private:
     void ResetElectionTimer();
     SteadyClock::time_point Now() const;
     void NotePeerContact(int peer);
+    // Move this peer's contact forward to the send time of a matched RPC.
+    void NotePeerAck(int peer, SteadyClock::time_point sent_at);
     void CheckQuorum();
     bool IsLogUpToDate(int64_t index, int64_t term) const;
     bool IsRemotePeer(int id) const;
@@ -254,7 +265,11 @@ private:
     // fixed 10 ms, so an early timer wakeup cannot open a ReadIndex window.
     SteadyClock::time_point _election_deadline{};
     SteadyClock::time_point _leader_since{};
+    // CheckQuorum: arrival time of a same-term reply. A slow reply must not
+    // make a live leader step down.
     std::map<int, SteadyClock::time_point> _peer_active;
+    // Lease reads: first send time of a matched AppendEntries or snapshot RPC.
+    std::map<int, SteadyClock::time_point> _lease_contact;
     std::function<SteadyClock::time_point()> _clock;
     int _heartbeat_timer_ms = 0;
     struct Pending {
