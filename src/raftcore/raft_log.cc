@@ -34,8 +34,13 @@ RaftLog::RaftLog(const std::string& path) {
         _last_term = entry.term();
     }
     RequireStorageOK(it->status(), "scan Raft log");
-    RequireStorageOK(_db->Put(DurableWriteOptions(), TailKey(), EncodeTail(_last_index, _last_term)),
-                     "persist Raft log tail");
+    // An empty database has nothing to record. Writing a 0/0 tail here would be a
+    // second sync on the first append batch. The next append, truncate, or snapshot
+    // stores the tail in that same batch. A non-empty legacy log is recorded once.
+    if (_last_index > 0) {
+        RequireStorageOK(_db->Put(DurableWriteOptions(), TailKey(), EncodeTail(_last_index, _last_term)),
+                         "persist Raft log tail");
+    }
 }
 RaftLog::~RaftLog() = default;
 
