@@ -102,6 +102,34 @@ static void HardStateRoundTrip() {
           "reopened log lost hard state");
 }
 
+static void SnapshotKeepsSuffixAndReopens() {
+    const std::string path = "raft-log/snapshot";
+    {
+        RaftLog log(path);
+        log.AppendBatch({Entry(1, 1, "a"), Entry(2, 1, "b"), Entry(3, 2, "c")});
+        log.CompactApplied(2, 1, "state-at-2");
+        raftcore::LogEntry entry;
+        Check(log.SnapshotIndex() == 2 && log.SnapshotTerm() == 1, "snapshot metadata missing");
+        Check(log.SnapshotData() == "state-at-2", "snapshot bytes missing");
+        Check(log.GetTerm(2) == 1 && !log.Get(1, &entry) && !log.Get(2, &entry),
+              "compacted prefix still readable");
+        Check(log.Get(3, &entry) && entry.command() == "c" && log.LastIndex() == 3,
+              "suffix did not survive compaction");
+        Throws([&] { log.TruncateSuffix(2); });
+        log.TruncateSuffix(3);
+        Check(log.LastIndex() == 2 && log.LastTerm() == 1, "truncate did not stop at the snapshot");
+    }
+    RaftLog reopened(path);
+    raftcore::LogEntry entry;
+    Check(reopened.SnapshotIndex() == 2 && reopened.SnapshotData() == "state-at-2" &&
+          reopened.LastIndex() == 2 && !reopened.Get(3, &entry),
+          "reopened snapshot did not match the compacted log");
+    reopened.InstallSnapshot(5, 4, "state-at-5");
+    Check(reopened.SnapshotIndex() == 5 && reopened.LastIndex() == 5 &&
+          reopened.LastTerm() == 4 && reopened.GetTerm(5) == 4 && !reopened.Get(5, &entry),
+          "install did not discard the divergent suffix");
+}
+
 static void ScanRejectsNonContiguousLog() {
     const std::string path = "raft-log/gap";
     {
@@ -121,6 +149,7 @@ int main() {
         AppendGetTruncateAndReopen();
         RejectInvalidAppends();
         HardStateRoundTrip();
+        SnapshotKeepsSuffixAndReopens();
         ScanRejectsNonContiguousLog();
         Check(checks >= 20, "too few RaftLog assertions");
         std::cout << "PASS: production RaftLog (" << checks << " checks)\n";
