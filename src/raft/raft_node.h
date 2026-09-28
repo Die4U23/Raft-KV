@@ -148,6 +148,9 @@ private:
     void SendSnapshotChunk(int peer);
     void BroadcastAppendEntries();
     void MaybeSnapshot();
+    // First index of the term at `index`. A term that continues into the
+    // snapshot is reported as the snapshot index so the leader installs it.
+    int64_t ConflictIndex(int64_t index) const;
     void AdvanceCommitIndex();
     void ApplyCommitted();
     void FinishApply(int64_t first, size_t count, const ApplyExecutor::Results& results,

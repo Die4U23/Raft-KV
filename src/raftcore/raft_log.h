@@ -37,7 +37,12 @@ private:
     static std::string IndexToKey(int64_t index);
     static std::string SnapshotMetaKey();
     static std::string SnapshotDataKey();
+    static std::string TailKey();
+    static std::string EncodeTail(int64_t index, int64_t term);
+    void PutTail(rocksdb::WriteBatch* batch, int64_t index, int64_t term);
     void LoadSnapshot();
+    // False when this log was written before tail metadata existed.
+    bool LoadTail();
     void PersistSnapshot(int64_t index, int64_t term, const std::string& data, bool keep_suffix);
     std::unique_ptr<rocksdb::DB> _db;
     int64_t _last_index = 0;

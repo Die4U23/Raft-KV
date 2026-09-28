@@ -404,6 +404,15 @@ void RaftNode::HandleAppendEntries(int from, const raftcore::AppendEntries& requ
             ApplyCommitted();
             response.set_success(true);
             response.set_last_log_index(matched);
+        } else if (request.prev_log_index() <= _log->LastIndex()) {
+            // A longer divergent log used to leave last_log_index at the follower's
+            // end, so the leader stepped nextIndex back by one. Point at the first
+            // index of this term instead; the leader jumps, and installs a snapshot
+            // when that index has already been compacted.
+            const int64_t have = _log->GetTerm(request.prev_log_index());
+            const int64_t conflict = have > 0 ? ConflictIndex(request.prev_log_index())
+                                              : _log->SnapshotIndex();
+            response.set_last_log_index(conflict > 0 ? conflict - 1 : 0);
         }
     }
     std::string payload;
@@ -559,6 +568,21 @@ void RaftNode::SetSnapshotChunkBytes(size_t bytes) {
     if (bytes == 0 || bytes > RaftCodec::kMaxFrameSize / 2)
         throw std::invalid_argument("invalid snapshot chunk size");
     _snapshot_chunk_bytes = bytes;
+}
+int64_t RaftNode::ConflictIndex(int64_t index) const {
+    const int64_t term = _log->GetTerm(index);
+    const int64_t snapshot = _log->SnapshotIndex();
+    if (term <= 0) return index;
+    int64_t low = snapshot;
+    int64_t high = index;
+    while (high - low > 1) {
+        const int64_t mid = low + (high - low) / 2;
+        if (_log->GetTerm(mid) == term) high = mid;
+        else low = mid;
+    }
+    if (high == snapshot + 1 && snapshot > 0 && _log->SnapshotTerm() == term)
+        return snapshot;
+    return high;
 }
 void RaftNode::MaybeSnapshot() {
     if (!_running || _apply_inflight || _snapshot_threshold <= 0) return;

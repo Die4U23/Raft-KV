@@ -53,6 +53,71 @@ static void LaggingPeerInstallsChunkedSnapshot() {
           "lagging node trails the snapshot index");
 }
 
+static raftcore::AppendEntries History(int leader, int term, int64_t commit, int count) {
+    raftcore::AppendEntries request;
+    request.set_term(term);
+    request.set_leader_id(leader);
+    request.set_rpc_id(1);
+    request.set_prev_log_index(0);
+    request.set_prev_log_term(0);
+    request.set_leader_commit(commit);
+    for (int index = 1; index <= count; ++index)
+        *request.add_entries() = Entry(index, term, Command({"SET", "default:k", "v"}));
+    return request;
+}
+
+static void DivergentFollowerJumpsToSnapshot() {
+    Cluster cluster;
+    cluster.Partition(50);
+    cluster.Node(50).HandleAppendEntries(30, History(30, 1, 0, 24));
+    cluster.messages.clear();
+    cluster.Node(10).SetSnapshotThreshold(4);
+    cluster.Node(10).HandleAppendEntries(30, History(30, 2, 6, 8));
+    Check(LastResponse(cluster).success(), "leader history was rejected");
+    cluster.Node(30).HandleAppendEntries(10, History(10, 2, 6, 8));
+    cluster.messages.clear();
+    const int64_t snapshot = cluster.Node(10).SnapshotIndex();
+    Check(snapshot >= 4, "applied prefix was not snapshotted");
+    cluster.Elect(10);
+    cluster.Heal(50);
+    cluster.messages.clear();
+    Message append{};
+    bool saw_append = false;
+    for (int tick = 0; tick < 10 && !saw_append; ++tick) {
+        cluster.Advance(10, RaftNode::kTickIntervalMs);
+        cluster.Node(10).Tick();
+        for (const auto& message : cluster.messages) {
+            if (message.to == 50 && message.type == RaftMsgType::kAppendEntries) {
+                append = message;
+                saw_append = true;
+            }
+        }
+    }
+    Check(saw_append, "leader did not probe the divergent follower");
+    raftcore::AppendEntries rpc;
+    Check(rpc.ParseFromString(append.payload), "probe decode");
+    Check(rpc.prev_log_index() > snapshot, "probe was already inside the snapshot");
+    cluster.messages.clear();
+    cluster.Deliver(append);
+    Check(!cluster.messages.empty() &&
+          cluster.messages.back().type == RaftMsgType::kAppendEntriesResponse,
+          "divergent follower did not reject the probe");
+    raftcore::AppendEntriesResponse rejection;
+    Check(rejection.ParseFromString(cluster.messages.back().payload) && !rejection.success() &&
+          rejection.last_log_index() == 0,
+          "rejection did not jump to the start of the conflicting term");
+    auto response = cluster.messages.back();
+    cluster.messages.clear();
+    cluster.Deliver(response);
+    bool install = false;
+    for (const auto& message : cluster.messages) {
+        Check(!(message.to == 50 && message.type == RaftMsgType::kAppendEntries),
+              "leader walked nextIndex back by one entry");
+        if (message.to == 50 && message.type == RaftMsgType::kInstallSnapshot) install = true;
+    }
+    Check(install, "leader did not switch to InstallSnapshot");
+}
+
 static void OlderSnapshotDoesNotReplaceState() {
     Cluster cluster({10, 30});
     cluster.Elect(10);
@@ -80,6 +145,7 @@ int main() {
     try {
         SnapshotSurvivesRestart();
         LaggingPeerInstallsChunkedSnapshot();
+        DivergentFollowerJumpsToSnapshot();
         OlderSnapshotDoesNotReplaceState();
         std::cout << "PASS: snapshots\n";
         return 0;

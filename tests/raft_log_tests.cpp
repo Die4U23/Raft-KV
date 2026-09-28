@@ -130,6 +130,29 @@ static void SnapshotKeepsSuffixAndReopens() {
           "install did not discard the divergent suffix");
 }
 
+static void TailOpenChecksLastEntryOnly() {
+    const std::string path = "raft-log/tail";
+    {
+        RaftLog log(path);
+        log.AppendBatch({Entry(1, 1, "a"), Entry(2, 1, "b"), Entry(3, 2, "c")});
+    }
+    auto state = rocksdb::testing::StateFor(path);
+    std::string middle(8, '\0');
+    middle[7] = 2;
+    state->data[middle] = "junk";
+    {
+        RaftLog log(path);
+        Check(log.LastIndex() == 3 && log.LastTerm() == 2, "tail open ignored the saved tail");
+        raftcore::LogEntry entry;
+        Check(log.Get(3, &entry) && entry.command() == "c", "tail entry unreadable");
+        Throws([&] { log.Get(2, &entry); });
+    }
+    std::string tail(8, '\0');
+    tail[7] = 3;
+    state->data.erase(tail);
+    Throws([&] { RaftLog log(path); });
+}
+
 static void ScanRejectsNonContiguousLog() {
     const std::string path = "raft-log/gap";
     {
@@ -137,6 +160,7 @@ static void ScanRejectsNonContiguousLog() {
         log.Append(Entry(1, 1));
     }
     auto state = rocksdb::testing::StateFor(path);
+    state->data.erase("raftkv-log-tail");
     std::string key(8, '\0');
     key[7] = 3;
     state->data[key] = "junk";
@@ -150,6 +174,7 @@ int main() {
         RejectInvalidAppends();
         HardStateRoundTrip();
         SnapshotKeepsSuffixAndReopens();
+        TailOpenChecksLastEntryOnly();
         ScanRejectsNonContiguousLog();
         Check(checks >= 20, "too few RaftLog assertions");
         std::cout << "PASS: production RaftLog (" << checks << " checks)\n";
