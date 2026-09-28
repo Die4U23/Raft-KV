@@ -15,12 +15,15 @@ RaftLog::RaftLog(const std::string& path) {
     LoadSnapshot();
     _last_index = _snapshot_index;
     _last_term = _snapshot_term;
+    if (LoadTail()) return;
 
-    // Validate the durable sequence instead of interpreting hard state as a log.
+    // Logs written before the tail record still need one contiguous scan.
+    // The scan result is stored so the next open checks only the last entry.
     std::unique_ptr<rocksdb::Iterator> it(_db->NewIterator(rocksdb::ReadOptions()));
     for (it->SeekToFirst(); it->Valid(); it->Next()) {
         const std::string key = it->key().ToString();
-        if (key == IndexToKey(0) || key == SnapshotMetaKey() || key == SnapshotDataKey()) continue;
+        if (key == IndexToKey(0) || key == SnapshotMetaKey() || key == SnapshotDataKey() ||
+            key == TailKey()) continue;
         raftcore::LogEntry entry;
         if (_last_index == std::numeric_limits<int64_t>::max() ||
             key != IndexToKey(_last_index + 1) ||
@@ -31,11 +34,34 @@ RaftLog::RaftLog(const std::string& path) {
         _last_term = entry.term();
     }
     RequireStorageOK(it->status(), "scan Raft log");
+    // An empty database has nothing to record. Writing a 0/0 tail here would be a
+    // second sync on the first append batch. The next append, truncate, or snapshot
+    // stores the tail in that same batch. A non-empty legacy log is recorded once.
+    if (_last_index > 0) {
+        RequireStorageOK(_db->Put(DurableWriteOptions(), TailKey(), EncodeTail(_last_index, _last_term)),
+                         "persist Raft log tail");
+    }
 }
 RaftLog::~RaftLog() = default;
 
 std::string RaftLog::SnapshotMetaKey() { return "raftkv-snapshot-meta"; }
 std::string RaftLog::SnapshotDataKey() { return "raftkv-snapshot-data"; }
+std::string RaftLog::TailKey() { return "raftkv-log-tail"; }
+std::string RaftLog::EncodeTail(int64_t index, int64_t term) {
+    std::string out(16, '\0');
+    uint64_t fields[] = {static_cast<uint64_t>(index), static_cast<uint64_t>(term)};
+    for (int field = 0; field < 2; ++field) {
+        auto value = fields[field];
+        for (int byte = 7; byte >= 0; --byte) {
+            out[field * 8 + byte] = static_cast<char>(value & 0xff);
+            value >>= 8;
+        }
+    }
+    return out;
+}
+void RaftLog::PutTail(rocksdb::WriteBatch* batch, int64_t index, int64_t term) {
+    batch->Put(TailKey(), EncodeTail(index, term));
+}
 std::string RaftLog::IndexToKey(int64_t index) {
     std::string key(8, '\0');
     auto value = static_cast<uint64_t>(index);
@@ -61,6 +87,7 @@ void RaftLog::AppendBatch(const std::vector<raftcore::LogEntry>& entries) {
         batch.Put(IndexToKey(entry.index()), value);
         last = entry.index();
     }
+    PutTail(&batch, last, entries.back().term());
     RequireStorageOK(_db->Write(DurableWriteOptions(), &batch), "append Raft log batch");
     _last_index = last;
     _last_term = entries.back().term();
@@ -91,6 +118,7 @@ void RaftLog::TruncateSuffix(int64_t start) {
         batch.Delete(IndexToKey(index));
         if (index == _last_index) break;
     }
+    PutTail(&batch, new_last_index, new_last_term);
     RequireStorageOK(_db->Write(DurableWriteOptions(), &batch), "truncate Raft log");
     _last_index = new_last_index;
     _last_term = new_last_term;
@@ -148,6 +176,37 @@ void RaftLog::LoadSnapshot() {
     _snapshot_term = static_cast<int64_t>(fields[1]);
     _snapshot_data = std::move(data);
 }
+bool RaftLog::LoadTail() {
+    std::string raw;
+    const auto status = _db->Get(rocksdb::ReadOptions(), TailKey(), &raw);
+    if (status.IsNotFound()) return false;
+    RequireStorageOK(status, "read Raft log tail");
+    if (raw.size() != 16) throw std::runtime_error("corrupt Raft log tail");
+    uint64_t fields[2] = {};
+    for (int field = 0; field < 2; ++field)
+        for (int byte = 0; byte < 8; ++byte)
+            fields[field] = (fields[field] << 8) | static_cast<uint8_t>(raw[field * 8 + byte]);
+    if (fields[0] > uint64_t(INT64_MAX) || fields[1] > uint64_t(INT32_MAX))
+        throw std::runtime_error("invalid Raft log tail");
+    const auto index = static_cast<int64_t>(fields[0]);
+    const auto term = static_cast<int64_t>(fields[1]);
+    if (index < _snapshot_index) throw std::runtime_error("Raft log tail precedes its snapshot");
+    if (index == 0) {
+        if (term != 0 || _snapshot_index != 0) throw std::runtime_error("invalid empty Raft log tail");
+    } else if (index == _snapshot_index) {
+        if (term != _snapshot_term) throw std::runtime_error("Raft log tail does not match its snapshot");
+    } else {
+        std::string value;
+        RequireStorageOK(_db->Get(rocksdb::ReadOptions(), IndexToKey(index), &value),
+                         "read Raft log tail entry");
+        raftcore::LogEntry entry;
+        if (!entry.ParseFromString(value) || entry.index() != index || entry.term() != term || term <= 0)
+            throw std::runtime_error("corrupt Raft log tail entry");
+    }
+    _last_index = index;
+    _last_term = term;
+    return true;
+}
 void RaftLog::CompactApplied(int64_t index, int64_t term, const std::string& data) {
     if (index <= _snapshot_index) return;
     if (index > _last_index || GetTerm(index) != term)
@@ -179,6 +238,7 @@ void RaftLog::PersistSnapshot(int64_t index, int64_t term, const std::string& da
     rocksdb::WriteBatch batch;
     batch.Put(SnapshotMetaKey(), meta);
     batch.Put(SnapshotDataKey(), data);
+    PutTail(&batch, keep_suffix ? _last_index : index, keep_suffix ? _last_term : term);
     const int64_t delete_through = keep_suffix ? index : _last_index;
     for (int64_t entry = _snapshot_index + 1; entry <= delete_through; ++entry) {
         batch.Delete(IndexToKey(entry));

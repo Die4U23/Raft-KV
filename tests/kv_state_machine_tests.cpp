@@ -97,6 +97,36 @@ static void ApplyMatchesApplyBatchAndReopen() {
           "reopened machine lost applied keys");
 }
 
+static void IdempotentReplayAndSnapshot() {
+    KVStateMachine machine("kv-sm/idemp");
+    const auto first = Command({"IDEMP", "c", "1", "SET", "default:k", "one"});
+    const auto replay = Command({"IDEMP", "c", "1", "SET", "default:k", "other"});
+    const auto batch = machine.ApplyBatch(1, {first, replay});
+    std::string value;
+    Check(batch.size() == 2 && batch[0] == "+OK\r\n" && batch[1] == "+OK\r\n" &&
+          machine.Get("default:k", &value) && value == "one",
+          "repeated request id wrote the second value");
+    Check(machine.Apply(3, Command({"IDEMP", "c", "1", "DEL", "default:k"})) == "+OK\r\n" &&
+          machine.Get("default:k", &value) && value == "one",
+          "replayed SET id executed as DEL");
+    Check(machine.Apply(4, Command({"IDEMP", "c", "2", "DEL", "default:k"})) == ":1\r\n" &&
+          !machine.Get("default:k", &value), "new DEL id did not delete");
+    Check(machine.Apply(5, Command({"IDEMP", "c", "2", "DEL", "default:k"})) == ":1\r\n",
+          "replayed DEL changed its reply");
+    Check(machine.Apply(6, Command({"IDEMP", "c", "1", "SET", "default:k", "back"})) ==
+          "-ERR stale request\r\n" && !machine.Get("default:k", &value),
+          "stale request id mutated the key");
+    Check(machine.Apply(7, Command({"IDEMP", "other", "1", "SET", "default:k", "two"})) == "+OK\r\n" &&
+          machine.Get("default:k", &value) && value == "two",
+          "a different client id was treated as a replay");
+    const auto retried_delete = Command({"IDEMP", "c", "2", "DEL", "default:k"});
+    KVStateMachine restored("kv-sm/idemp-snap");
+    restored.InstallSnapshot(machine.LastApplied(), machine.ExportSnapshot());
+    Check(restored.Apply(machine.LastApplied() + 1, retried_delete) == ":1\r\n" &&
+          restored.Get("default:k", &value) && value == "two",
+          "snapshot lost the idempotent reply and replayed the delete");
+}
+
 static void LegacyStoreWithoutMarkerIsRejected() {
     const std::string path = "kv-sm/legacy";
     auto state = rocksdb::testing::StateFor(path);
@@ -111,6 +141,7 @@ int main() {
         BinaryAndNamespacedKeys();
         RejectUnsupportedCommittedCommands();
         ApplyMatchesApplyBatchAndReopen();
+        IdempotentReplayAndSnapshot();
         LegacyStoreWithoutMarkerIsRejected();
         Check(checks >= 20, "too few KV assertions");
         std::cout << "PASS: production KVStateMachine (" << checks << " checks)\n";

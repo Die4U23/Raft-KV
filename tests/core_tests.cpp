@@ -71,7 +71,12 @@ static void PrefixConflictAndCommitBound() {
     request = Append(2, 2, 1, 2, 0);
     cluster.Node(10).HandleAppendEntries(30, request);
     auto response = LastResponse(cluster);
-    Check(!response.success() && response.last_log_index() == 2, "prefix rejection deleted log suffix");
+    Check(!response.success() && response.last_log_index() == 0,
+          "prefix rejection did not point at the conflicting term");
+    request = Append(2, 8, 2, 1, 0);
+    cluster.Node(10).HandleAppendEntries(30, request);
+    response = LastResponse(cluster);
+    Check(response.success() && response.last_log_index() == 2, "prefix rejection deleted log suffix");
     // A short heartbeat can confirm only index 1, despite a longer local tail.
     request = Append(2, 3, 1, 1, 2);
     cluster.Node(10).HandleAppendEntries(30, request);

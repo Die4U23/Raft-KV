@@ -15,6 +15,8 @@ public:
         int64_t index;
         Kind kind;
         std::string key, value;
+        // Written in the same batch as the user mutation. Empty means no session update.
+        std::string session_key, session_value;
     };
     explicit RocksDBStore(const std::string& db_path);
     ~RocksDBStore();

@@ -310,7 +310,8 @@ static void ScheduleFlush() {
 static void SubmitWrite(const muduo::net::TcpConnectionPtr& conn,
                         const std::shared_ptr<ClientSession>& session,
                         std::vector<std::string> args) {
-    args[1] = g_namespaces.MakeKey(conn->name(), args[1]);
+    const size_t key_index = WriteKeyIndex(args);
+    args[key_index] = g_namespaces.MakeKey(conn->name(), args[key_index]);
     const std::string command = SerializeCommand(args);
     // Namespace expansion must also fit the state machine's parser limit.
     if (command.size() > RespParser::kMaxCommandBytes) {

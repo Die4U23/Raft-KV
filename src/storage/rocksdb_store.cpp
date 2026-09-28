@@ -72,6 +72,12 @@ std::vector<bool> RocksDBStore::ApplyBatch(const std::vector<Mutation>& mutation
         case Mutation::Kind::Noop: break;
         default: throw std::runtime_error("invalid state machine mutation");
         }
+        if (!mutation.session_key.empty()) {
+            if (mutation.session_key == AppliedKey())
+                throw std::runtime_error("client session collides with lastApplied");
+            batch.Put(mutation.session_key, mutation.session_value);
+            present[mutation.session_key] = true;
+        }
     }
     std::string value(8, '\0');
     auto encoded = static_cast<uint64_t>(last);
