@@ -1,6 +1,8 @@
 # Ubuntu 构建与验证流程
 
-此流程固化了用户 Ubuntu 26.04 VM 上已验证的 Boost/Muduo 兼容修改，并在构建和测试时记录源码、依赖及服务二进制指纹。Windows 上的准备逻辑测试和可移植 C++ 回归已完成；2026-09-08 回传的 [Linux 自动流程原始证据](benchmarks/linux-workflow-validation.md)也已核验，已有构建目录上的增量流程、CTest 5/5 和真实冒烟 10 项通过。后续[空目录全量编译和测试](benchmarks/linux-fresh-validation.md)也已核验通过；干净系统复现及 Docker 镜像构建仍待验证。此前的[性能测试证据](benchmarks/ubuntu-2cpu-abba.md)属于独立的手工流程。
+此流程固化了 Ubuntu 上的 Boost/Muduo 准备步骤，并在构建和测试时记录源码、依赖及服务二进制指纹。`.github/workflows/linux-cluster.yml` 会在 GitHub 托管的 Ubuntu 上安装依赖、执行 `scripts/build_linux.py --jobs 2 --smoke`，再跑 `tests/cluster_linearizable.py`。
+
+2026-09-08 的 [增量流程](benchmarks/linux-workflow-validation.md) 和 [空目录全量构建](benchmarks/linux-fresh-validation.md) 是提交 `35a348d` 上的归档，CTest 为当时的 5/5，冒烟 10 项。那个数字不是当前可移植套件的规模。Docker 镜像构建不在上述 workflow 里。此前的[性能测试证据](benchmarks/ubuntu-2cpu-abba.md)属于独立的手工流程。
 
 ## 改动与依赖范围
 
