@@ -1,44 +1,67 @@
-# 编译产物
+# ===== 构建产物 =====
 build/
 build2/
 build-*/
+cmake-build-*/
 *.o
+*.obj
 *.so
 *.a
+*.lib
+*.dll
+*.dylib
 *.exe
 *.out
+*.app
 
-# CMake 生成文件
+# ===== CMake 生成文件 =====
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
+CTestTestfile.cmake
 Makefile
 !CMakeLists.txt
+compile_commands.json
 
-# 编辑器
+# ===== CTest 与覆盖率 =====
+Testing/
+coverage/
+*.gcda
+*.gcno
+*.gcov
+
+# ===== 编辑器 / IDE =====
 .vscode/
 .idea/
 .claude/
+.clangd/
+.clang-tidy
+.cache/
 *.swp
 *~
 
-# Docker 构建缓存
+# ===== 操作系统 =====
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== Docker =====
 docker/build-cache/
 
-# 第三方源码解压目录（只保留源码）
+# ===== 第三方源码（只保留压缩包） =====
 third_party/*/
 !third_party/*.zip
 
-# 日志文件
+# ===== 日志 / 临时 / 备份 =====
 *.log
-
-# 备份文件
+*.tmp
 *.bak
 
-# 临时文件
-tmp/
+# ===== Python =====
 __pycache__/
-*.pyc
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
 
-# PR 描述文件（本地使用）
+# ===== 本地 PR 描述文件 =====
 PR_DESCRIPTION.md
