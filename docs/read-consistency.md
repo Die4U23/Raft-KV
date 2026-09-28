@@ -202,7 +202,7 @@ redis-cli -p 8080 GET user:1
 
 ### 短期（下个版本）
 
-ReadIndex、Pre-Vote、快照和 `IDEMP` 去重已经在当前代码里。Lease read 仍未做：它需要时钟同步假设，用来省掉每次读取的多数派往返。
+ReadIndex、Pre-Vote、快照和 `IDEMP` 去重已经在当前代码里。`--lease_reads=true` 配合 `--linearizable_reads=true` 时，Leader 在本任期满 300 ms、且多数派 150 ms 内应答过，可以不再为这条 GET 发探针。新任期的前 300 ms，以及联系变旧时，仍走 ReadIndex。Follower 不提供租约读。
 
 ### 长期
 

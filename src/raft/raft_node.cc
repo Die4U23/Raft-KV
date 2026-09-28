@@ -45,6 +45,7 @@ std::string RaftNode::MetricsInfo() const {
     info += "read_index_timeout:" + std::to_string(_read_index_timeout) + "\r\n";
     info += "read_index_not_leader:" + std::to_string(_read_index_not_leader) + "\r\n";
     info += "read_index_overload:" + std::to_string(_read_index_overload) + "\r\n";
+    info += "read_index_lease:" + std::to_string(_read_index_lease) + "\r\n";
 
     info += "read_index_pending:" + std::to_string(PendingReadIndexCount()) + "\r\n";
 
@@ -252,6 +253,26 @@ void RaftNode::CheckQuorum() {
                                << _current_term << " fresh=" << fresh
                                << " need=" << QuorumSize();
     BecomeFollower(_current_term);
+}
+bool RaftNode::ReadLeaseValid() const {
+    // A follower will not campaign for up to the longest election timeout after
+    // hearing this leader, and the previous leader has already lost its lease:
+    // this term is at least that old, and a majority answered inside the window
+    // CheckQuorum uses to step down. The leader counts itself.
+    if (!_lease_reads || !IsLeader() || !_can_serve_read) return false;
+    const auto now = Now();
+    if (now - _leader_since < std::chrono::milliseconds(kMaxElectionTimeoutMs))
+        return false;
+    if (QuorumSize() <= 1) return true;
+    const auto window = std::chrono::milliseconds(kMinElectionTimeoutMs);
+    int fresh = 1;
+    for (const auto& peer : _all_peers) {
+        if (peer.id == _node_id) continue;
+        const auto found = _peer_active.find(peer.id);
+        if (found != _peer_active.end() && now - found->second < window)
+            ++fresh;
+    }
+    return fresh >= QuorumSize();
 }
 bool RaftNode::IsLogUpToDate(int64_t index, int64_t term) const {
     return term != _log->LastTerm() ? term > _log->LastTerm() : index >= _log->LastIndex();
@@ -840,6 +861,24 @@ bool RaftNode::RequestReadIndex(ReadIndexCallback callback) {
                                    << "] read index queue full limit=" << kMaxPendingReadIndex;
         callback(false, -1, "read index queue full");
         return false;
+    }
+
+    if (ReadLeaseValid()) {
+        ++_read_index_lease;
+        ReadIndexRequest req;
+        req.read_index = _commit_index;
+        req.callback = std::move(callback);
+        req.created_at = Now();
+        if (_last_applied < req.read_index || _completing_reads) {
+            _pending_reads.push_back(std::move(req));
+            return true;
+        }
+        _completing_reads = true;
+        req.callback(true, req.read_index, "");
+        ++_read_index_succeeded;
+        _completing_reads = false;
+        ProcessPendingReads();
+        return true;
     }
 
     ReadIndexRequest req;

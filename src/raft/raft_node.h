@@ -59,6 +59,9 @@ public:
     // Zero disables snapshots. The server default is separate from unit tests.
     void SetSnapshotThreshold(int64_t entries);
     void SetSnapshotChunkBytes(size_t bytes);
+    // With linearizable reads, skip the ReadIndex round trip while this leader's
+    // lease is valid. A new term waits out the longest election timeout first.
+    void SetLeaseReads(bool enabled) { _lease_reads = enabled; }
     int64_t MatchIndexOf(int peer_id) const {
         const auto found = _match_index.find(peer_id);
         return found == _match_index.end() ? -1 : found->second;
@@ -142,6 +145,7 @@ private:
     SteadyClock::time_point Now() const;
     void NotePeerContact(int peer);
     void CheckQuorum();
+    bool ReadLeaseValid() const;
     bool IsLogUpToDate(int64_t index, int64_t term) const;
     bool IsRemotePeer(int id) const;
     void SendAppendEntries(int peer);
@@ -193,6 +197,7 @@ private:
     std::map<int, Inflight> _inflight;
     SnapshotReceive _snapshot_receive;
     int64_t _snapshot_threshold = 0;
+    bool _lease_reads = false;
     size_t _snapshot_chunk_bytes = 256 * 1024;
     uint64_t _rpc_sequence = 0;
     // Absolute steady-clock deadline. Tick observes it; it does not subtract a
@@ -228,6 +233,7 @@ private:
     uint64_t _read_index_timeout = 0;
     uint64_t _read_index_not_leader = 0;
     uint64_t _read_index_overload = 0;
+    uint64_t _read_index_lease = 0;
 
     // Retry an unacknowledged heartbeat before the minimum election timeout.
     static constexpr int kRpcRetryMs = kHeartbeatIntervalMs;

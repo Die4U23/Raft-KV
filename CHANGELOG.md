@@ -4,6 +4,12 @@
 
 截至 **2026-09-23**，下文按提交与代码核对记录。09-13 之后的条目曾漏记，已补录；不以合并说明或未归档压测数字作为收益证明。
 
+## 2026-09-28 — 租约读：线性一致 GET 在租约有效时不再发探针
+
+- `--lease_reads` 默认关闭，只改变 `--linearizable_reads` 的 Leader GET。本任期已满最长选举超时（300 ms），并且多数派在最短选举超时（150 ms）内应答过，就用当前 `commit_index` 本地确认。`last_applied` 还没追上时仍然等待应用。
+- 新任期的前 300 ms 不使用租约，避免和上一任 Leader 的选举窗口重叠。多数派联系变旧时退回 ReadIndex。Follower 仍然返回 `MOVED`。
+- `read_index_lease` 计本地确认的次数。进程内测试覆盖：新任期发探针、租约新鲜时不发探针、联系变旧时退回探针、未应用的提交不会提前完成读。
+
 ## 2026-09-28 — IDEMP：同一个客户端请求号只执行一次
 
 - 新写命令是 `IDEMP <client-id> <request-id> SET <key> <value>` 和 `IDEMP <client-id> <request-id> DEL <key>`。`request-id` 从 1 起，十进制且不能有前导 0。`client-id` 为 1 到 128 字节。状态机为每个 client id 保存最近一次请求号和回复，与用户写入放在同一次 KV 批里，并随快照安装到其他副本。
