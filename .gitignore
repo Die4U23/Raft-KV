@@ -33,6 +33,7 @@ coverage/
 # ===== 编辑器 / IDE =====
 .vscode/
 .idea/
+.cursor/
 .claude/
 .clangd/
 .clang-tidy
