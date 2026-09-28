@@ -1,89 +1,34 @@
-# 本地优化状态（实现记录 2026-09-04，用户测试证据更新 2026-09-13）
+# 项目状态
 
-优化基线：`raft-cluster-namespace` 的 `bc853d5fe8d0ffddbadbe736ccfe5100c7610b8c`，最初在 `fix/raft-correctness` 分支整理。本文记录实现和测试范围，提交与发布状态以仓库历史为准。
+对应仓库 `main`。历史实验的数字以各自报告的日期和提交为准，不能把旧套件的通过数写成当前测试规模。
 
-## 最新改动：客户端读取对照（2026-09-13，已实测归档）
+## 现在有什么
 
-正常负载[原始诊断已归档核验](benchmarks/profile-validation.md)：100,000 次请求零错误、约 5146 次/秒，正式窗口整机空闲约 4.97%。可选 RESP 头部合并读取及四轮对照的本地辅助检查 16/16 PASS，[真实 Linux 四轮对照](benchmarks/client-header-validation.md)亦已核验，共 400,000 次请求零错误、各轮三副本收敛。本轮合并读取吞吐 −1.53%、客户端 CPU 成本 +7.12%，未观察到收益；保留 classic 默认，服务端二进制不变。[实现与判断边界](optimizations/client-overhead.md)。
+固定成员的单 Raft 组 KV。写路径是 RESP → 每连接队列 → Leader 提案 → 多数派复制 → 顺序应用到 RocksDB。KV 与 `lastApplied` 在同一个 WriteBatch 里提交。
 
-## 重连退避（2026-09-09，Linux 实测已核验）
+- 选举含 Pre-Vote：没有多数派预投票就不抬任期、不写 `votedFor`。
+- Leader 在最短选举超时（150 ms）内没有多数派 AppendEntries 应答时卸任（CheckQuorum）。
+- `--linearizable_reads=true` 时，Leader 的 GET 走 ReadIndex：只接受该读请求之后发出的探针 ACK，探针年龄达到 150 ms 即失败，并等到 `last_applied` 追上后再读。Follower 返回 `MOVED`。默认关闭，默认 GET 是本地读。
+- `--leader_only_reads=true` 只检查本机角色，不是线性一致读。
+- 连接数、输入输出、写队列和提案有上限，过载返回 `BUSY` 或直接关连接。
+- 已提交 KV 批次默认交给串行工作线程；Raft 日志和硬状态仍在所有者线程上同步落盘。
 
-PeerManager 已增加已建连后断线的 0.5/1/2 秒退避、10 秒稳定重置、旧定时任务及对象生命周期保护；建连失败仍使用 Connector 原有策略。Windows CTest 6/6、分区辅助检查 8/8 通过；实现提交 `ef17ef7` 的新版 Linux 构建、CTest 7/7（含真实 Muduo 生命周期）、冒烟 10 项、分区 5 个阶段已[归档核验](benchmarks/reconnect-validation.md)。本次同类分区对比拒绝重连从 24,731 降至 11，完整日志从 5,498,325 降至 146,110 字节；初始 Leader 和选举时序不同，不据此宣称 CPU、QPS 或长期稳定性收益。下文旧版本事实仍保留为历史基线。原因、取舍和验收见[优化记录](optimizations/peer-reconnect-backoff.md)，逐次改动见[更新日志](../CHANGELOG.md)。
+## 现在没有什么
 
-## 已验证
+- 动态成员变更、多分片。
+- 快照、InstallSnapshot、日志压缩。日志会随历史增长，启动时全量扫描。
+- `client_id + request_id` 去重。超时或丢回复后的重试可能执行两次。
+- 租约读。线性一致读每次都要多数派往返。
+- 整机掉电、介质损坏、静默丢包、非对称分区和长时间压测的已核验证据。进程内测试使用存储和网络替身，不能代替这些场景。
 
-原始 RESP 解析器的半包丢失问题已局部复现。新解析器、Raft 帧编解码器、节点配置校验、命名空间和输入缓冲逻辑在 Windows 上通过独立 C++ 测试，共 274 项检查；包括 10,000 条命令的连续解析、4 MiB 输入上限、半包拼接与拒绝超限输入后的数据完整性。这些测试不覆盖真实 TCP 收发。
+## 测试怎么分层
 
-复现命令：
+可移植 CTest（`RAFTKV_BUILD_SERVER=OFF`）当前有 15 个目标，包括 `protocol_tests`、`core_tests`、`kv_state_machine_tests`、`raft_log_tests`、`raft_node_coverage_tests`、`readindex_tests`、`replication_logic_tests`、`replication_partition_tests`、`replication_edge_cases_unit`、`connection_order_tests`、`storage_batch_tests`、`storage_failure_tests`、`async_executor_tests`、`batch_flush_tests`、`peer_retry_tests`。复制和 ReadIndex 目标链接生产 `RaftNode`。`replication_ack_tests.cpp` 仍是独立替身，不在 CTest 里。
 
-```text
-cmake -S . -B build-portable -G Ninja -DRAFTKV_BUILD_SERVER=OFF -DCMAKE_BUILD_TYPE=Debug
-cmake --build build-portable
-ctest --test-dir build-portable --output-on-failure
-```
+带 Muduo/RocksDB 的构建另有 `peer_manager_transport_tests`。GitHub Actions `linux-cluster.yml` 会构建真实服务、跑冒烟，并跑 `tests/cluster_linearizable.py`（Follower `MOVED`、Leader 写后读、隔离旧 Leader 的 GET 必须失败或重定向）。
 
-`git diff --check` 通过，仅有 Windows 换行符提示。
+2026-09-08 到 09-13 的分区、写入重启、过载和性能包是更早提交上的归档。那些报告里的 CTest 5/5、7/7 是当时的目标数。ReadIndex 和 Pre-Vote 合入之后，这些故障包没有按新二进制重跑。
 
-实际 RaftNode、RaftLog、KVStateMachine、RocksDBStore 源码已通过可移植目标编译，以下十二组核心场景通过（部分场景在表中合并列出）：
+## 阅读顺序
 
-| 场景 | 检查内容 |
-|---|---|
-| 多数派与投票 | 五节点中重复票不能形成多数派；少数节点不能提交或返回成功；失去领导权后待决请求失败一次 |
-| 复制与恢复 | 不连续节点 ID 的复制；恢复 lastApplied 后不重复应用；Leader 离线后剩余多数派继续写入，旧 Leader 重启追赶 |
-| 日志冲突 | 前缀不匹配不删日志；不能确认或提交未匹配的尾部；实际冲突覆盖未提交日志；禁止覆盖已提交日志 |
-| 回复丢失与乱序 | 不相关 rpc_id 不推进提交；回复丢失后及时重发相同 rpc_id；重复确认不重复推进 |
-| 存储故障 | 硬状态或日志写入失败不确认；状态机批次失败不推进应用标记；重启后补应用；读取错误不伪装成不存在；检查同步写入选项 |
-| 批量复制与配额 | 64 条提案按序回调并合并日志追加与应用；1024 条及 16 MiB 配额耗尽后拒绝；停止后释放计数 |
-| 异步应用 | 延迟应用时继续处理心跳；持久化完成回到 owner 后才成功回复；同一时刻只有一个应用批次，按序推进与释放配额 |
-| 异步生命周期 | Stop/Start 保留应用进度并恢复积压；任期变化不重复回复；RaftNode 销毁后完成通知不访问失效对象 |
-| 异步故障与冲突 | 工作阶段的写错误在 owner 完成回调中重抛；已提交但尚未应用的日志仍禁止被冲突替换 |
-| 阶段统计 | 批量条数和命令字节总计；失败写入不计成功、重复 ACK 不重复计数、空心跳不计数据 ACK；异步统计到完成通知才发布；确定性的微秒换算和平均值检查 |
-
-以上核心测试使用进程内存储、消息队列和 Protobuf 对象快照替身，验证状态转换与调用顺序，**不证明真实磁盘持久性、Protobuf 编码兼容或 TCP 行为**。测试替身仅加入核心和批量存储测试，服务目标不使用它们。
-
-最新 CTest 结果：`protocol_tests`、`core_tests`、`kv_state_machine_tests`、`raft_log_tests`、`raft_node_coverage_tests`、`readindex_tests`、`replication_*`、`connection_order_tests`、`storage_batch_tests`、`async_executor_tests`、`batch_flush_tests`、`peer_retry_tests` 均应通过。批量存储测试覆盖 64 条操作一次同步写调用、批内删除语义、整批校验、故障与恢复。执行器测试使用真实标准库线程，检查有界接收、owner 派发、异常传递和停机等待；异步 Raft 测试使用手动执行器，分别推进工作与完成，不让非线程安全的存储替身跨线程运行。批量调度测试使用真实策略与可控事件队列，检查满批升格、旧回调和重复回调失效、分轮处理与尾批等待，不验证真实 Muduo 定时器。Python 集成测试客户端的 3 项自检和并发压测客户端的 4 项自检也已通过；后者包含模拟多连接请求配额与结果计数检查。真实三节点脚本已提供，支持分片命令、同连接顺序、跨轮流水线、命名空间、Leader 强制退出及原目录重启。
-
-## 用户回传的真实环境验证与剩余缺口
-
-用户在 Ubuntu 26.04 VM 完成真实服务构建，三节点冒烟原始报告确认 10 项检查通过；另有异步→同步→同步→异步四轮负载，共 40 万次正式请求、0 错误。环境、每轮指标、CPU、阶段差分和证据哈希见 [性能基线报告](benchmarks/ubuntu-2cpu-abba.md)。四轮性能原始材料共 44 个文件已核验；冒烟报告与节点日志、事后构建快照另有 25 个文件已归档，详见 [构建与冒烟核验](benchmarks/ubuntu-build-and-smoke.md)。快照记录当前 HEAD、二进制哈希文本、缓存、依赖版本与兼容修补，但不能追溯证明测试当时的精确二进制身份。
-
-此前 Windows 本地完整服务配置停在缺少 Protobuf 头文件及库，未发现可用 WSL 或 Docker；这是历史本机限制，不代表用户 Ubuntu 测试未执行。本次文档更新没有在 Windows 重跑真实 Linux 服务，也没有重新执行上文的可移植测试。
-
-真实环境验收命令见 [tests/README.md](../tests/README.md)。已新增 [Ubuntu 自动构建流程](linux-build.md)：查找 Boost >= 1.69 的 thread 组件，校验固定 Muduo zip 并自动应用已核对的 HttpResponse 修补，私有安装 Muduo，在构建/冒烟时记录源码与二进制指纹。Docker 的 Muduo 步骤复用准备脚本。准备逻辑和失败处理已做本地测试，可移植 CTest 5/5 再次通过；用户回传的[自动 Linux 增量验收](benchmarks/linux-workflow-validation.md)也已核验，CTest 5/5、真实冒烟 10 项通过，48 个已跟踪输入匹配提交 35a348d。后续[空目录全量构建](benchmarks/linux-fresh-validation.md)及两类测试也已核验通过；干净系统复现和 Docker 构建仍待验证。
-
-剩余验证包括新流程的干净 Linux 环境复现、真实存储故障、静默丢包与非对称分区等其他网络故障、长时间负载，以及写入期间停机和异常传播的专项检查。短时对称 TCP 分区已有真实验收及持续 INFO 采样，其他场景不能由现有结果替代。
-
-## 使用限制
-
-第三组 `tests/cluster_overload.py` 与本地辅助检查已提供：以测试配置 max_clients=32 触发准入拒绝，隔离 Leader 后触发写入积压 BUSY，恢复后运行 60 秒固定键读写并记录 RSS/CPU/FD/日志和 INFO。真实 Linux 4 个阶段 PASS，原始证据已核验：5 个超额连接关闭、4 次 BUSY、60 秒正式采样、卸载后资源清零；[核验报告](benchmarks/overload-validation.md)。7,897 次重连和约 1.66 MiB 节点日志仍作为已知开销记录。这次仅扩展 Python 节点启动参数，没有修改 C++ 服务或修复已知重连开销。
-
-第二组 `tests/cluster_write_restart.py` 已完成真实 Linux 原始证据核验：写入线程跨越 Leader SIGKILL 和旧节点重启，停止写入后再检查全体节点进程崩溃恢复。1,832 次唯一键尝试含 1,704 次成功确认、64 次拒绝、8 次未知、56 次未发送；已确认键在两次恢复后的三个副本核验中全部保留。5 个阶段 PASS，见[核验报告](benchmarks/write-restart-validation.md)。本轮约定的三组收尾测试均已完成并归档核验，后续转入项目文档整理与下一阶段能力建设；未来能力待办不作为新增收尾测试。
-
-网络分区测试已补充 `tests/cluster_partition.py` 与有向 TCP 转发器：覆盖隔离旧 Leader、多数派继续写入、三节点互相隔离和两次恢复。本地辅助测试 7 项通过，真实 Linux 原始证据的 5 个阶段、81 份 INFO 快照也已核验通过。4 次探测为 2 次拒绝、2 次结果未知，没有成功确认，恢复后收敛；见[核验报告](benchmarks/partition-validation.md)。转发器累计拒绝连接 24,731 次，节点日志约 5.24 MiB，列入后续重连节流和资源观察范围。
-
-- 新状态机要求持久化 lastApplied 标记；旧的非空 KV 数据库没有该标记时会拒绝启动。保留原数据，验证时使用全新的、配套的 KV 与 Raft 日志目录。目前没有自动迁移方案。
-- AppendEntries 增加 rpc_id 校验，测试集群所有节点须使用同一版本重新构建。
-- GET 默认仍是本地读取；`--leader_only_reads=true` 只检查本机角色。`--linearizable_reads=true` 时 Leader 走 ReadIndex（请求之后的探针 ACK 才计入多数派），Follower 返回 `MOVED`。
-- 尚未实现客户端请求去重、快照与日志压缩、完整请求超时机制。已有同步/异步应用对照保持同步持久化，未比较关闭同步持久化的性能，不能量化该持久化选项的独立成本。
-
-## 本轮额外修复
-
-- 重发未确认的 AppendEntries 从 300 ms 调整为 50 ms，保留相同 rpc_id；避免一次回复丢失后停止发送心跳，超过 150–300 ms 的选举超时。
-- 移除自定义的周期 connect() 调用，改用 Muduo 的 enableRetry()。依据仓库自带 Muduo 源码，断线后的 Connector 状态需要 restart()；简单重复 connect() 会与已连接状态或内部重试冲突。
-- 新增 CommandBuffer，通过游标消费命令，按需要整理剩余字节并回收大缓冲区；每轮最多处理 128 条命令，再安排后续处理，避免长流水线独占事件循环。
-- 修正 README 的本地读语义、DEL 返回值、同连接 SELECT 用法和旧数据库兼容说明；测试流程使用隔离目录。
-
-以上修复没有逐项隔离的性能收益证明。已有负载吞吐结果见性能基线报告；没有独立测量的故障恢复时延，也不能将一组对照差异写成稳定优化收益。
-
-## 高并发改造
-
-- 接入层增加有界写队列，默认约 1 ms 收集窗口；队列满 128 条或达到 1 MiB 命令字节时提前安排处理。尾批按最早请求的原始截止时间等待，每次最多检查 128 个队列项，包含已断连请求；过期定时回调用代际 token 拦截，防止重复提交。
-- Leader、Follower 日志追加和状态机应用支持批量同步写入，保留同步持久化与多数派确认要求。
-- 默认启用 `--async_apply=true`：已提交 KV 批次进入独立串行工作线程；每节点仅一个应用批次在途，含等待 owner 完成通知的阶段。KV 与 lastApplied 同批持久化完成后，才更新 Raft 应用进度并成功回复客户端。
-- Follower 可以在日志持久化后先回复复制确认，KV 应用随后完成；已提交日志的冲突保护仍以 commitIndex 为界。停止不会丢弃在途批次的持久化进度，恢复后继续未应用的已提交日志。
-- 增加连接数、输入输出积压、排队请求和未完成提案的条数/字节上限；慢 Follower 的输出也有上限，超限暂缓完整帧并等待重发。
-- INFO 提供连接、队列、提案、批次、输入输出积压与过载事件指标，并新增 `async_apply`、`apply_inflight`、`apply_lag`。
-- INFO 新增排队、Leader/Follower 日志追加、数据复制确认、KV 应用、完成通知派发、本地 GET 和服务端成功写完成的耗时统计，以及平均批量条数。使用单调时钟、固定数量累计计数器，报告微秒总计、最大值及整数平均值；不保存逐请求样本，不提供分位数。复制确认包含缓冲和重试，服务端完成不包含客户端收到回复的时间，阶段平均值不能直接相加。
-- 新增并发压测客户端，报告成功吞吐、错误分类与整批延迟；用户四轮真实服务性能原始结果已核验。真实集成脚本的 32 并发连接检查包含在已归档的冒烟 PASS 原始报告中。
-
-机制、参数和限制见 [并发处理说明](concurrency.md)，实验矩阵见 [压测说明](benchmark.md)。本轮仅隔离已提交 KV 批次的同步写入；Raft 日志、硬状态和本地 GET 仍可能占用事件循环。已有短时真实负载不覆盖所有 RocksDB 并发访问、写入期间停机和完整服务异常传播场景；不能把批量调用次数减少或线程隔离直接写成稳定 QPS 提升。
+行为变更看 [CHANGELOG](../CHANGELOG.md)。读语义看 [读一致性](read-consistency.md)。怎么测看 [tests/README.md](../tests/README.md)。某一次实测的数字只看 `docs/benchmarks/` 里标了日期的那一份。

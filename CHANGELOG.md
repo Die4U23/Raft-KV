@@ -63,7 +63,7 @@
 
 ## 2026-09-22 — 架构检查与 P1/P2 修补（生产路径仍有残留）
 
-- 对提交 `831a91c` 做了架构检查，结论写入 [architecture-review-2026-09-22.md](docs/architecture-review-2026-09-22.md)。检查指出 ReadIndex 与连接队列存在正确性和资源边界缺陷，当时不能按 README 认定线性一致读已可靠完成。
+- 对提交 `831a91c` 做了架构检查。检查指出 ReadIndex 与连接队列存在正确性和资源边界缺陷，当时不能按 README 认定线性一致读已可靠完成。该检查记录的缺陷后来已修，见本节后续条目；原始检查稿不再作为当前状态。
 - PR #9（`60ddf84`）修补审查中的 P1：
   - **F1**：AppendEntries 响应用 `rpc_id` 关联读轮次，不再把任意当前任期回复计入所有未确认 round。
   - **F2**：`--linearizable_reads=true` 时 Follower 的 GET 返回 `MOVED`，不再静默走本地读。

@@ -41,7 +41,7 @@ python3 tests/cluster_smoke.py --self-test
 
 GitHub Actions 工作流 `.github/workflows/linux-cluster.yml` 在独立 job 中安装系统依赖、构建真实 Muduo/RocksDB 服务、运行 CTest 与 `cluster_smoke.py`，再运行 `tests/cluster_linearizable.py`：Leader 写后读、Follower `MOVED`、隔离旧 Leader 必须在 1 秒内返回读超时或 `MOVED`。套接字超时不算通过。该 job 不替代下面已归档的分区/重启/过载证据包。
 
-当前重连优化另增加真实 `peer_manager_transport_tests`，仅在服务依赖可用的构建中启用。新版 Linux 构建、CTest 7/7（含该测试）、冒烟 10 项与分区 5 个阶段已完成并[归档核验](../docs/benchmarks/reconnect-validation.md)；见[优化验收说明](../docs/optimizations/peer-reconnect-backoff.md)。下述归档结果属于优化前版本。
+服务依赖可用时还会编译 `peer_manager_transport_tests`。2026-09-09 的重连归档记录的是当时的 CTest 7/7、冒烟 10 项和分区 5 个阶段，见[重连报告](../docs/benchmarks/reconnect-validation.md)。下面三组故障报告也是那一段时期的归档，不是当前套件的通过计数。
 
 第三组[过载与有界持续运行](../docs/overload-soak-test.md)脚本已提供，检查连接准入、写入积压 BUSY、卸载恢复及 60 秒资源窗口。本地辅助检查通过，[真实 Linux 原始证据](../docs/benchmarks/overload-validation.md)已核验，4 个阶段 PASS；本轮三组收尾测试完成。7,897 次重连仍是已知问题，60 秒观察不证明长期稳定性。
 
@@ -86,6 +86,6 @@ docker run --rm -v "$PWD":/workspace -w /workspace raft-kv-dev sh -c 'cmake -S .
 
 Docker 镜像构建依赖 `third_party/` 中的压缩包及网络；其耗时不计入 smoke test 期限。上述命令使用 Linux shell 语法。该脚本是有限场景的集成验收，不等于线性一致性、网络分区、磁盘故障或完整 Raft 正确性证明。
 
-**当前证据状态：Ubuntu 三节点冒烟原始报告确认 10 项检查 PASS，四轮同步/异步负载共 40 万次正式请求、0 错误，两批原始材料与事后构建快照均已归档核验。** 详见 [性能基线与证据边界](../docs/benchmarks/ubuntu-2cpu-abba.md)及 [构建与冒烟核验](../docs/benchmarks/ubuntu-build-and-smoke.md)。测试时二进制身份不能由事后快照独立证明；该结果不代表掉电、磁盘故障、网络分区或完整并发行为已验证。Windows 可移植测试、本地客户端自测与用户提供的真实 Linux 结果分别记录；对照流程见 [压测说明](../docs/benchmark.md)，尚无稳定性能提升结论。
+2026-09-08 至 09-13 的 Ubuntu 归档确认过当时二进制上的冒烟 10 项，以及四轮同步/异步负载共 40 万次正式请求、0 错误。详见 [性能基线](../docs/benchmarks/ubuntu-2cpu-abba.md) 和 [构建与冒烟核验](../docs/benchmarks/ubuntu-build-and-smoke.md)。这些材料不能证明掉电、磁盘故障或后来加入的 ReadIndex。对照方法见 [压测说明](../docs/benchmark.md)。
 
-新增自动流程见 [Ubuntu 构建与验证](../docs/linux-build.md)。`python tests/build_workflow_tests.py` 在本地检查固定 Muduo 归档的自动修补、重复运行、编辑保护、身份记录与失败状态；不需要安装 Linux 依赖。自动流程默认构建后执行 CTest，带 `--smoke` 时再执行真实三节点测试。[2026-09-08 原始证据](../docs/benchmarks/linux-workflow-validation.md)确认新流程在用户 VM 的已有构建目录上通过，包含 CTest 5/5、真实三节点冒烟 10 项及测试时身份记录；后续[空目录全量构建](../docs/benchmarks/linux-fresh-validation.md)也已核验通过，含重新编译、链接及上述两类测试。干净系统依赖安装复现仍待验证。
+构建流程见 [Ubuntu 构建与验证](../docs/linux-build.md)。`python tests/build_workflow_tests.py` 只检查 Muduo 准备脚本，不安装 Linux 依赖，也不启动集群。[2026-09-08 的增量](../docs/benchmarks/linux-workflow-validation.md)和[空目录](../docs/benchmarks/linux-fresh-validation.md)记录写的是 CTest 5/5，那是提交 `35a348d` 的目标数。

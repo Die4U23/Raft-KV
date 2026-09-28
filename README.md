@@ -38,6 +38,8 @@ Muduo Client Server ── GET ──► KVStateMachine ──► RocksDB
 
 ## 已验证结果
 
+下表是 2026-09-08 至 09-13 的归档，当时可移植 CTest 是 5 或 7 个目标。当前套件和 ReadIndex / Pre-Vote 的范围见 [项目状态](docs/review-status.md)。这些归档没有在后来的二进制上重跑。
+
 | 场景 | 结果 | 证据 |
 | --- | --- | --- |
 | Ubuntu 26.04 三进程冒烟 | 构建、CTest 5/5、冒烟 10/10 | [全量构建记录](docs/benchmarks/linux-fresh-validation.md) |
