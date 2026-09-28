@@ -43,6 +43,7 @@ DEFINE_bool(linearizable_reads, false, "Use ReadIndex for linearizable reads (ov
 DEFINE_int32(group_commit_ms, 1, "Partial batch collection window, 0..10 ms; full batches flush next loop turn");
 DEFINE_bool(async_apply, true, "Apply committed KV batches on a serial worker; Raft log writes stay synchronous");
 DEFINE_int32(max_clients, 1024, "Maximum concurrent client connections");
+DEFINE_int32(snapshot_threshold, 1024, "Applied entries kept before a log prefix snapshot; 0 disables");
 
 static KVStateMachine* g_sm = nullptr;
 static RaftNode* g_raft = nullptr;
@@ -158,6 +159,16 @@ static void OnRaftMessage(int from, RaftMsgType type, const std::string& payload
     case RaftMsgType::kAppendEntriesResponse: {
         raftcore::AppendEntriesResponse response;
         if (response.ParseFromString(payload)) g_raft->HandleAppendEntriesResponse(from, response);
+        break;
+    }
+    case RaftMsgType::kInstallSnapshot: {
+        raftcore::InstallSnapshot request;
+        if (request.ParseFromString(payload)) g_raft->HandleInstallSnapshot(from, request);
+        break;
+    }
+    case RaftMsgType::kInstallSnapshotResponse: {
+        raftcore::InstallSnapshotResponse response;
+        if (response.ParseFromString(payload)) g_raft->HandleInstallSnapshotResponse(from, response);
         break;
     }
     }
@@ -447,6 +458,7 @@ static void ExecuteNextCommand(const muduo::net::TcpConnectionPtr& conn,
             info += "async_apply:" + std::to_string(g_raft->AsyncApplyEnabled()) + "\r\n";
             info += "apply_inflight:" + std::to_string(g_raft->ApplyInFlight()) + "\r\n";
             info += "apply_lag:" + std::to_string(g_raft->GetCommitIndex() - g_raft->GetLastApplied()) + "\r\n";
+            info += "snapshot_index:" + std::to_string(g_raft->SnapshotIndex()) + "\r\n";
             info += "client_input_bytes:" + std::to_string(g_input_bytes) + "\r\n";
             info += "client_output_reserved_bytes:" + std::to_string(g_output_bytes) + "\r\n";
             info += "overload_rejections:" + std::to_string(g_overload_rejections) + "\r\n";
@@ -541,8 +553,9 @@ static void OnClientMessage(const muduo::net::TcpConnectionPtr& conn,
     DrainClient(conn, session);
 }
 static int RunServer() {
-    if (FLAGS_group_commit_ms < 0 || FLAGS_group_commit_ms > 10 || FLAGS_max_clients < 1)
-        throw std::invalid_argument("invalid group_commit_ms or max_clients");
+    if (FLAGS_group_commit_ms < 0 || FLAGS_group_commit_ms > 10 || FLAGS_max_clients < 1 ||
+        FLAGS_snapshot_threshold < 0)
+        throw std::invalid_argument("invalid group_commit_ms, max_clients, or snapshot_threshold");
     const auto peers = ParsePeers(FLAGS_peers);
     if (FLAGS_client_port < 1 || FLAGS_client_port > 65535 ||
         FLAGS_raft_port < 1 || FLAGS_raft_port > 65535)
@@ -562,6 +575,7 @@ static int RunServer() {
             [&loop](std::function<void()> completion) { loop.queueInLoop(std::move(completion)); });
     RaftNode raft(FLAGS_node_id, peers, &loop, FLAGS_raft_log_path,
                   &state_machine, &peer_manager, apply_executor.get());
+    raft.SetSnapshotThreshold(FLAGS_snapshot_threshold);
     g_loop = &loop;
     g_sm = &state_machine;
     g_raft = &raft;

@@ -43,6 +43,8 @@ public:
     void HandleRequestVoteResponse(int from, const raftcore::RequestVoteResponse& response);
     void HandleAppendEntries(int from, const raftcore::AppendEntries& request);
     void HandleAppendEntriesResponse(int from, const raftcore::AppendEntriesResponse& response);
+    void HandleInstallSnapshot(int from, const raftcore::InstallSnapshot& request);
+    void HandleInstallSnapshotResponse(int from, const raftcore::InstallSnapshotResponse& response);
     void Tick();
     bool IsLeader() const { return _running && _state == LEADER; }
     bool IsHealthy() const { return _storage_healthy; }
@@ -52,6 +54,11 @@ public:
     int GetCurrentTerm() const { return _current_term; }
     int64_t GetCommitIndex() const { return _commit_index; }
     int64_t GetLastApplied() const { return _last_applied; }
+    int64_t SnapshotIndex() const { return _log->SnapshotIndex(); }
+    // Applied entries retained before the log prefix is replaced by a snapshot.
+    // Zero disables snapshots. The server default is separate from unit tests.
+    void SetSnapshotThreshold(int64_t entries);
+    void SetSnapshotChunkBytes(size_t bytes);
     int64_t MatchIndexOf(int peer_id) const {
         const auto found = _match_index.find(peer_id);
         return found == _match_index.end() ? -1 : found->second;
@@ -91,6 +98,18 @@ private:
         size_t entries = 0;
         SteadyClock::time_point first_send;
         std::string payload;
+        RaftMsgType type = RaftMsgType::kAppendEntries;
+        bool snapshot = false;
+        size_t snapshot_offset = 0;
+        size_t snapshot_chunk = 0;
+        int64_t snapshot_index = 0;
+        int64_t snapshot_term = 0;
+        std::string snapshot_data;
+    };
+    struct SnapshotReceive {
+        int64_t index = -1;
+        int64_t term = -1;
+        std::string data;
     };
 
     // ReadIndex request
@@ -126,7 +145,9 @@ private:
     bool IsLogUpToDate(int64_t index, int64_t term) const;
     bool IsRemotePeer(int id) const;
     void SendAppendEntries(int peer);
+    void SendSnapshotChunk(int peer);
     void BroadcastAppendEntries();
+    void MaybeSnapshot();
     void AdvanceCommitIndex();
     void ApplyCommitted();
     void FinishApply(int64_t first, size_t count, const ApplyExecutor::Results& results,
@@ -167,6 +188,9 @@ private:
     std::map<int, int64_t> _next_index;
     std::map<int, int64_t> _match_index;
     std::map<int, Inflight> _inflight;
+    SnapshotReceive _snapshot_receive;
+    int64_t _snapshot_threshold = 0;
+    size_t _snapshot_chunk_bytes = 256 * 1024;
     uint64_t _rpc_sequence = 0;
     // Absolute steady-clock deadline. Tick observes it; it does not subtract a
     // fixed 10 ms, so an early timer wakeup cannot open a ReadIndex window.
