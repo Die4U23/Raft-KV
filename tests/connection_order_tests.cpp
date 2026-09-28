@@ -70,6 +70,23 @@ static void TestClassifier() {
     Check(del_extra.type == CommandClass::ERROR, "DEL extra arg is ERROR");
     auto del_short = ClassifyCommand({"DEL"});
     Check(del_short.type == CommandClass::ERROR, "DEL missing key is ERROR");
+    auto idemp = ClassifyCommand({"IDEMP", "client-1", "7", "SET", "k", "v"});
+    Check(idemp.type == CommandClass::WRITE && idemp.error.empty(), "IDEMP SET is WRITE");
+    auto idemp_del = ClassifyCommand({"IDEMP", "client-1", "7", "del", "k"});
+    Check(idemp_del.type == CommandClass::WRITE && idemp_del.error.empty(),
+          "IDEMP DEL is WRITE");
+    auto idemp_short = ClassifyCommand({"IDEMP", "client-1", "7", "SET", "k"});
+    Check(idemp_short.type == CommandClass::ERROR &&
+          idemp_short.error == "ERR wrong number of arguments for 'SET' command",
+          "IDEMP SET arity");
+    auto idemp_id = ClassifyCommand({"IDEMP", "client-1", "01", "SET", "k", "v"});
+    Check(idemp_id.type == CommandClass::ERROR && idemp_id.error == "ERR invalid request id",
+          "leading zero request id");
+    auto idemp_client = ClassifyCommand({"IDEMP", "", "1", "DEL", "k"});
+    Check(idemp_client.type == CommandClass::ERROR &&
+          idemp_client.error == "ERR invalid client id", "empty client id");
+    Check(WriteKeyIndex({"SET", "k", "v"}) == 1, "SET key position");
+    Check(WriteKeyIndex({"IDEMP", "c", "1", "SET", "k", "v"}) == 4, "IDEMP key position");
     auto lower = ClassifyCommand({"set", "k", "v"});
     Check(lower.type == CommandClass::ERROR &&
           lower.error == "ERR unknown command 'set'",
