@@ -4,6 +4,11 @@
 
 截至 **2026-09-23**，下文按提交与代码核对记录。09-13 之后的条目曾漏记，已补录；不以合并说明或未归档压测数字作为收益证明。
 
+## 2026-09-29 — CheckQuorum 的宽限从心跳发出后起算
+
+- Leader 当选后先同步写下任期 no-op，再把第一条 AppendEntries 放进发送缓冲。CheckQuorum 的 150 ms 从这之后开始，不再把这次落盘时间算进“没有多数派应答”。
+- `scripts/build_linux.py` 在步骤失败时把该步骤日志的末尾打到标准错误，GitHub Actions 能直接看到冒烟断言。
+
 ## 2026-09-29 — Linux CI 跑分区、写入重启和过载
 
 - `linux-cluster.yml` 在冒烟和线性一致读之后，用同一次构建的服务跑 `cluster_partition.py`、`cluster_write_restart.py` 和 `cluster_overload.py`。

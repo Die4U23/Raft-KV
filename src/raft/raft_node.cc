@@ -234,9 +234,7 @@ void RaftNode::BecomeCandidate() {
 void RaftNode::BecomeLeader() {
     _state = LEADER;
     _leader_id = _node_id;
-    _leader_since = Now();
     _peer_active.clear();
-    NotePeerContact(_node_id);
     EventLog(LogLevel::Info) << "RaftNode[" << _node_id << "] becomes leader term="
                             << _current_term << " commit=" << _commit_index;
     for (const auto& peer : _all_peers) {
@@ -247,9 +245,12 @@ void RaftNode::BecomeLeader() {
     _match_index[_node_id] = _log->LastIndex();
     _heartbeat_timer_ms = kHeartbeatIntervalMs;
     // Commit one entry in this term so recovered older entries can be applied.
-    // This no-op also enables ReadIndex (once committed)
+    // This no-op also enables ReadIndex (once committed). Its durable write
+    // blocks this thread; CheckQuorum must not treat that time as follower silence.
     _can_serve_read = false;
     Propose("", {});
+    _leader_since = Now();
+    NotePeerContact(_node_id);
 }
 void RaftNode::ResetElectionTimer() {
     const int timeout_ms = std::uniform_int_distribution<int>(
