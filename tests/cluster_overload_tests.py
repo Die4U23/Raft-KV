@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from cluster_overload import FixedKeyLoad, assert_bounds, drained, parse_resources, resource_summary
-from cluster_smoke import Node
+from cluster_smoke import Node, RespError
 
 
 def empty_info():
@@ -70,6 +70,19 @@ class OverloadHelperTests(unittest.TestCase):
         pairs = {FixedKeyLoad.key_value(worker, index) for worker in range(2) for index in range(1000)}
         self.assertEqual(len(pairs), 128)
         self.assertEqual(FixedKeyLoad.key_value(1, 2), FixedKeyLoad.key_value(1, 66))
+
+    def test_transient_reply_classifies_leader_change_and_redirection(self):
+        self.assertTrue(FixedKeyLoad.transient_reply(
+            [RespError('ERR leadership lost; outcome unknown'), None]))
+        self.assertTrue(FixedKeyLoad.transient_reply(
+            [RespError('ERR server stopped; outcome unknown'), None]))
+        self.assertTrue(FixedKeyLoad.transient_reply(
+            [RespError('ERR proposal timeout; outcome unknown'), None]))
+        self.assertTrue(FixedKeyLoad.transient_reply(
+            [RespError('ERR MOVED 2 127.0.0.1:9081'), None]))
+        self.assertFalse(FixedKeyLoad.transient_reply([RespError('ERR unknown command'), None]))
+        self.assertFalse(FixedKeyLoad.transient_reply(['OK', b'value']))
+        self.assertFalse(FixedKeyLoad.transient_reply(['OK', None]))
 
     def test_node_extra_arguments_preserve_paired_directories(self):
         with tempfile.TemporaryDirectory() as folder:

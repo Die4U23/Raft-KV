@@ -90,14 +90,38 @@ class FixedKeyLoad:
         key = 'soak-{}-{}'.format(worker, index % 64)
         return key, ('value-' + key + '-' + 'x' * 128).encode()
 
+    @staticmethod
+    def transient_reply(reply):
+        first = reply[0] if isinstance(reply, list) and reply else None
+        return isinstance(first, RespError) and (
+            first.message.endswith('outcome unknown') or
+            first.message.startswith('ERR MOVED '))
+
     def run(self, worker):
         try:
-            with self.cluster.client(self.leader, io_timeout=3) as client:
+            leader = self.leader
+            client = self.cluster.client(leader, io_timeout=3)
+            try:
                 while not self.stop_event.is_set():
                     key, value = self.key_value(worker, self.counts[worker])
-                    expect(client.pipeline([('SET', key, value), ('GET', key)]), ['OK', value], 'soak SET/GET')
-                    self.counts[worker] += 1
-                    self.stop_event.wait(0.01)
+                    try:
+                        reply = client.pipeline([('SET', key, value), ('GET', key)])
+                    except OSError:
+                        reply = None
+                    if reply == ['OK', value]:
+                        self.counts[worker] += 1
+                        self.stop_event.wait(0.01)
+                        continue
+                    if reply is not None and not self.transient_reply(reply):
+                        raise AssertionError('soak SET/GET: expected OK + value, got {!r}'.format(reply))
+                    # Leadership change or dropped connection: follow the current
+                    # leader and retry the same key/value instead of failing the soak.
+                    client.sock.close()
+                    leader = self.cluster.wait_for('leader to follow during soak',
+                                                   lambda: self.cluster.leader(range(3)))
+                    client = self.cluster.client(leader, io_timeout=3)
+            finally:
+                client.sock.close()
         except BaseException:
             self.errors.append(traceback.format_exc())
 
