@@ -4,6 +4,12 @@
 
 截至 **2026-09-23**，下文按提交与代码核对记录。09-13 之后的条目曾漏记，已补录；不以合并说明或未归档压测数字作为收益证明。
 
+## 2026-09-29 — Linux CI 跑分区、写入重启和过载
+
+- `linux-cluster.yml` 在冒烟和线性一致读之后，用同一次构建的服务跑 `cluster_partition.py`、`cluster_write_restart.py` 和 `cluster_overload.py`。
+- 写入重启把 `outcome unknown` 都记为结果未知，包括 proposal timeout。过载在隔离 Leader 时接受 CheckQuorum 卸任后的 leadership lost / MOVED，这些回复不算写入成功。
+- 本机用当前服务跑过这三份脚本。09-08 至 09-13 的性能对照没有重做。
+
 ## 2026-09-29 — 未提交的写在 1000 ms 后告知结果未知
 
 - 提案被受理之后，如果这条日志在 1000 ms 内还没有提交，回调 `-ERR proposal timeout; outcome unknown`，并把该请求移出待完成表。日志本身不删除，多数派稍后确认时仍会提交并应用，而且不会再回调一次。
