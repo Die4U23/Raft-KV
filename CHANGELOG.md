@@ -7,6 +7,7 @@
 ## 2026-09-29 — CheckQuorum 的宽限从心跳发出后起算
 
 - Leader 当选后先同步写下任期 no-op，再把第一条 AppendEntries 放进发送缓冲。CheckQuorum 的 150 ms 从这之后开始，不再把这次落盘时间算进“没有多数派应答”。
+- 复制帧没有进入连接发送缓冲时，不占用该 peer 的在途 RPC。下一个 Tick 会再试，而不是干等 50 ms 重试间隔。
 - `scripts/build_linux.py` 在步骤失败时把该步骤日志的末尾打到标准错误，GitHub Actions 能直接看到冒烟断言。
 
 ## 2026-09-29 — Linux CI 跑分区、写入重启和过载

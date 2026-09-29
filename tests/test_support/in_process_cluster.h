@@ -126,6 +126,7 @@ public:
         members.emplace(id, std::move(member));
     }
     RaftNode& Node(int id) { return *members.at(id)->raft; }
+    void SetTransmit(int id, bool enabled) { members.at(id)->transport->SetTransmit(enabled); }
     KVStateMachine& State(int id) { return *members.at(id)->sm; }
     // Move only this node's clock. Other nodes keep their own elapsed time,
     // matching production where each process measures steady_clock locally.
