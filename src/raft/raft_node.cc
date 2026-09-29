@@ -37,7 +37,8 @@ std::string RaftNode::MetricsInfo() const {
            _follower_log_write.ToInfo("follower_log_write") +
            _replication_data_ack.ToInfo("replication_data_ack") +
            _kv_apply.ToInfo("kv_apply") + _apply_dispatch.ToInfo("apply_dispatch") +
-           "replication_retry_attempts:" + std::to_string(_replication_retry_attempts) + "\r\n";
+           "replication_retry_attempts:" + std::to_string(_replication_retry_attempts) + "\r\n" +
+           "proposal_timeouts:" + std::to_string(_proposal_timeouts) + "\r\n";
 
     // ReadIndex metrics
     info += "read_index_total:" + std::to_string(_read_index_total) + "\r\n";
@@ -75,6 +76,33 @@ void RaftNode::Stop() {
 }
 bool RaftNode::IsRemotePeer(int id) const {
     return id != _node_id && _next_index.count(id) != 0;
+}
+void RaftNode::ExpireUncommittedProposals() {
+    const auto now = Now();
+    const auto limit = std::chrono::milliseconds(kProposalTimeoutMs);
+    std::vector<ProposeCallback> expired;
+    int64_t oldest = 0;
+    for (auto it = _pending.begin(); it != _pending.end(); ) {
+        if (it->first <= _commit_index) {
+            ++it;
+            continue;
+        }
+        if (now - it->second.created_at < limit) {
+            ++it;
+            continue;
+        }
+        if (expired.empty()) oldest = it->first;
+        _pending_bytes -= it->second.bytes;
+        if (it->second.callback) expired.push_back(std::move(it->second.callback));
+        it = _pending.erase(it);
+        ++_proposal_timeouts;
+    }
+    if (!expired.empty()) {
+        EventLog(LogLevel::Warning) << "RaftNode[" << _node_id << "] proposal timeout count="
+                                   << expired.size() << " oldest_index=" << oldest;
+    }
+    for (auto& callback : expired)
+        callback(false, "-ERR proposal timeout; outcome unknown\r\n");
 }
 void RaftNode::FailPending(const std::string& result) {
     auto pending = std::move(_pending);
@@ -125,7 +153,7 @@ int64_t RaftNode::ProposeBatch(std::vector<Proposal> proposals) {
     ++_proposal_batches;
     for (size_t i = 0; i < proposals.size(); ++i)
         _pending.emplace(entries[i].index(), Pending{std::move(proposals[i].callback),
-                                                   proposals[i].command.size()});
+                                                   proposals[i].command.size(), Now()});
     _pending_bytes += bytes;
     _match_index[_node_id] = entries.back().index();
     BroadcastAppendEntries();
@@ -817,6 +845,7 @@ void RaftNode::Tick() {
         CheckReadIndexTimeout();
         CheckQuorum();
         if (!IsLeader()) return;
+        ExpireUncommittedProposals();
         FinishReadIndexRounds();
     }
 }

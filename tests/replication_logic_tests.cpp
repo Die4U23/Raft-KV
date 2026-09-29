@@ -63,6 +63,79 @@ static void FiveNodeQuorumNeedsTwoFollowers() {
           "two follower ACKs did not commit");
 }
 
+static void RefreshQuorum(Cluster& cluster, int leader) {
+    raftcore::AppendEntriesResponse ping;
+    ping.set_term(cluster.Node(leader).GetCurrentTerm());
+    ping.set_success(false);
+    ping.set_last_log_index(0);
+    cluster.Node(leader).HandleAppendEntriesResponse(30, ping);
+}
+
+static void AdvanceLeader(Cluster& cluster, int leader, int ms) {
+    for (int left = ms; left > 0; left -= RaftNode::kTickIntervalMs) {
+        cluster.Advance(leader, RaftNode::kTickIntervalMs);
+        RefreshQuorum(cluster, leader);
+        cluster.Node(leader).Tick();
+    }
+}
+
+static void UncommittedProposalExpiresButStaysInTheLog() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    cluster.messages.clear();
+    int callbacks = 0;
+    bool ok = true;
+    std::string result;
+    const int64_t index = cluster.Node(10).Propose(Command({"SET", "default:k", "v"}),
+        [&](bool success, const std::string& reply) {
+            ++callbacks;
+            ok = success;
+            result = reply;
+        });
+    Check(index > 0, "propose");
+    const int64_t commit = cluster.Node(10).GetCommitIndex();
+    AdvanceLeader(cluster, 10, RaftNode::kProposalTimeoutMs - RaftNode::kTickIntervalMs);
+    Check(callbacks == 0 && cluster.Node(10).PendingProposals() == 1,
+          "proposal expired before the deadline");
+    AdvanceLeader(cluster, 10, RaftNode::kTickIntervalMs);
+    Check(callbacks == 1 && !ok && cluster.Node(10).IsLeader() &&
+          cluster.Node(10).GetCommitIndex() == commit &&
+          cluster.Node(10).PendingProposals() == 0 &&
+          Metric(cluster.Node(10), "proposal_timeouts") == 1,
+          "uncommitted proposal did not fail closed");
+    Check(result == "-ERR proposal timeout; outcome unknown\r\n",
+          "timeout reply was not an unknown outcome");
+    cluster.Pump();
+    std::string value;
+    Check(cluster.Node(10).GetCommitIndex() >= index &&
+          cluster.State(10).Get("default:k", &value) && value == "v" && callbacks == 1,
+          "timed-out entry was dropped or the callback ran again");
+}
+
+static void CommittedWriteDoesNotExpireWhileApplyLags() {
+    ManualApplyExecutor executor;
+    Cluster cluster({10, 30, 50}, &executor);
+    cluster.Elect(10);
+    executor.Finish();
+    cluster.Settle();
+    int callbacks = 0;
+    bool ok = false;
+    const int64_t index = cluster.Node(10).Propose(Command({"SET", "default:k", "v"}),
+        [&](bool success, const std::string&) { ++callbacks; ok = success; });
+    Check(index > 0, "propose");
+    cluster.Pump();
+    Check(cluster.Node(10).GetCommitIndex() >= index &&
+          cluster.Node(10).GetLastApplied() < index && cluster.Node(10).ApplyInFlight(),
+          "committed write was not waiting on apply");
+    AdvanceLeader(cluster, 10, RaftNode::kProposalTimeoutMs);
+    Check(callbacks == 0 && cluster.Node(10).IsLeader() &&
+          Metric(cluster.Node(10), "proposal_timeouts") == 0,
+          "committed write expired before its result was applied");
+    executor.Finish();
+    Check(callbacks == 1 && ok, "apply did not deliver the committed write");
+}
+
 static void MatchIndexDoesNotRewind() {
     Cluster cluster;
     cluster.Elect(10);
@@ -97,6 +170,8 @@ int main() {
         OneInflightPerPeer();
         FiveNodeQuorumNeedsTwoFollowers();
         MatchIndexDoesNotRewind();
+        UncommittedProposalExpiresButStaysInTheLog();
+        CommittedWriteDoesNotExpireWhileApplyLags();
         std::cout << "PASS: production replication ACK correlation\n";
         return 0;
     } catch (const std::exception& e) {

@@ -35,7 +35,8 @@ public:
     void Stop();
     // -1: not leader/stopped; -2: admission limit; -3: storage unhealthy.
     // No callback on rejection.
-    // Once admitted, timeout/disconnection does NOT cancel the replicated entry.
+    // Once admitted, the log entry stays. If it is still uncommitted after
+    // kProposalTimeoutMs, the callback fails and reports an unknown outcome.
     int64_t Propose(const std::string& command, ProposeCallback callback);
     // Returns the first index; a batch is admitted/persisted together.
     int64_t ProposeBatch(std::vector<Proposal> proposals);
@@ -92,6 +93,10 @@ public:
     static constexpr int kHeartbeatIntervalMs = 50;
     static constexpr int kMinElectionTimeoutMs = 150;
     static constexpr int kMaxElectionTimeoutMs = 300;
+    // Uncommitted proposals fail the client after this long. The log entry
+    // remains and may still commit. Losing quorum still fails sooner, via
+    // CheckQuorum, with leadership lost.
+    static constexpr int kProposalTimeoutMs = 1000;
 private:
     enum State { FOLLOWER, PRE_CANDIDATE, CANDIDATE, LEADER };
     struct Inflight {
@@ -160,6 +165,7 @@ private:
     void FinishApply(int64_t first, size_t count, const ApplyExecutor::Results& results,
                      uint64_t work_us, size_t bytes, uint64_t dispatch_us);
     void FailPending(const std::string& result);
+    void ExpireUncommittedProposals();
     int QuorumSize() const { return static_cast<int>(_all_peers.size()) / 2 + 1; }
 
     // ReadIndex internal methods
@@ -207,10 +213,15 @@ private:
     std::map<int, SteadyClock::time_point> _peer_active;
     std::function<SteadyClock::time_point()> _clock;
     int _heartbeat_timer_ms = 0;
-    struct Pending { ProposeCallback callback; size_t bytes; };
+    struct Pending {
+        ProposeCallback callback;
+        size_t bytes = 0;
+        SteadyClock::time_point created_at{};
+    };
     std::map<int64_t, Pending> _pending;
     size_t _pending_bytes = 0;
     uint64_t _proposal_batches = 0;
+    uint64_t _proposal_timeouts = 0;
     uint64_t _apply_batches = 0;
     // Batch bytes are command payload bytes, including zero-byte internal no-ops.
     BatchStats _leader_log_write, _follower_log_write, _kv_apply;

@@ -14,6 +14,7 @@
 - 已提交 KV 批次默认交给串行工作线程；Raft 日志和硬状态仍在所有者线程上同步落盘。
 - 快照：`--snapshot_threshold`（默认 1024，0 表示关闭）之后，已应用的日志前缀换成一份 KV 快照。落后副本的 `nextIndex` 落在快照里时，Leader 分块发送 `InstallSnapshot`，而不是逐条重放已丢掉的前缀。副本拒绝 AppendEntries 时带回冲突任期的起点，Leader 的 `nextIndex` 一次跳到那里；该位置已在快照里时，下一轮就是 `InstallSnapshot`。
 - 幂等写：`IDEMP <client-id> <request-id> SET <key> <value>` 和 `IDEMP <client-id> <request-id> DEL <key>`。`request-id` 从 1 起，十进制，无前导 0。`client-id` 为 1 到 128 字节。同一个 id 再提交时返回第一次的回复，不改数据；更小的 id 返回 `-ERR stale request`。每个 client id 只保留最近一次，记录在 KV 里并随快照保留，不会过期。
+- 已受理但仍未提交的写，超过 1000 ms 回调 `-ERR proposal timeout; outcome unknown`。日志条目不删除，之后仍可能提交并应用。已经提交、只是还没应用完的写不会因这个期限失败。失去多数派时仍由 CheckQuorum 更快卸任，回调是 leadership lost。
 
 ## 现在没有什么
 
