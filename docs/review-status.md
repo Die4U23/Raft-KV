@@ -28,9 +28,9 @@
 
 可移植 CTest（`RAFTKV_BUILD_SERVER=OFF`）当前有 16 个目标，包括 `protocol_tests`、`core_tests`、`kv_state_machine_tests`、`raft_log_tests`、`raft_node_coverage_tests`、`readindex_tests`、`snapshot_tests`、`replication_logic_tests`、`replication_partition_tests`、`replication_edge_cases_unit`、`connection_order_tests`、`storage_batch_tests`、`storage_failure_tests`、`async_executor_tests`、`batch_flush_tests`、`peer_retry_tests`。复制和 ReadIndex 目标链接生产 `RaftNode`。`replication_ack_tests.cpp` 仍是独立替身，不在 CTest 里。
 
-带 Muduo/RocksDB 的构建另有 `peer_manager_transport_tests`。GitHub Actions `linux-cluster.yml` 会构建真实服务、跑冒烟，并跑 `tests/cluster_linearizable.py`（Follower `MOVED`、Leader 写后读、隔离旧 Leader 的 GET 必须失败或重定向）。
+带 Muduo/RocksDB 的构建另有 `peer_manager_transport_tests`。GitHub Actions `linux-cluster.yml` 会构建真实服务并跑冒烟、`tests/cluster_linearizable.py`（Follower `MOVED`、Leader 写后读、隔离旧 Leader 的 GET 必须失败或重定向）、`tests/cluster_partition.py`、`tests/cluster_write_restart.py` 和 `tests/cluster_overload.py`。
 
-2026-09-08 到 09-13 的分区、写入重启、过载和性能包是更早提交上的归档。那些报告里的 CTest 5/5、7/7 是当时的目标数。ReadIndex 和 Pre-Vote 合入之后，这些故障包没有按新二进制重跑。
+2026-09-08 到 09-13 的分区、写入重启、过载和性能包是更早提交上的归档。那些报告里的 CTest 5/5、7/7 是当时的目标数。分区、写入重启和过载脚本会在当前 Linux CI 里用本次构建的服务再跑；性能对照没有按当前二进制重做。
 
 ## 阅读顺序
 

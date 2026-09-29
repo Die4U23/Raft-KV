@@ -44,3 +44,14 @@ jobs:
           --binary "$HOME/build-linux-ci/server/raft_kv_server"
           --timeout 90
           --artifacts "$HOME/build-linux-ci/linearizable"
+
+      - name: Partition, continuous-write restart, and overload
+        run: |
+          report=$(find "$HOME/build-linux-ci/reports" -name build-report.json -print -quit)
+          test -n "$report"
+          python3 tests/cluster_partition.py --build-report "$report" --timeout 120 \
+            --artifacts "$HOME/build-linux-ci/partition"
+          python3 tests/cluster_write_restart.py --build-report "$report" --timeout 180 \
+            --artifacts "$HOME/build-linux-ci/write-restart"
+          python3 tests/cluster_overload.py --build-report "$report" --soak-seconds 60 \
+            --artifacts "$HOME/build-linux-ci/overload"
