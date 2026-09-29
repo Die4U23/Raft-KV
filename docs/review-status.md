@@ -15,6 +15,7 @@
 - 快照：`--snapshot_threshold`（默认 1024，0 表示关闭）之后，已应用的日志前缀换成一份 KV 快照。落后副本的 `nextIndex` 落在快照里时，Leader 分块发送 `InstallSnapshot`，而不是逐条重放已丢掉的前缀。副本拒绝 AppendEntries 时带回冲突任期的起点，Leader 的 `nextIndex` 一次跳到那里；该位置已在快照里时，下一轮就是 `InstallSnapshot`。
 - 幂等写：`IDEMP <client-id> <request-id> SET <key> <value>` 和 `IDEMP <client-id> <request-id> DEL <key>`。`request-id` 从 1 起，十进制，无前导 0。`client-id` 为 1 到 128 字节。同一个 id 再提交时返回第一次的回复，不改数据；更小的 id 返回 `-ERR stale request`。每个 client id 只保留最近一次，记录在 KV 里并随快照保留，不会过期。
 - 已受理但仍未提交的写，超过 1000 ms 回调 `-ERR proposal timeout; outcome unknown`。日志条目不删除，之后仍可能提交并应用。已经提交、只是还没应用完的写不会因这个期限失败。失去多数派时仍由 CheckQuorum 更快卸任，回调是 leadership lost。
+- `--metrics_port` 默认 0。打开后 `GET /metrics` 返回与 `INFO` 相同的数字，格式是 Prometheus 文本。角色、任期、提交和应用位置、应用积压、过载拒绝、阶段累计耗时都在里面。`namespace` 不在抓取结果里。没有直方图。
 
 ## 现在没有什么
 
@@ -26,7 +27,7 @@
 
 ## 测试怎么分层
 
-可移植 CTest（`RAFTKV_BUILD_SERVER=OFF`）当前有 16 个目标，包括 `protocol_tests`、`core_tests`、`kv_state_machine_tests`、`raft_log_tests`、`raft_node_coverage_tests`、`readindex_tests`、`snapshot_tests`、`replication_logic_tests`、`replication_partition_tests`、`replication_edge_cases_unit`、`connection_order_tests`、`storage_batch_tests`、`storage_failure_tests`、`async_executor_tests`、`batch_flush_tests`、`peer_retry_tests`。复制和 ReadIndex 目标链接生产 `RaftNode`。`replication_ack_tests.cpp` 仍是独立替身，不在 CTest 里。
+可移植 CTest（`RAFTKV_BUILD_SERVER=OFF`）当前有 17 个目标，包括 `protocol_tests`、`core_tests`、`kv_state_machine_tests`、`raft_log_tests`、`raft_node_coverage_tests`、`readindex_tests`、`snapshot_tests`、`replication_logic_tests`、`replication_partition_tests`、`replication_edge_cases_unit`、`connection_order_tests`、`storage_batch_tests`、`storage_failure_tests`、`async_executor_tests`、`batch_flush_tests`、`peer_retry_tests`、`prometheus_text_tests`。复制和 ReadIndex 目标链接生产 `RaftNode`。`replication_ack_tests.cpp` 仍是独立替身，不在 CTest 里。
 
 带 Muduo/RocksDB 的构建另有 `peer_manager_transport_tests`。GitHub Actions `linux-cluster.yml` 会构建真实服务并跑冒烟、`tests/cluster_linearizable.py`（Follower `MOVED`、Leader 写后读、隔离旧 Leader 的 GET 必须失败或重定向）、`tests/cluster_partition.py`、`tests/cluster_write_restart.py` 和 `tests/cluster_overload.py`。
 
