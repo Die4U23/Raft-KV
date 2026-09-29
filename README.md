@@ -98,6 +98,7 @@ $BIN --node_id=2 --client_port=8082 --raft_port=9082 \
 
 **可选配置**：
 - `--linearizable_reads=true`：启用 ReadIndex 线性一致读（默认 false）
+- `--lease_reads=true`：在线性一致读下，Leader 租约有效时本地确认 GET（默认 false）
 - `--leader_only_reads=true`：仅在 Leader 节点响应读请求（默认 false）
 
 ### 3. 读写
@@ -116,7 +117,7 @@ redis-cli -p 8080 DEL user:1
 | --- | --- |
 | `PING` | 返回 `PONG` |
 | `SET key value` | 通过 Raft 提交和状态机应用后返回 `OK` |
-| `GET key` | 默认读当前节点本地状态机；`--linearizable_reads=true` 时 Leader 走 ReadIndex，Follower 返回 `MOVED` |
+| `GET key` | 默认读当前节点本地状态机；`--linearizable_reads=true` 时 Leader 走 ReadIndex，再加 `--lease_reads=true` 时租约有效则本地确认。Follower 返回 `MOVED` |
 | `DEL key` | 通过 Raft 删除，返回 `0` 或 `1` |
 | `SELECT namespace` | 为当前 TCP 连接选择逻辑命名空间 |
 | `INFO` | 查看角色、任期、Leader、提交/应用位置和过载指标 |

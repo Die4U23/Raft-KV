@@ -8,7 +8,7 @@
 
 - 选举含 Pre-Vote：没有多数派预投票就不抬任期、不写 `votedFor`。
 - Leader 在最短选举超时（150 ms）内没有多数派 AppendEntries 应答时卸任（CheckQuorum）。
-- `--linearizable_reads=true` 时，Leader 的 GET 走 ReadIndex：只接受该读请求之后发出的探针 ACK，探针年龄达到 150 ms 即失败，并等到 `last_applied` 追上后再读。Follower 返回 `MOVED`。默认关闭，默认 GET 是本地读。
+- `--linearizable_reads=true` 时，Leader 的 GET 走 ReadIndex：只接受该读请求之后发出的探针 ACK，探针年龄达到 150 ms 即失败，并等到 `last_applied` 追上后再读。Follower 返回 `MOVED`。再加上 `--lease_reads=true` 时，本任期已满 300 ms 且多数派在 150 ms 内应答过，GET 直接用本地提交位置，不再发探针；租约不成立时仍走 ReadIndex。两个开关默认都关闭，默认 GET 是本地读。
 - `--leader_only_reads=true` 只检查本机角色，不是线性一致读。
 - 连接数、输入输出、写队列和提案有上限，过载返回 `BUSY` 或直接关连接。
 - 已提交 KV 批次默认交给串行工作线程；Raft 日志和硬状态仍在所有者线程上同步落盘。
@@ -20,7 +20,7 @@
 - 动态成员变更、多分片。
 - 快照只覆盖已经应用的前缀。快照之后的日志仍会增长。重启读取保存的日志尾，只核对最后一条；没有尾记录的旧库会扫描一次并补上。中间条目损坏要到读取那一条时才发现。没有增量传输 RocksDB 文件。
 - 普通 `SET` / `DEL` 不去重。超时或丢回复后直接重试这两条命令仍可能执行两次。
-- 租约读。线性一致读每次都要多数派往返。
+- 租约读默认关闭。打开后也要等本任期满 300 ms，并且多数派联系变旧时退回 ReadIndex。它不让 Follower 读。
 - 整机掉电、介质损坏、静默丢包、非对称分区和长时间压测的已核验证据。进程内测试使用存储和网络替身，不能代替这些场景。
 
 ## 测试怎么分层

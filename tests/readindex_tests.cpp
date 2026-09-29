@@ -364,6 +364,80 @@ static void ElectionClockMatchesReadIndexLease() {
     Check(later.vote_granted(), "follower refused a vote after its election deadline");
 }
 
+static void KeepLeaderLeaseFresh(Cluster& cluster, int leader) {
+    for (int step = 0; step < RaftNode::kMaxElectionTimeoutMs / RaftNode::kTickIntervalMs; ++step) {
+        cluster.Advance(leader, RaftNode::kTickIntervalMs);
+        cluster.Node(leader).Tick();
+        cluster.Pump();
+    }
+    Check(cluster.Node(leader).IsLeader(), "leader lost the lease while quorum was answering");
+}
+
+static void NewTermDoesNotUseLease() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    cluster.Node(10).SetLeaseReads(true);
+    cluster.messages.clear();
+    bool done = false;
+    Check(cluster.Node(10).RequestReadIndex(
+        [&](bool, int64_t, const std::string&) { done = true; }), "read rejected");
+    Check(!done, "new term served a lease read");
+    Check(!TakeAppendsFrom(cluster, 10).empty(), "new term did not fall back to ReadIndex");
+}
+
+static void FreshLeaseSkipsProbe() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    cluster.Node(10).SetLeaseReads(true);
+    KeepLeaderLeaseFresh(cluster, 10);
+    cluster.messages.clear();
+    bool done = false, ok = false;
+    Check(cluster.Node(10).RequestReadIndex(
+        [&](bool success, int64_t, const std::string&) { done = true; ok = success; }),
+          "lease read rejected");
+    Check(done && ok, "fresh lease did not serve locally");
+    Check(cluster.messages.empty(), "fresh lease sent a probe");
+    Check(Metric(cluster.Node(10), "read_index_lease") == 1, "lease read was not counted");
+}
+
+static void StaleQuorumDoesNotUseLease() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    cluster.Node(10).SetLeaseReads(true);
+    cluster.Advance(10, RaftNode::kMaxElectionTimeoutMs);
+    cluster.messages.clear();
+    bool done = false;
+    Check(cluster.Node(10).RequestReadIndex(
+        [&](bool, int64_t, const std::string&) { done = true; }), "read rejected");
+    Check(!done, "stale quorum served a lease read");
+    Check(!TakeAppendsFrom(cluster, 10).empty(), "stale quorum did not fall back to ReadIndex");
+}
+
+static void LeaseReadWaitsForApply() {
+    ManualApplyExecutor executor;
+    Cluster cluster({10, 30, 50}, &executor);
+    cluster.Elect(10);
+    while (executor.busy) executor.Finish();
+    cluster.Settle();
+    cluster.Node(10).SetLeaseReads(true);
+    KeepLeaderLeaseFresh(cluster, 10);
+    while (executor.busy) executor.Finish();
+    Check(cluster.Node(10).Propose(Command({"SET", "default:k", "v"}), {}) > 0, "write rejected");
+    cluster.Pump();
+    Check(executor.busy, "write applied before the lease read");
+    bool done = false;
+    Check(cluster.Node(10).RequestReadIndex(
+        [&](bool success, int64_t, const std::string&) { done = success; }), "lease read rejected");
+    Check(!done, "lease read finished before the write was applied");
+    executor.Finish();
+    Check(done, "lease read did not complete after apply");
+    std::string value;
+    Check(cluster.State(10).Get("default:k", &value) && value == "v", "applied value missing");
+}
+
 static void SingleNodeReadPipelineDoesNotGrowTheStack() {
     Cluster cluster({10});
     cluster.Elect(10);
@@ -391,6 +465,10 @@ int main() {
         LateProbeAckPastElectionTimeoutDoesNotConfirm();
         FreshHeartbeatBlocksVoteSoDelayedProbeAckStaysWithLiveLeader();
         ElectionClockMatchesReadIndexLease();
+        NewTermDoesNotUseLease();
+        FreshLeaseSkipsProbe();
+        StaleQuorumDoesNotUseLease();
+        LeaseReadWaitsForApply();
         SingleNodeReadPipelineDoesNotGrowTheStack();
         std::cout << "PASS: production RaftNode ReadIndex\n";
         return 0;

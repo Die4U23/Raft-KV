@@ -40,6 +40,7 @@ DEFINE_string(raft_log_path, "/tmp/raft_log", "Raft log path");
 DEFINE_string(peers, "0:127.0.0.1:9080,1:127.0.0.1:9081,2:127.0.0.1:9082", "id:host:port,...");
 DEFINE_bool(leader_only_reads, false, "Restrict local reads to leader (NOT linearizable)");
 DEFINE_bool(linearizable_reads, false, "Use ReadIndex for linearizable reads (overrides leader_only_reads)");
+DEFINE_bool(lease_reads, false, "With --linearizable_reads, serve GET locally while the leader lease is valid. A new term waits 300ms, and a majority must have answered within 150ms; otherwise GET uses ReadIndex.");
 DEFINE_int32(group_commit_ms, 1, "Partial batch collection window, 0..10 ms; full batches flush next loop turn");
 DEFINE_bool(async_apply, true, "Apply committed KV batches on a serial worker; Raft log writes stay synchronous");
 DEFINE_int32(max_clients, 1024, "Maximum concurrent client connections");
@@ -577,6 +578,7 @@ static int RunServer() {
     RaftNode raft(FLAGS_node_id, peers, &loop, FLAGS_raft_log_path,
                   &state_machine, &peer_manager, apply_executor.get());
     raft.SetSnapshotThreshold(FLAGS_snapshot_threshold);
+    raft.SetLeaseReads(FLAGS_lease_reads);
     g_loop = &loop;
     g_sm = &state_machine;
     g_raft = &raft;
