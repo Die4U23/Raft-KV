@@ -136,6 +136,27 @@ static void CommittedWriteDoesNotExpireWhileApplyLags() {
     Check(callbacks == 1 && ok, "apply did not deliver the committed write");
 }
 
+static void UnsentAppendDoesNotOccupyInflight() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    cluster.messages.clear();
+    cluster.SetTransmit(10, false);
+    Check(cluster.Node(10).Propose(Command({"SET", "default:held", "v"}), {}) > 0,
+          "propose while disconnected");
+    Check(cluster.messages.empty() && !cluster.Node(10).HasInflightRpc(30) &&
+          !cluster.Node(10).HasInflightRpc(50),
+          "dropped append was recorded as in flight");
+    cluster.Node(10).Tick();
+    Check(cluster.messages.empty() && !cluster.Node(10).HasInflightRpc(30),
+          "tick queued an append while transmit was disabled");
+    cluster.SetTransmit(10, true);
+    cluster.Node(10).Tick();
+    Check(cluster.Node(10).HasInflightRpc(30) && cluster.Node(10).HasInflightRpc(50) &&
+          !cluster.messages.empty(),
+          "tick did not send once transmit was enabled");
+}
+
 static void MatchIndexDoesNotRewind() {
     Cluster cluster;
     cluster.Elect(10);
@@ -170,6 +191,7 @@ int main() {
         OneInflightPerPeer();
         FiveNodeQuorumNeedsTwoFollowers();
         MatchIndexDoesNotRewind();
+        UnsentAppendDoesNotOccupyInflight();
         UncommittedProposalExpiresButStaysInTheLog();
         CommittedWriteDoesNotExpireWhileApplyLags();
         std::cout << "PASS: production replication ACK correlation\n";

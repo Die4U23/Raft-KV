@@ -667,15 +667,16 @@ void RaftNode::SendSnapshotChunk(int peer) {
     flight.type = RaftMsgType::kInstallSnapshot;
     flight.first_send = Now();
     request.SerializeToString(&flight.payload);
-    _peer_mgr->Send(peer, RaftMsgType::kInstallSnapshot, flight.payload);
+    if (!_peer_mgr->Send(peer, RaftMsgType::kInstallSnapshot, flight.payload))
+        flight.id = 0;
 }
 void RaftNode::SendAppendEntries(int peer) {
     auto& flight = _inflight.at(peer);
     if (flight.id) {
-        if (flight.elapsed_ms >= kRpcRetryMs) {
+        if (flight.elapsed_ms >= kRpcRetryMs &&
+            _peer_mgr->Send(peer, flight.type, flight.payload)) {
             flight.elapsed_ms = 0;
             ++_replication_retry_attempts;
-            _peer_mgr->Send(peer, flight.type, flight.payload);
         }
         return;
     }
@@ -710,16 +711,18 @@ void RaftNode::SendAppendEntries(int peer) {
         last = index;
         if (index == INT64_MAX) break;
     }
+    std::string payload;
+    request.SerializeToString(&payload);
+    if (!_peer_mgr->Send(peer, RaftMsgType::kAppendEntries, payload)) return;
     flight.id = request.rpc_id();
     flight.last_index = last;
     flight.elapsed_ms = 0;
     flight.entries = static_cast<size_t>(request.entries_size());
     flight.type = RaftMsgType::kAppendEntries;
     flight.snapshot = false;
-    request.SerializeToString(&flight.payload);
+    flight.payload = std::move(payload);
     flight.first_send = SteadyClock::now();
     BindReadIndexProbe(peer, flight.id);
-    _peer_mgr->Send(peer, RaftMsgType::kAppendEntries, flight.payload);
 }
 void RaftNode::BroadcastAppendEntries() {
     for (const auto& peer : _all_peers)
@@ -842,6 +845,12 @@ void RaftNode::Tick() {
         if (_heartbeat_timer_ms <= 0) {
             BroadcastAppendEntries();
             _heartbeat_timer_ms = kHeartbeatIntervalMs;
+        } else {
+            // A send that never left the process did not occupy inflight.
+            // Try again on the next tick instead of waiting out the RPC retry.
+            for (const auto& peer : _all_peers)
+                if (peer.id != _node_id && !_inflight.at(peer.id).id)
+                    SendAppendEntries(peer.id);
         }
         CheckReadIndexTimeout();
         CheckQuorum();
