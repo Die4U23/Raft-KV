@@ -4,6 +4,10 @@
 
 截至 **2026-09-23**，下文按提交与代码核对记录。09-13 之后的条目曾漏记，已补录；不以合并说明或未归档压测数字作为收益证明。
 
+## 2026-09-29 — 过载 soak 跟随 Leader 变更，不再因卸任失败
+
+- 过载脚本的 soak 客户端连到固定 Leader 后不处理卸任。CI runner 上心跳抖动触发 CheckQuorum 卸任时，SET 返回 `ERR leadership lost; outcome unknown`，soak 直接断言失败。现在遇到 leadership lost / MOVED / 断连时重新发现当前 Leader 并重试同一个 key/value，不算客户端错误。
+
 ## 2026-09-29 — INFO 数字可以从 HTTP 抓取
 
 - `--metrics_port` 默认 0，不额外监听。设成与客户端端口、Raft 端口都不同的值后，`GET /metrics` 返回 Prometheus 文本 0.0.4。
