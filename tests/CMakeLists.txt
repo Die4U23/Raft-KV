@@ -86,3 +86,10 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 add_test(NAME peer_retry_tests COMMAND peer_retry_tests)
 
+add_executable(prometheus_text_tests prometheus_text_tests.cpp)
+target_include_directories(prometheus_text_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(prometheus_text_tests PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+add_test(NAME prometheus_text_tests COMMAND prometheus_text_tests)
+

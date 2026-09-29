@@ -25,6 +25,7 @@
 #include "common/session_queue.h"
 #include "common/batch_flush_policy.h"
 #include "common/metrics.h"
+#include "common/prometheus_text.h"
 #include "namespace/namespace_manager.h"
 #include "raft/kv_state_machine.h"
 #include "raft/peer_manager.h"
@@ -35,6 +36,7 @@
 DEFINE_int32(node_id, 0, "Raft node ID");
 DEFINE_int32(client_port, 8080, "Client RESP port");
 DEFINE_int32(raft_port, 9080, "Raft peer TCP port");
+DEFINE_int32(metrics_port, 0, "HTTP port for Prometheus text at /metrics; 0 disables");
 DEFINE_string(db_path, "/tmp/kv_db", "KV data path (paired with raft_log_path)");
 DEFINE_string(raft_log_path, "/tmp/raft_log", "Raft log path");
 DEFINE_string(peers, "0:127.0.0.1:9080,1:127.0.0.1:9081,2:127.0.0.1:9082", "id:host:port,...");
@@ -337,6 +339,37 @@ static void SubmitWrite(const muduo::net::TcpConnectionPtr& conn,
     session->waiting = true;
     ScheduleFlush();
 }
+static std::string BuildNodeInfo(const std::optional<std::string>& ns) {
+    std::string info = "node_id:" + std::to_string(g_raft->GetNodeId()) + "\r\n";
+    info += "state:" + std::string(g_raft->StateName()) + "\r\n";
+    info += "leader_id:" + std::to_string(g_raft->GetLeaderId()) + "\r\n";
+    info += "term:" + std::to_string(g_raft->GetCurrentTerm()) + "\r\n";
+    info += "commit_index:" + std::to_string(g_raft->GetCommitIndex()) + "\r\n";
+    info += "last_applied:" + std::to_string(g_raft->GetLastApplied()) + "\r\n";
+    if (ns) info += "namespace:" + *ns + "\r\n";
+    info += "connected_clients:" + std::to_string(g_sessions.size()) + "\r\n";
+    info += "queued_writes:" + std::to_string(g_writes.size()) + "\r\n";
+    info += "queued_write_bytes:" + std::to_string(g_queued_write_bytes) + "\r\n";
+    info += "pending_proposals:" + std::to_string(g_raft->PendingProposals()) + "\r\n";
+    info += "pending_proposal_bytes:" + std::to_string(g_raft->PendingBytes()) + "\r\n";
+    info += "proposal_batches:" + std::to_string(g_raft->ProposalBatches()) + "\r\n";
+    info += "apply_batches:" + std::to_string(g_raft->ApplyBatches()) + "\r\n";
+    info += "async_apply:" + std::to_string(g_raft->AsyncApplyEnabled()) + "\r\n";
+    info += "apply_inflight:" + std::to_string(g_raft->ApplyInFlight()) + "\r\n";
+    info += "apply_lag:" + std::to_string(g_raft->GetCommitIndex() - g_raft->GetLastApplied()) + "\r\n";
+    info += "snapshot_index:" + std::to_string(g_raft->SnapshotIndex()) + "\r\n";
+    info += "client_input_bytes:" + std::to_string(g_input_bytes) + "\r\n";
+    info += "client_output_reserved_bytes:" + std::to_string(g_output_bytes) + "\r\n";
+    info += "overload_rejections:" + std::to_string(g_overload_rejections) + "\r\n";
+    info += "flush_immediate_scheduled:" + std::to_string(g_flush_immediate) + "\r\n";
+    info += "flush_delayed_scheduled:" + std::to_string(g_flush_delayed) + "\r\n";
+    info += "flush_promotions:" + std::to_string(g_flush_promoted) + "\r\n";
+    info += g_write_queue_wait.ToInfo("write_queue_wait");
+    info += g_write_completed.ToInfo("write_completed");
+    info += g_local_read.ToInfo("local_read");
+    info += g_raft->MetricsInfo();
+    return info;
+}
 static void ExecuteNextCommand(const muduo::net::TcpConnectionPtr& conn,
                                 const std::shared_ptr<ClientSession>& session) {
     // Don't start new command if already executing or session is closing
@@ -443,35 +476,7 @@ static void ExecuteNextCommand(const muduo::net::TcpConnectionPtr& conn,
                 OnCommandComplete(conn, session);
             }
         } else if (op == "INFO") {
-            std::string info = "node_id:" + std::to_string(g_raft->GetNodeId()) + "\r\n";
-            info += "state:" + std::string(g_raft->StateName()) + "\r\n";
-            info += "leader_id:" + std::to_string(g_raft->GetLeaderId()) + "\r\n";
-            info += "term:" + std::to_string(g_raft->GetCurrentTerm()) + "\r\n";
-            info += "commit_index:" + std::to_string(g_raft->GetCommitIndex()) + "\r\n";
-            info += "last_applied:" + std::to_string(g_raft->GetLastApplied()) + "\r\n";
-            info += "namespace:" + g_namespaces.GetNs(conn->name()) + "\r\n";
-            info += "connected_clients:" + std::to_string(g_sessions.size()) + "\r\n";
-            info += "queued_writes:" + std::to_string(g_writes.size()) + "\r\n";
-            info += "queued_write_bytes:" + std::to_string(g_queued_write_bytes) + "\r\n";
-            info += "pending_proposals:" + std::to_string(g_raft->PendingProposals()) + "\r\n";
-            info += "pending_proposal_bytes:" + std::to_string(g_raft->PendingBytes()) + "\r\n";
-            info += "proposal_batches:" + std::to_string(g_raft->ProposalBatches()) + "\r\n";
-            info += "apply_batches:" + std::to_string(g_raft->ApplyBatches()) + "\r\n";
-            info += "async_apply:" + std::to_string(g_raft->AsyncApplyEnabled()) + "\r\n";
-            info += "apply_inflight:" + std::to_string(g_raft->ApplyInFlight()) + "\r\n";
-            info += "apply_lag:" + std::to_string(g_raft->GetCommitIndex() - g_raft->GetLastApplied()) + "\r\n";
-            info += "snapshot_index:" + std::to_string(g_raft->SnapshotIndex()) + "\r\n";
-            info += "client_input_bytes:" + std::to_string(g_input_bytes) + "\r\n";
-            info += "client_output_reserved_bytes:" + std::to_string(g_output_bytes) + "\r\n";
-            info += "overload_rejections:" + std::to_string(g_overload_rejections) + "\r\n";
-            info += "flush_immediate_scheduled:" + std::to_string(g_flush_immediate) + "\r\n";
-            info += "flush_delayed_scheduled:" + std::to_string(g_flush_delayed) + "\r\n";
-            info += "flush_promotions:" + std::to_string(g_flush_promoted) + "\r\n";
-            info += g_write_queue_wait.ToInfo("write_queue_wait");
-            info += g_write_completed.ToInfo("write_completed");
-            info += g_local_read.ToInfo("local_read");
-            info += g_raft->MetricsInfo();
-            SendReply(conn, session, Bulk(info));
+            SendReply(conn, session, Bulk(BuildNodeInfo(g_namespaces.GetNs(conn->name()))));
             OnCommandComplete(conn, session);
         } else {
             // Unknown READ command - should not reach here due to validation in DrainClient
@@ -554,14 +559,71 @@ static void OnClientMessage(const muduo::net::TcpConnectionPtr& conn,
     if (buffer->internalCapacity() > 256 * 1024) buffer->shrink(0);
     DrainClient(conn, session);
 }
+static constexpr size_t kMaxMetricsRequest = 4096;
+static std::map<std::string, std::string> g_metrics_requests;
+
+static void ReplyMetrics(const muduo::net::TcpConnectionPtr& conn, const std::string& http) {
+    conn->send(http);
+    conn->shutdown();
+}
+static void OnMetricsConnection(const muduo::net::TcpConnectionPtr& conn) {
+    if (conn->connected()) {
+        if (g_metrics_requests.size() >= 16) {
+            conn->forceClose();
+            return;
+        }
+        g_metrics_requests[conn->name()];
+    } else {
+        g_metrics_requests.erase(conn->name());
+    }
+}
+static void OnMetricsMessage(const muduo::net::TcpConnectionPtr& conn,
+                             muduo::net::Buffer* buffer, muduo::Timestamp) {
+    const auto found = g_metrics_requests.find(conn->name());
+    if (found == g_metrics_requests.end()) {
+        conn->forceClose();
+        return;
+    }
+    auto& request = found->second;
+    const size_t incoming = buffer->readableBytes();
+    if (request.size() + incoming > kMaxMetricsRequest) {
+        ReplyMetrics(conn, MetricsHttpResponse(400, "Bad Request", "request too large\n",
+                                               "text/plain; charset=utf-8"));
+        g_metrics_requests.erase(conn->name());
+        return;
+    }
+    request.append(buffer->peek(), incoming);
+    buffer->retrieveAll();
+    const auto kind = ClassifyMetricsRequest(request);
+    if (kind == MetricsRequestKind::Incomplete) return;
+    if (kind == MetricsRequestKind::Ok) {
+        ReplyMetrics(conn, MetricsHttpResponse(
+                               200, "OK", PrometheusText(BuildNodeInfo(std::nullopt)),
+                               "text/plain; version=0.0.4; charset=utf-8"));
+    } else if (kind == MetricsRequestKind::NotFound) {
+        ReplyMetrics(conn, MetricsHttpResponse(404, "Not Found", "not found\n",
+                                               "text/plain; charset=utf-8"));
+    } else if (kind == MetricsRequestKind::MethodNotAllowed) {
+        ReplyMetrics(conn, MetricsHttpResponse(405, "Method Not Allowed", "method not allowed\n",
+                                               "text/plain; charset=utf-8"));
+    } else {
+        ReplyMetrics(conn, MetricsHttpResponse(400, "Bad Request", "bad request\n",
+                                               "text/plain; charset=utf-8"));
+    }
+    g_metrics_requests.erase(conn->name());
+}
 static int RunServer() {
     if (FLAGS_group_commit_ms < 0 || FLAGS_group_commit_ms > 10 || FLAGS_max_clients < 1 ||
         FLAGS_snapshot_threshold < 0)
         throw std::invalid_argument("invalid group_commit_ms, max_clients, or snapshot_threshold");
     const auto peers = ParsePeers(FLAGS_peers);
     if (FLAGS_client_port < 1 || FLAGS_client_port > 65535 ||
-        FLAGS_raft_port < 1 || FLAGS_raft_port > 65535)
+        FLAGS_raft_port < 1 || FLAGS_raft_port > 65535 ||
+        FLAGS_metrics_port < 0 || FLAGS_metrics_port > 65535)
         throw std::invalid_argument("invalid listening port");
+    if (FLAGS_metrics_port != 0 &&
+        (FLAGS_metrics_port == FLAGS_client_port || FLAGS_metrics_port == FLAGS_raft_port))
+        throw std::invalid_argument("metrics_port collides with client_port or raft_port");
     for (const auto& peer : peers)
         if (peer.id == FLAGS_node_id && peer.raft_port != FLAGS_raft_port)
             throw std::invalid_argument("self peer port differs from raft_port");
@@ -591,6 +653,17 @@ static int RunServer() {
     server.setConnectionCallback(OnClientConnection);
     server.setMessageCallback(OnClientMessage);
     server.start();
+    std::unique_ptr<muduo::net::TcpServer> metrics;
+    if (FLAGS_metrics_port != 0) {
+        metrics = std::make_unique<muduo::net::TcpServer>(
+            &loop, muduo::net::InetAddress(static_cast<uint16_t>(FLAGS_metrics_port)),
+            "RaftKVMetrics");
+        metrics->setConnectionCallback(OnMetricsConnection);
+        metrics->setMessageCallback(OnMetricsMessage);
+        metrics->start();
+        EventLog(LogLevel::Info) << "metrics listening on port " << FLAGS_metrics_port
+                                << " path=/metrics";
+    }
     loop.loop();
     return 0;
 }

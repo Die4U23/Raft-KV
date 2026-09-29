@@ -88,6 +88,8 @@ Follower 的成功复制回复仍要求对应 Raft 日志已同步持久化；�
 
 同一进程未重启时，两次快照间的阶段均值为 `Δtotal_us / Δcount`，平均批大小为 `Δentries / Δcount`；分母为 0 时该区间没有样本。累计 `_max_us` 不能通过相减得到区间最大值。客户端 p50/p95/p99 仍需从压测工具获取。
 
+`--metrics_port` 默认 0。设成一个与 `client_port`、`raft_port` 都不同的端口后，该端口只接受 `GET /metrics`，返回 Prometheus 文本 0.0.4。数值字段与上面的 `INFO` 一一对应，名称前缀是 `raftkv_`。自进程启动累计的字段类型是 counter，当前值是 gauge。`state` 展开成 `raftkv_role{role="leader|follower|candidate|pre-candidate|stopped"}`。`namespace` 是当前 RESP 连接的状态，抓取结果里没有这一行。没有请求延迟直方图。抓取和 `INFO` 一样在事件循环上完成。
+
 ## 验证边界
 
 可移植 CTest 的当前目标见 [项目状态](review-status.md)。协议测试使用实际协议与缓冲代码；核心和存储批量测试通过进程内存储/网络替身检查批量顺序、配额、失败及恢复，并检查阶段指标的成功计数、批大小、整数均值及应用通知时机。核心异步场景使用手动执行器，控制应用与 owner 完成通知的先后。`async_executor_tests` 执行真实 `std::thread`，检查串行执行、owner 通知、异常传递及停止时 join；`batch_flush_tests` 使用实际调度策略和显式假事件队列，检查满批升格、旧 token 失效、不重置窗口、分轮处理及尾批期限，不调用 Muduo 定时器。

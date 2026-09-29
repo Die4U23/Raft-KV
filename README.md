@@ -100,6 +100,7 @@ $BIN --node_id=2 --client_port=8082 --raft_port=9082 \
 - `--linearizable_reads=true`：启用 ReadIndex 线性一致读（默认 false）
 - `--lease_reads=true`：在线性一致读下，Leader 租约有效时本地确认 GET（默认 false）
 - `--leader_only_reads=true`：仅在 Leader 节点响应读请求（默认 false）
+- `--metrics_port=9090`：在该端口提供 `GET /metrics`（Prometheus 文本）。默认 0，不监听。不能与 `client_port` 或 `raft_port` 相同
 
 ### 3. 读写
 
@@ -120,7 +121,7 @@ redis-cli -p 8080 DEL user:1
 | `GET key` | 默认读当前节点本地状态机；`--linearizable_reads=true` 时 Leader 走 ReadIndex，再加 `--lease_reads=true` 时租约有效则本地确认。Follower 返回 `MOVED` |
 | `DEL key` | 通过 Raft 删除，返回 `0` 或 `1` |
 | `SELECT namespace` | 为当前 TCP 连接选择逻辑命名空间 |
-| `INFO` | 查看角色、任期、Leader、提交/应用位置和过载指标 |
+| `INFO` | 查看角色、任期、Leader、提交/应用位置和过载指标。`--metrics_port` 非 0 时，同一组数字也可从 `GET /metrics` 抓取 |
 
 `SELECT` 只在当前连接上生效，分别执行的 `redis-cli` 进程不会共享命名空间状态。
 
