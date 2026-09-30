@@ -118,6 +118,89 @@ static void DivergentFollowerJumpsToSnapshot() {
     Check(install, "leader did not switch to InstallSnapshot");
 }
 
+static void InterruptedInstallRestartsAndReplicates() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Partition(50);
+    cluster.Node(10).SetSnapshotThreshold(1);
+    cluster.Node(10).SetSnapshotChunkBytes(8);
+    cluster.Node(30).SetSnapshotThreshold(1);
+    Check(cluster.Node(10).Propose(Command({"SET", "default:k", "snapshot-value"}),
+        [&](bool ok, const std::string&) { Check(ok, "SET failed"); }) > 0, "proposal rejected");
+    // Drop the append that still carries the entry. After the leader compacts it,
+    // a rejected retry must install the snapshot instead of replaying that append.
+    uint64_t dropped_rpc = 0;
+    std::deque<Message> kept;
+    for (auto& message : cluster.messages) {
+        if (message.to == 50 && message.type == RaftMsgType::kAppendEntries && dropped_rpc == 0) {
+            dropped_rpc = AppendRpcId(message);
+            continue;
+        }
+        kept.push_back(std::move(message));
+    }
+    cluster.messages = std::move(kept);
+    Check(dropped_rpc != 0, "leader did not send the partitioned append");
+    cluster.Pump();
+    cluster.Settle();
+    Check(cluster.Node(10).SnapshotIndex() > 0, "leader did not snapshot");
+    raftcore::AppendEntriesResponse rejection;
+    rejection.set_rpc_id(dropped_rpc);
+    rejection.set_term(cluster.Node(10).GetCurrentTerm());
+    rejection.set_success(false);
+    rejection.set_last_log_index(0);
+    cluster.Node(10).HandleAppendEntriesResponse(50, rejection);
+    cluster.Heal(50);
+    bool saw_partial = false;
+    for (int step = 0; step < 80 && !saw_partial; ++step) {
+        if (cluster.messages.empty()) {
+            cluster.Advance(10, RaftNode::kTickIntervalMs);
+            cluster.Node(10).Tick();
+        }
+        if (cluster.messages.empty()) continue;
+        auto message = std::move(cluster.messages.front());
+        cluster.messages.pop_front();
+        if (message.to == 50 && message.type == RaftMsgType::kInstallSnapshot) {
+            raftcore::InstallSnapshot rpc;
+            Check(rpc.ParseFromString(message.payload), "snapshot decode");
+            Check(!rpc.done(), "first snapshot chunk already finished the transfer");
+            cluster.Deliver(message);
+            saw_partial = true;
+            break;
+        }
+        cluster.Deliver(message);
+    }
+    Check(saw_partial, "leader did not send a partial snapshot chunk");
+    // The partial chunk lived only in memory. Restart drops it. The leader still
+    // has a later offset, learns the follower rejected it, and sends the snapshot again.
+    cluster.Restart(50);
+    bool installed = false;
+    std::string value;
+    for (int attempt = 0; attempt < 40; ++attempt) {
+        cluster.Settle();
+        if (cluster.State(50).Get("default:k", &value) && value == "snapshot-value") {
+            installed = true;
+            break;
+        }
+    }
+    Check(installed, "restarted follower did not finish the snapshot");
+    int callbacks = 0;
+    Check(cluster.Node(10).Propose(Command({"SET", "default:after", "next"}),
+        [&](bool ok, const std::string&) {
+            Check(ok, "post-snapshot SET failed");
+            ++callbacks;
+        }) > 0, "post-snapshot proposal rejected");
+    cluster.Pump();
+    for (int attempt = 0; attempt < 40 &&
+         !(cluster.State(50).Get("default:after", &value) && value == "next"); ++attempt) {
+        cluster.Settle();
+    }
+    Check(callbacks == 1, "post-snapshot callback missing");
+    Check(cluster.State(50).Get("default:k", &value) && value == "snapshot-value",
+          "snapshotted key disappeared after the later write");
+    Check(cluster.State(50).Get("default:after", &value) && value == "next",
+          "entry after the snapshot did not replicate");
+}
+
 static void OlderSnapshotDoesNotReplaceState() {
     Cluster cluster({10, 30});
     cluster.Elect(10);
@@ -145,6 +228,7 @@ int main() {
     try {
         SnapshotSurvivesRestart();
         LaggingPeerInstallsChunkedSnapshot();
+        InterruptedInstallRestartsAndReplicates();
         DivergentFollowerJumpsToSnapshot();
         OlderSnapshotDoesNotReplaceState();
         std::cout << "PASS: snapshots\n";

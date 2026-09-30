@@ -59,8 +59,20 @@ static void ClassifiesMetricsRequest() {
           "headers not finished");
     Check(ClassifyMetricsRequest("POST /metrics HTTP/1.1\r\n\r\n") == MetricsRequestKind::MethodNotAllowed,
           "POST");
-    Check(ClassifyMetricsRequest("GET /health HTTP/1.1\r\n\r\n") == MetricsRequestKind::NotFound,
+    Check(ClassifyMetricsRequest("GET /health HTTP/1.1\r\n\r\n") == MetricsRequestKind::Health,
+          "GET /health");
+    Check(ClassifyMetricsRequest("GET /statusz HTTP/1.1\r\n\r\n") == MetricsRequestKind::NotFound,
           "other path");
+    const std::string health = HealthText(1, "follower", 3, 0, true, true);
+    Check(health.find("ok\n") == 0 && health.find("state:follower\n") != std::string::npos &&
+              health.find("storage_healthy:1\n") != std::string::npos,
+          "healthy body");
+    // A stopped node is unavailable even when storage is still healthy.
+    const std::string stopped = HealthText(1, "stopped", 3, -1, false, true);
+    Check(stopped.find("unavailable\n") == 0 && stopped.find("storage_healthy:1\n") != std::string::npos,
+          "stopped body stays unavailable despite healthy storage");
+    Check(HealthText(1, "leader", 3, -1, false, false).find("storage_healthy:0\n") != std::string::npos,
+          "storage failure body");
     Check(ClassifyMetricsRequest("GET /metrics HTTP/2\r\n\r\n") == MetricsRequestKind::BadRequest,
           "bad version");
     const std::string body = "raftkv_term 1\n";

@@ -81,7 +81,9 @@ Git 可用时，报告目录还保存 HEAD、工作区状态和相关已跟踪�
 
 ## Docker 路径
 
-`docker/dev.Dockerfile` 只准备服务直接需要的 RocksDB 和 Muduo；Muduo 步骤复用同一个准备脚本、兼容参数和扩展开关。仓库不再携带未被服务链接的 brpc、braft、NuRaft 和 redis-plus-plus 源码归档。当前仍优先使用上面的 Ubuntu 26.04 原生流程；Docker 镜像需在有网络的 Linux 环境单独验证。
+`docker/dev.Dockerfile` 只准备服务直接需要的 RocksDB 和 Muduo；Muduo 步骤复用同一个准备脚本、兼容参数和扩展开关。仓库不再携带未被服务链接的 brpc、braft、NuRaft 和 redis-plus-plus 源码归档。
+
+`docker/runtime.Dockerfile` 以 `ubuntu:26.04` 为基底，安装与上面相同的软件包名，用固定的 `third_party/muduo.zip` 编出 `raft_kv_server`。`docker/compose.yaml` 启动三个容器，服务名是 `node0`、`node1`、`node2`，各自的卷挂在 `/data`，KV 目录和 Raft 日志目录分开。容器内客户端端口 8080、Raft 端口 9080、指标端口 9090；宿主机客户端端口是 8080、8081、8082。启动脚本把 peer 主机名解析成 IPv4 再交给进程，因为服务的地址解析只接受数字地址。`GET /health` 由镜像里的 HEALTHCHECK 访问。软件包版本仍是构建当时 Ubuntu 26.04 仓库里的版本。这条路径不在 GitHub Actions 里，三容器同机也不能写成多机容灾。当前仍优先使用上面的 Ubuntu 原生流程。
 
 ## 本地检查记录
 
