@@ -600,6 +600,15 @@ static void OnMetricsMessage(const muduo::net::TcpConnectionPtr& conn,
         ReplyMetrics(conn, MetricsHttpResponse(
                                200, "OK", PrometheusText(BuildNodeInfo(std::nullopt)),
                                "text/plain; version=0.0.4; charset=utf-8"));
+    } else if (kind == MetricsRequestKind::Health) {
+        const bool storage_healthy = g_raft->IsHealthy();
+        const bool up = storage_healthy && std::string(g_raft->StateName()) != "stopped";
+        ReplyMetrics(conn, MetricsHttpResponse(
+                               up ? 200 : 503, up ? "OK" : "Service Unavailable",
+                               HealthText(g_raft->GetNodeId(), g_raft->StateName(),
+                                          g_raft->GetCurrentTerm(), g_raft->GetLeaderId(),
+                                          up, storage_healthy),
+                               "text/plain; charset=utf-8"));
     } else if (kind == MetricsRequestKind::NotFound) {
         ReplyMetrics(conn, MetricsHttpResponse(404, "Not Found", "not found\n",
                                                "text/plain; charset=utf-8"));

@@ -96,11 +96,18 @@ $BIN --node_id=2 --client_port=8082 --raft_port=9082 \
 
 三条命令需在三个终端分别运行。启动后用 `redis-cli -p 8080 INFO` 查看角色和 Leader。
 
+同一台机器上也可以用运行镜像起三个容器。每个容器有自己的数据卷，KV 和 Raft 日志都在该卷的 `/data` 下。`GET /health` 只说明这个进程还在服务，不说明它是 Leader，也不说明多数派还在。
+
+```bash
+docker compose -f docker/compose.yaml up --build
+curl -fsS localhost:9090/health
+```
+
 **可选配置**：
 - `--linearizable_reads=true`：启用 ReadIndex 线性一致读（默认 false）
 - `--lease_reads=true`：在线性一致读下，Leader 租约有效时本地确认 GET（默认 false）
 - `--leader_only_reads=true`：仅在 Leader 节点响应读请求（默认 false）
-- `--metrics_port=9090`：在该端口提供 `GET /metrics`（Prometheus 文本）。默认 0，不监听。不能与 `client_port` 或 `raft_port` 相同
+- `--metrics_port=9090`：在该端口提供 `GET /metrics`（Prometheus 文本）和 `GET /health`。默认 0，不监听。不能与 `client_port` 或 `raft_port` 相同
 
 ### 3. 读写
 

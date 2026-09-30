@@ -88,7 +88,7 @@ Follower 的成功复制回复仍要求对应 Raft 日志已同步持久化；�
 
 同一进程未重启时，两次快照间的阶段均值为 `Δtotal_us / Δcount`，平均批大小为 `Δentries / Δcount`；分母为 0 时该区间没有样本。累计 `_max_us` 不能通过相减得到区间最大值。客户端 p50/p95/p99 仍需从压测工具获取。
 
-`--metrics_port` 默认 0。设成一个与 `client_port`、`raft_port` 都不同的端口后，该端口只接受 `GET /metrics`，返回 Prometheus 文本 0.0.4。数值字段与上面的 `INFO` 一一对应，名称前缀是 `raftkv_`。自进程启动累计的字段类型是 counter，当前值是 gauge。`state` 展开成 `raftkv_role{role="leader|follower|candidate|pre-candidate|stopped"}`。`namespace` 是当前 RESP 连接的状态，抓取结果里没有这一行。没有请求延迟直方图。抓取和 `INFO` 一样在事件循环上完成。
+`--metrics_port` 默认 0。设成一个与 `client_port`、`raft_port` 都不同的端口后，该端口接受 `GET /metrics` 和 `GET /health`。`/metrics` 返回 Prometheus 文本 0.0.4。数值字段与上面的 `INFO` 一一对应，名称前缀是 `raftkv_`。自进程启动累计的字段类型是 counter，当前值是 gauge。`state` 展开成 `raftkv_role{role="leader|follower|candidate|pre-candidate|stopped"}`。`namespace` 是当前 RESP 连接的状态，抓取结果里没有这一行。没有请求延迟直方图。抓取和 `INFO` 一样在事件循环上完成。
 
 ## 验证边界
 

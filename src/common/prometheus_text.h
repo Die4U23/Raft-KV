@@ -3,10 +3,11 @@
 // Cumulative fields are counters. Current values are gauges.
 // `state` becomes raftkv_role. `namespace` is per RESP connection and is omitted.
 #include <cctype>
+#include <cstdint>
 #include <string>
 #include <string_view>
 
-enum class MetricsRequestKind { Incomplete, Ok, NotFound, MethodNotAllowed, BadRequest };
+enum class MetricsRequestKind { Incomplete, Ok, Health, NotFound, MethodNotAllowed, BadRequest };
 
 inline bool EndsWith(std::string_view text, std::string_view suffix) {
     return text.size() >= suffix.size() &&
@@ -124,8 +125,25 @@ inline MetricsRequestKind ClassifyMetricsRequest(std::string_view raw) {
     const size_t query = target.find('?');
     if (query != std::string_view::npos) target = target.substr(0, query);
     if (method != "GET") return MetricsRequestKind::MethodNotAllowed;
+    if (target == "/health") return MetricsRequestKind::Health;
     if (target != "/metrics") return MetricsRequestKind::NotFound;
     return MetricsRequestKind::Ok;
+}
+
+// Process liveness for GET /health. `healthy` is the whole-process verdict that
+// drives the HTTP status and the first line (a follower can be healthy; a
+// stopped node is unhealthy even when storage is intact). `storage_healthy` is
+// the narrower storage signal. Neither reports whether the node has a quorum.
+inline std::string HealthText(int node_id, const char* state, int64_t term,
+                              int leader_id, bool healthy, bool storage_healthy) {
+    std::string out = std::string(healthy ? "ok\n" : "unavailable\n");
+    out += "node_id:" + std::to_string(node_id) + "\n";
+    out += "state:";
+    out += state;
+    out += "\nterm:" + std::to_string(term) + "\n";
+    out += "leader_id:" + std::to_string(leader_id) + "\n";
+    out += "storage_healthy:" + std::to_string(storage_healthy ? 1 : 0) + "\n";
+    return out;
 }
 
 inline std::string MetricsHttpResponse(int status, const char* reason,

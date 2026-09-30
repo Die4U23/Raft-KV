@@ -4,6 +4,11 @@
 
 截至 **2026-09-23**，下文按提交与代码核对记录。09-13 之后的条目曾漏记，已补录；不以合并说明或未归档压测数字作为收益证明。
 
+## 2026-09-29 — 运行镜像和进程健康检查
+
+- `--metrics_port` 上的 `GET /health` 在进程仍在跑且存储没有失败时返回 200，正文带本节点角色、任期和 Leader。存储失败或已经停止时返回 503。Follower 也可以是 200。这不表示当前有多数派。
+- `docker/runtime.Dockerfile` 用 Ubuntu 26.04 和与 Linux 构建说明相同的软件包名编出服务。`docker/compose.yaml` 起三个容器，各自挂独立的 `/data` 卷，里面是配对的 KV 目录和 Raft 日志目录。三个容器在同一台机器的一个 Docker 网络里，不是多机容灾。
+
 ## 2026-09-29 — 过载 soak 跟随 Leader 变更，不再因卸任失败
 
 - 过载脚本的 soak 客户端连到固定 Leader 后不处理卸任。CI runner 上心跳抖动触发 CheckQuorum 卸任时，SET 返回 `ERR leadership lost; outcome unknown`，soak 直接断言失败。现在遇到 leadership lost / MOVED / 断连时重新发现当前 Leader 并重试同一个 key/value，不算客户端错误。
