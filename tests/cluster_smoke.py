@@ -139,6 +139,44 @@ def expect(actual, expected, label):
         raise AssertionError("{}: expected {!r}, got {!r}".format(label, expected, actual))
 
 
+def health_fields(body):
+    if not body.startswith("ok\n"):
+        raise AssertionError("health body is not ok: {!r}".format(body))
+    fields = dict(line.split(":", 1) for line in body.splitlines() if ":" in line)
+    for name in ("node_id", "leader_id", "term", "storage_healthy"):
+        fields[name] = int(fields[name])
+    return fields
+
+
+def fetch_health(port):
+    sock = socket.create_connection(("127.0.0.1", port), timeout=2)
+    try:
+        sock.sendall(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        sock.settimeout(2)
+        data = b""
+        while b"\r\n\r\n" not in data:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        head, _, rest = data.partition(b"\r\n\r\n")
+        status = head.split(b"\r\n", 1)[0].decode("ascii", "replace")
+        length = None
+        for line in head.split(b"\r\n"):
+            if line.lower().startswith(b"content-length:"):
+                length = int(line.split(b":", 1)[1].strip())
+        if length is None:
+            raise AssertionError("health response has no content length: {!r}".format(head))
+        while len(rest) < length:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            rest += chunk
+        return status, rest[:length].decode()
+    finally:
+        sock.close()
+
+
 def parse_info(reply):
     if not isinstance(reply, bytes):
         raise AssertionError("INFO did not return a bulk string: {!r}".format(reply))
@@ -156,6 +194,7 @@ class Node:
         self.data = data_root / "node-{}".format(node_id)
         self.data.mkdir()
         self.log_path = artifacts / "node-{}.log".format(node_id)
+        self.metrics_port = None
         self.process = None
         self.log = None
         self.starts = []
@@ -169,6 +208,8 @@ class Node:
                    "--db_path={}".format(self.data / "kv"),
                    "--raft_log_path={}".format(self.data / "raft-log"),
                    "--peers=" + peers, "--leader_only_reads=false", "--logtostderr=true"]
+        if self.metrics_port:
+            command.append("--metrics_port={}".format(self.metrics_port))
         command.extend(extra_args)
         self.log = self.log_path.open("ab", buffering=0)
         self.log.write(("\n--- start {} ---\n".format(time.time())).encode("ascii"))
@@ -200,26 +241,44 @@ class Node:
 
 
 class Cluster:
-    def __init__(self, binary, data_root, artifacts, timeout):
+    def __init__(self, binary, data_root, artifacts, timeout, metrics=False):
         self.binary = binary
         self.deadline = time.monotonic() + timeout
         self.nodes = []
         self.reservations = []
         self.report = {"status": "RUNNING", "steps": [], "last_info": {}}
         # Hold all reservations until starting their respective node. No fixed ports.
-        for _ in range(6):
+        # metrics adds one HTTP port per node, after the six client/raft ports.
+        for _ in range(9 if metrics else 6):
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.reservations.append(sock)
             sock.bind(("127.0.0.1", 0))
         ports = [sock.getsockname()[1] for sock in self.reservations]
         for node_id in range(3):
-            self.nodes.append(Node(node_id, ports[2 * node_id:2 * node_id + 2],
-                                   data_root, artifacts))
+            node = Node(node_id, ports[2 * node_id:2 * node_id + 2], data_root, artifacts)
+            if metrics:
+                node.metrics_port = ports[6 + node_id]
+            self.nodes.append(node)
         self.peers = ",".join("{}:127.0.0.1:{}".format(node.node_id, node.raft_port)
                               for node in self.nodes)
 
     def client(self, node_id, io_timeout=2.0):
         return RespClient.connect(self.nodes[node_id].client_port, self.deadline, io_timeout)
+
+    def check_health(self):
+        leaders = []
+        for node in self.nodes:
+            status, body = fetch_health(node.metrics_port)
+            if not status.startswith("HTTP/1.1 200"):
+                raise AssertionError("node {} health status {!r}".format(node.node_id, status))
+            fields = health_fields(body)
+            expect(fields["node_id"], node.node_id, "health node identity")
+            expect(fields["storage_healthy"], 1, "health storage flag")
+            if fields["state"] == "leader":
+                leaders.append(node.node_id)
+            self.report["last_info"].setdefault("health", {})[str(node.node_id)] = fields
+        if len(leaders) != 1:
+            raise AssertionError("health roles did not show one leader: {}".format(leaders))
 
     def step(self, name):
         self.report["steps"].append(name)
@@ -283,10 +342,15 @@ class Cluster:
         for node in self.nodes:
             for reservation in self.reservations[2 * node.node_id:2 * node.node_id + 2]:
                 reservation.close()
+            if node.metrics_port:
+                self.reservations[6 + node.node_id].close()
             node.start(self.binary, self.peers)
         leader = self.wait_for("initial election", lambda: self.leader(range(3)))
         self.report["initial_leader"] = leader
         self.step("three nodes agree on one leader")
+        if self.nodes[0].metrics_port:
+            self.check_health()
+            self.step("GET /health returns 200 on every node and names one leader")
 
         original = b"before\x00failure\r\nvalue"
         with self.client(leader) as client:
@@ -357,6 +421,9 @@ class Cluster:
                                                     lambda: self.leader(range(3)))
         self.report["minimum_applied_index"] = committed
         self.step("old leader restarts from paired directories; all three nodes converge")
+        if self.nodes[0].metrics_port:
+            self.check_health()
+            self.step("GET /health still answers after the old leader restarts")
 
     def close(self):
         errors = []
@@ -391,6 +458,15 @@ class RespHelperTests(unittest.TestCase):
 
         def sendall(self, data):
             self.sent += data
+
+    def test_health_body_reads_role_and_storage(self):
+        fields = health_fields(
+            "ok\nnode_id:1\nstate:follower\nterm:3\nleader_id:0\nstorage_healthy:1\n")
+        self.assertEqual(fields["node_id"], 1)
+        self.assertEqual(fields["state"], "follower")
+        self.assertEqual(fields["storage_healthy"], 1)
+        with self.assertRaises(AssertionError):
+            health_fields("unavailable\nnode_id:1\nstate:stopped\nterm:3\nleader_id:-1\nstorage_healthy:0\n")
 
     def test_binary_encoding(self):
         self.assertEqual(encode_command("SET", "键", b"a\x00\r\nb"),
@@ -443,7 +519,7 @@ def main():
     artifacts = Path(tempfile.mkdtemp(prefix="run-", dir=str(args.artifacts.resolve())))
     print("Artifacts: {}".format(artifacts), flush=True)
     with tempfile.TemporaryDirectory(prefix="raft-kv-cluster-smoke-") as data:
-        cluster = Cluster(binary, Path(data), artifacts, args.timeout)
+        cluster = Cluster(binary, Path(data), artifacts, args.timeout, metrics=True)
         started = time.monotonic()
         try:
             cluster.run()

@@ -16,7 +16,7 @@
 - 幂等写：`IDEMP <client-id> <request-id> SET <key> <value>` 和 `IDEMP <client-id> <request-id> DEL <key>`。`request-id` 从 1 起，十进制，无前导 0。`client-id` 为 1 到 128 字节。同一个 id 再提交时返回第一次的回复，不改数据；更小的 id 返回 `-ERR stale request`。每个 client id 只保留最近一次，记录在 KV 里并随快照保留，不会过期。
 - 已受理但仍未提交的写，超过 1000 ms 回调 `-ERR proposal timeout; outcome unknown`。日志条目不删除，之后仍可能提交并应用。已经提交、只是还没应用完的写不会因这个期限失败。失去多数派时仍由 CheckQuorum 更快卸任，回调是 leadership lost。
 - `--metrics_port` 默认 0。打开后 `GET /metrics` 返回与 `INFO` 相同的数字，格式是 Prometheus 文本。角色、任期、提交和应用位置、应用积压、过载拒绝、阶段累计耗时都在里面。`namespace` 不在抓取结果里。没有直方图。同一端口的 `GET /health` 在进程仍在跑且存储没有失败时返回 200；Follower 也可以是 200。存储失败或进程已停止时返回 503。
-- `docker/runtime.Dockerfile` 和 `docker/compose.yaml` 可以在一台机器上起三个容器，每个容器有独立数据卷。这不在 CI 里，也不是多机部署。
+- `docker/runtime.Dockerfile` 和 `docker/compose.yaml` 可以在一台机器上起三个容器，每个容器有独立数据卷。镜像构建不在 CI 里，也不是多机部署。Linux 冒烟会给每个节点打开 `--metrics_port`，并检查 `GET /health` 在选举后和旧 Leader 重启后都返回 200，且恰好一个节点是 leader。
 
 ## 现在没有什么
 
