@@ -1,0 +1,1184 @@
+{
+  "status": "FAIL",
+  "test": "async_apply_compare",
+  "note": "One machine, one binary, sequential cells. Three repeats are this run only; do not treat a difference as a stable benefit. pipeline=1 latency and pipeline=16 batch latency are separate measurements. INFO polls during the timed window add the recorded sampling overhead and are not a heartbeat-delay measurement. RocksDB writes use DurableWriteOptions sync=true.",
+  "identity": {
+    "binary": {
+      "path": "/tmp/raft-kv-linux/server/raft_kv_server",
+      "sha256": "95acf231cb384dda80c3398204b7d3bc3cf53dbc28490bbcacb63988320cac4c"
+    },
+    "compiled_inputs": {
+      "CMakeLists.txt": "4ab1caf88b9ef7738e0542b0ead56422ceafa6947d0fb06e2450e1d0a954aaca",
+      "third_party/muduo.zip": "910d21d1343164e9517f32a5b77025cfeed0f20aae2ae86dd1ed399a7b4d2192",
+      "src/storage/rocksdb_store.h": "7a4c1ec7e7a714873bb6b65fc9ccb7942f8baef51c4c8634c5ac76168a0e63c5",
+      "src/storage/rocksdb_store.cpp": "c7ca7ad2a2fe3d670941df7b244d548b591bdb2afa4defd9b98a8ede86622191",
+      "src/storage/storage_error.h": "e494ff3ad86bdcc92869a67ceae55528aa8e3a11f1d59c5847248f066c06f836",
+      "src/raftcore/raft_log.cc": "ddffc34fad1f84495931f06c1d435a6a0222c7062d63fc8b425813dcc260bcee",
+      "src/raftcore/raft_log.h": "b2c023059a3d7f6475d0a5d2fc599595700cd19271dd37a1ce9880e221d87af7",
+      "src/common/metrics.h": "ac82995af66d66d59daf909e2943089bc952aafa8905a6879830e4f78b70b3d1",
+      "src/common/command_buffer.h": "ae2722a7706297f11c5276a4a6af335c44c57dbe5dbd1345e94652515860232f",
+      "src/common/session_queue.h": "bf19e82c1df668c7ff37364a7b5a22f4b6810c006e4073c9def6e55c1383094b",
+      "src/common/resp_parser.h": "99c2d0f560219b534857af14e15b5a3d0743aa4842aa032a55edb18dac0c6533",
+      "src/common/command_type.h": "dc9705f4ebda1c65bc729c084855911b0e2eb235e5b0923c26a77e19d8c8078e",
+      "src/common/prometheus_text.h": "5d17839ee8504fd5ee230eae1393102c395c377b7ac9aee44c5376fb4058356d",
+      "src/common/batch_flush_policy.h": "0df1957a3f66c30f25885647d89ec355365aebc8e2dd74b0d47d48d56fe92341",
+      "src/common/log.h": "32174dbb5a58e1dc07a848bc866eff5ea18ddae5be7081e4ea6ff06600b52435",
+      "src/common/peer_retry_policy.h": "6d176ed021b052cd8cafd888cc6bd44920761d3d57ee759bc2261072b82ed271",
+      "src/server/main.cpp": "4d11d79e1a7007260178181fff6e09dbed4f5e06d873962237b50017f8ec736b",
+      "src/raft/apply_executor.h": "c404fd71979d69be73b4a7ad3088b7f46e18ea16ee1473d95ea5d1cf358fc032",
+      "src/raft/raft_node.h": "fac1d43ff7af0530580a5b789d483a71546ed686887c2fec89f4e1ad218d7d0d",
+      "src/raft/peer_manager.cc": "9664272eef565ffd64d9af42227ad2aa55ffab48730fa5b8d9d31d9d4e900497",
+      "src/raft/kv_state_machine.h": "f4b3ba06d5257f7a4e2870bfa8a8eb5518fc6272d1600f34b697e5af1e332391",
+      "src/raft/peer_manager.h": "9f5bc70bfe62914acb55da2254a719333c12f8bf325c60d09ce6f703cb6e0665",
+      "src/raft/kv_state_machine.cc": "ad46ff224b6b5bc08c38a7b9a446af7fe87295b8e9f2dfbf7cb9c49f69a0aba4",
+      "src/raft/serial_apply_executor.h": "e1e0a1512269e536e0ad258087252be46cb8aea52a87d3a1abf73d46712e62ba",
+      "src/raft/raft_codec.h": "f63f305e35a29a2fdf6ea44a868f1d4bad7336d6ad4c8a4be95f2acb8395ba73",
+      "src/raft/serial_apply_executor.cc": "3b7771964b1b195e3dab72394e368c23d75657141f2b7ef55368673088cf78f6",
+      "src/raft/raft_node.cc": "beb4ea556e541b96a1cd1ea52c23d02f3cd792c71be21e62645be1aac0aa966e",
+      "src/raft/peers.h": "653a298fa88db12d54a78eed51c60aa714e276b8fa152a9c5d059d2bcd901b3f",
+      "src/namespace/namespace_manager.cc": "a72e2ecd0752288ecac43f5976bd404c1c9178e10560cd8cf04bc4e79e1e4274",
+      "src/namespace/namespace_manager.h": "d1d9b7c77b993a0bc7a367ed75f3169ede0f9ec9c91bf85f43fd95fb5379491a",
+      "proto/raft_messages.proto": "56b9e85383fac5b79de390e34d64834cc72d2601dafc39b026f0c8044290dc37"
+    },
+    "script_sha256": "22fcacb4861ed54d0c2299de6ca4756647479c40f8ea60092cc75b30750d90f6",
+    "build_report_sha256": "8c5b70362c1b8742a1aa5aad728a76366aa0d6cd525a1230ff2d21d2728d0881"
+  },
+  "environment": {
+    "cpu_count": 2,
+    "affinity": [
+      0,
+      1
+    ],
+    "kernel": "7.0.0-34-generic",
+    "filesystem": {
+      "device": "/dev/sda2",
+      "mount": "/",
+      "fstype": "ext4"
+    },
+    "deployment": "three servers and one Python load process on one machine, one cell at a time"
+  },
+  "configuration": {
+    "connections": 32,
+    "requests": 20000,
+    "warmup_requests": 5000,
+    "value_size": 128,
+    "write_ratio": 0.5,
+    "pipelines": [
+      1,
+      16
+    ],
+    "repeats": 3,
+    "group_commit_ms": 1,
+    "snapshot_threshold": 1024,
+    "linearizable_reads": false,
+    "info_interval_seconds": 1.0
+  },
+  "cells": [
+    {
+      "pipeline": 1,
+      "async_apply": false,
+      "repeat": 0,
+      "status": "PASS",
+      "artifact": "/home/a/.cache/raft-kv-apply-compare/run-hvpuvo7v/p1-async-0-r0",
+      "goodput_ops_per_second": 1378.8277648093103,
+      "errors": 0,
+      "errors_by_category": {
+        "moved": 0,
+        "overload": 0,
+        "other": 0,
+        "timeout": 0,
+        "connection": 0
+      },
+      "elapsed_seconds": 14.505074897999293,
+      "batch_latency_ms": {
+        "p50": 20.184617998893373,
+        "p95": 43.94799295041594,
+        "p99": 81.42944599909231
+      },
+      "cpu": {
+        "window_seconds": 14.538330934999976,
+        "processes": {
+          "0": {
+            "cpu_seconds": 3.1699999999999995,
+            "percent_of_one_core": 21.804428680106977
+          },
+          "1": {
+            "cpu_seconds": 1.15,
+            "percent_of_one_core": 7.910123969123982
+          },
+          "2": {
+            "cpu_seconds": 1.21,
+            "percent_of_one_core": 8.32282608925219
+          },
+          "client": {
+            "cpu_seconds": 3.8699999999999997,
+            "percent_of_one_core": 26.6192867482694
+          }
+        },
+        "system_percent": {
+          "user": 66.25215889464594,
+          "nice": 0.0,
+          "system": 26.355785837651123,
+          "idle": 0.9671848013816926,
+          "iowait": 0.03454231433506045,
+          "irq": 0.0,
+          "softirq": 6.390328151986183,
+          "steal": 0.0
+        }
+      },
+      "stages": {
+        "write_queue_wait": {
+          "count": 10000,
+          "mean_us": 2718.35
+        },
+        "leader_log_write": {
+          "count": 1417,
+          "mean_us": 2142.5822159491886,
+          "mean_entries": 7.057163020465773
+        },
+        "replication_data_ack": {
+          "count": 2562,
+          "mean_us": 6258.106557377049
+        },
+        "kv_apply": {
+          "count": 1391,
+          "mean_us": 1773.3378864126528,
+          "mean_entries": 7.1890726096333575
+        },
+        "apply_dispatch": {
+          "count": 1391,
+          "mean_us": 0.0
+        },
+        "write_completed": {
+          "count": 10000,
+          "mean_us": 13100.6261
+        },
+        "local_read": {
+          "count": 10000,
+          "mean_us": 25.5306
+        }
+      },
+      "info_summary": {
+        "sample_count": 14,
+        "sampling_overhead_seconds": 0.41454432101454586,
+        "leadership_disagreements": 0,
+        "max_apply_lag": 0,
+        "term_increases": 0,
+        "terms_seen": [
+          1
+        ]
+      },
+      "info_during_errors": [],
+      "error": null,
+      "cleanup_error": null
+    },
+    {
+      "pipeline": 1,
+      "async_apply": true,
+      "repeat": 0,
+      "status": "PASS",
+      "artifact": "/home/a/.cache/raft-kv-apply-compare/run-hvpuvo7v/p1-async-1-r0",
+      "goodput_ops_per_second": 1721.3874191219763,
+      "errors": 0,
+      "errors_by_category": {
+        "moved": 0,
+        "overload": 0,
+        "other": 0,
+        "timeout": 0,
+        "connection": 0
+      },
+      "elapsed_seconds": 11.61853501299629,
+      "batch_latency_ms": {
+        "p50": 16.7600165004842,
+        "p95": 38.18174800107954,
+        "p99": 53.464834998303544
+      },
+      "cpu": {
+        "window_seconds": 11.625406916995416,
+        "processes": {
+          "0": {
+            "cpu_seconds": 4.11,
+            "percent_of_one_core": 35.353601205920015
+          },
+          "1": {
+            "cpu_seconds": 1.76,
+            "percent_of_one_core": 15.139255017620249
+          },
+          "2": {
+            "cpu_seconds": 1.81,
+            "percent_of_one_core": 15.569347489711733
+          },
+          "client": {
+            "cpu_seconds": 4.300000000000001,
+            "percent_of_one_core": 36.987952599867654
+          }
+        },
+        "system_percent": {
+          "user": 56.366797044763146,
+          "nice": 0.0,
+          "system": 32.72490221642764,
+          "idle": 1.6079965232507605,
+          "iowait": 0.21729682746631898,
+          "irq": 0.0,
+          "softirq": 9.083007388092135,
+          "steal": 0.0
+        }
+      },
+      "stages": {
+        "write_queue_wait": {
+          "count": 10000,
+          "mean_us": 1871.5742
+        },
+        "leader_log_write": {
+          "count": 1659,
+          "mean_us": 1591.24773960217,
+          "mean_entries": 6.027727546714888
+        },
+        "replication_data_ack": {
+          "count": 3257,
+          "mean_us": 3699.151059256985
+        },
+        "kv_apply": {
+          "count": 1640,
+          "mean_us": 1563.9737804878048,
+          "mean_entries": 6.097560975609756
+        },
+        "apply_dispatch": {
+          "count": 1640,
+          "mean_us": 1390.533536585366
+        },
+        "write_completed": {
+          "count": 10000,
+          "mean_us": 11526.5996
+        },
+        "local_read": {
+          "count": 10000,
+          "mean_us": 25.8861
+        }
+      },
+      "info_summary": {
+        "sample_count": 12,
+        "sampling_overhead_seconds": 0.2255967579985736,
+        "leadership_disagreements": 0,
+        "max_apply_lag": 6,
+        "term_increases": 0,
+        "terms_seen": [
+          1
+        ]
+      },
+      "info_during_errors": [],
+      "error": null,
+      "cleanup_error": null
+    },
+    {
+      "pipeline": 1,
+      "async_apply": true,
+      "repeat": 1,
+      "status": "FAIL",
+      "artifact": "/home/a/.cache/raft-kv-apply-compare/run-hvpuvo7v/p1-async-1-r1",
+      "goodput_ops_per_second": 1734.7250011178016,
+      "errors": 6199,
+      "errors_by_category": {
+        "moved": 6176,
+        "overload": 0,
+        "other": 23,
+        "timeout": 0,
+        "connection": 0
+      },
+      "elapsed_seconds": 7.955727847991511,
+      "batch_latency_ms": {
+        "p50": 10.012260507210158,
+        "p95": 27.540631006559124,
+        "p99": 39.78769200461101
+      },
+      "cpu": null,
+      "stages": null,
+      "info_summary": null,
+      "info_during_errors": [],
+      "error": "Traceback (most recent call last):\n  File \"/home/a/projects/raft-kv/tests/async_apply_compare.py\", line 179, in worker\n    asyncio.run(run())\n    ~~~~~~~~~~~^^^^^^^\n  File \"/usr/lib/python3.14/asyncio/runners.py\", line 204, in run\n    return runner.run(main)\n           ~~~~~~~~~~^^^^^^\n  File \"/usr/lib/python3.14/asyncio/runners.py\", line 127, in run\n    return self._loop.run_until_complete(task)\n           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^\n  File \"/usr/lib/python3.14/asyncio/base_events.py\", line 719, in run_until_complete\n    return future.result()\n           ~~~~~~~~~~~~~^^\n  File \"/home/a/projects/raft-kv/tests/async_apply_compare.py\", line 162, in run\n    raise RuntimeError('Measured workload had client errors')\nRuntimeError: Measured workload had client errors\n",
+      "cleanup_error": null
+    },
+    {
+      "pipeline": 1,
+      "async_apply": false,
+      "repeat": 1,
+      "status": "PASS",
+      "artifact": "/home/a/.cache/raft-kv-apply-compare/run-hvpuvo7v/p1-async-0-r1",
+      "goodput_ops_per_second": 1549.7707297629834,
+      "errors": 0,
+      "errors_by_category": {
+        "moved": 0,
+        "overload": 0,
+        "other": 0,
+        "timeout": 0,
+        "connection": 0
+      },
+      "elapsed_seconds": 12.90513468599238,
+      "batch_latency_ms": {
+        "p50": 18.562441000540275,
+        "p95": 39.73186099683516,
+        "p99": 57.24602499729368
+      },
+      "cpu": {
+        "window_seconds": 12.925870197010227,
+        "processes": {
+          "0": {
+            "cpu_seconds": 3.29,
+            "percent_of_one_core": 25.452831800531172
+          },
+          "1": {
+            "cpu_seconds": 1.27,
+            "percent_of_one_core": 9.825257260387412
+          },
+          "2": {
+            "cpu_seconds": 1.14,
+            "percent_of_one_core": 8.819522265229645
+          },
+          "client": {
+            "cpu_seconds": 4.16,
+            "percent_of_one_core": 32.18351984504853
+          }
+        },
+        "system_percent": {
+          "user": 62.19274287943816,
+          "nice": 0.0,
+          "system": 29.574717128365197,
+          "idle": 1.2485368708544675,
+          "iowait": 0.11705033164260632,
+          "irq": 0.0,
+          "softirq": 6.866952789699571,
+          "steal": 0.0
+        }
+      },
+      "stages": {
+        "write_queue_wait": {
+          "count": 10000,
+          "mean_us": 2489.6599
+        },
+        "leader_log_write": {
+          "count": 1406,
+          "mean_us": 1821.834281650071,
+          "mean_entries": 7.112375533428165
+        },
+        "replication_data_ack": {
+          "count": 2502,
+          "mean_us": 5919.315347721823
+        },
+        "kv_apply": {
+          "count": 1380,
+          "mean_us": 1654.0376811594203,
+          "mean_entries": 7.246376811594203
+        },
+        "apply_dispatch": {
+          "count": 1380,
+          "mean_us": 0.0
+        },
+        "write_completed": {
+          "count": 10000,
+          "mean_us": 12079.8056
+        },
+        "local_read": {
+          "count": 10000,
+          "mean_us": 25.1032
+        }
+      },
+      "info_summary": {
+        "sample_count": 13,
+        "sampling_overhead_seconds": 0.2803160939947702,
+        "leadership_disagreements": 0,
+        "max_apply_lag": 0,
+        "term_increases": 0,
+        "terms_seen": [
+          1
+        ]
+      },
+      "info_during_errors": [],
+      "error": null,
+      "cleanup_error": null
+    },
+    {
+      "pipeline": 1,
+      "async_apply": false,
+      "repeat": 2,
+      "status": "PASS",
+      "artifact": "/home/a/.cache/raft-kv-apply-compare/run-hvpuvo7v/p1-async-0-r2",
+      "goodput_ops_per_second": 1574.3435289385418,
+      "errors": 0,
+      "errors_by_category": {
+        "moved": 0,
+        "overload": 0,
+        "other": 0,
+        "timeout": 0,
+        "connection": 0
+      },
+      "elapsed_seconds": 12.70370769299916,
+      "batch_latency_ms": {
+        "p50": 18.092997997882776,
+        "p95": 39.202914007910294,
+        "p99": 80.79950900253607
+      },
+      "cpu": {
+        "window_seconds": 12.709970105002867,
+        "processes": {
+          "0": {
+            "cpu_seconds": 1.16,
+            "percent_of_one_core": 9.126693378636693
+          },
+          "1": {
+            "cpu_seconds": 3.04,
+            "percent_of_one_core": 23.91823092332375
+          },
+          "2": {
+            "cpu_seconds": 1.0699999999999998,
+            "percent_of_one_core": 8.418587857880398
+          },
+          "client": {
+            "cpu_seconds": 3.8100000000000005,
+            "percent_of_one_core": 29.97646704534984
+          }
+        },
+        "system_percent": {
+          "user": 65.58415841584159,
+          "nice": 0.0,
+          "system": 27.366336633663366,
+          "idle": 1.1485148514851484,
+          "iowait": 0.07920792079207921,
+          "irq": 0.0,
+          "softirq": 5.821782178217822,
+          "steal": 0.0
+        }
+      },
+      "stages": {
+        "write_queue_wait": {
+          "count": 10000,
+          "mean_us": 2467.1176
+        },
+        "leader_log_write": {
+          "count": 1383,
+          "mean_us": 1902.3767172812727,
+          "mean_entries": 7.230657989877079
+        },
+        "replication_data_ack": {
+          "count": 2508,
+          "mean_us": 5521.155103668261
+        },
+        "kv_apply": {
+          "count": 1355,
+          "mean_us": 1595.2442804428044,
+          "mean_entries": 7.380073800738008
+        },
+        "apply_dispatch": {
+          "count": 1355,
+          "mean_us": 0.0
+        },
+        "write_completed": {
+          "count": 10000,
+          "mean_us": 11753.5832
+        },
+        "local_read": {
+          "count": 10000,
+          "mean_us": 25.8571
+        }
+      },
+      "info_summary": {
+        "sample_count": 13,
+        "sampling_overhead_seconds": 0.35835670300002676,
+        "leadership_disagreements": 0,
+        "max_apply_lag": 0,
+        "term_increases": 0,
+        "terms_seen": [
+          1
+        ]
+      },
+      "info_during_errors": [],
+      "error": null,
+      "cleanup_error": null
+    },
+    {
+      "pipeline": 1,
+      "async_apply": true,
+      "repeat": 2,
+      "status": "PASS",
+      "artifact": "/home/a/.cache/raft-kv-apply-compare/run-hvpuvo7v/p1-async-1-r2",
+      "goodput_ops_per_second": 1802.1866459317446,
+      "errors": 0,
+      "errors_by_category": {
+        "moved": 0,
+        "overload": 0,
+        "other": 0,
+        "timeout": 0,
+        "connection": 0
+      },
+      "elapsed_seconds": 11.097629674011841,
+      "batch_latency_ms": {
+        "p50": 16.334822001226712,
+        "p95": 33.903032996749964,
+        "p99": 45.52571601205272
+      },
+      "cpu": {
+        "window_seconds": 11.104270982003072,
+        "processes": {
+          "0": {
+            "cpu_seconds": 1.47,
+            "percent_of_one_core": 13.238149558691969
+          },
+          "1": {
+            "cpu_seconds": 3.5599999999999996,
+            "percent_of_one_core": 32.05973634622
+          },
+          "2": {
+            "cpu_seconds": 1.4600000000000002,
+            "percent_of_one_core": 13.148094119517195
+          },
+          "client": {
+            "cpu_seconds": 3.76,
+            "percent_of_one_core": 33.86084512971551
+          }
+        },
+        "system_percent": {
+          "user": 60.280797101449274,
+          "nice": 0.0,
+          "system": 30.7518115942029,
+          "idle": 0.9510869565217391,
+          "iowait": 0.04528985507246377,
+          "irq": 0.0,
+          "softirq": 7.971014492753623,
+          "steal": 0.0
+        }
+      },
+      "stages": {
+        "write_queue_wait": {
+          "count": 10000,
+          "mean_us": 1794.8467
+        },
+        "leader_log_write": {
+          "count": 1580,
+          "mean_us": 1453.0949367088608,
+          "mean_entries": 6.329113924050633
+        },
+        "replication_data_ack": {
+          "count": 3095,
+          "mean_us": 3370.444911147011
+        },
+        "kv_apply": {
+          "count": 1560,
+          "mean_us": 1401.5141025641026,
+          "mean_entries": 6.410256410256411
+        },
+        "apply_dispatch": {
+          "count": 1560,
+          "mean_us": 1278.4788461538462
+        },
+        "write_completed": {
+          "count": 10000,
+          "mean_us": 10692.2544
+        },
+        "local_read": {
+          "count": 10000,
+          "mean_us": 23.843
+        }
+      },
+      "info_summary": {
+        "sample_count": 11,
+        "sampling_overhead_seconds": 0.19716215498920064,
+        "leadership_disagreements": 0,
+        "max_apply_lag": 15,
+        "term_increases": 0,
+        "terms_seen": [
+          1
+        ]
+      },
+      "info_during_errors": [],
+      "error": null,
+      "cleanup_error": null
+    },
+    {
+      "pipeline": 16,
+      "async_apply": false,
+      "repeat": 0,
+      "status": "PASS",
+      "artifact": "/home/a/.cache/raft-kv-apply-compare/run-hvpuvo7v/p16-async-0-r0",
+      "goodput_ops_per_second": 2653.288442474062,
+      "errors": 0,
+      "errors_by_category": {
+        "moved": 0,
+        "overload": 0,
+        "other": 0,
+        "timeout": 0,
+        "connection": 0
+      },
+      "elapsed_seconds": 7.537815971998498,
+      "batch_latency_ms": {
+        "p50": 186.73029750061687,
+        "p95": 271.6950699003064,
+        "p99": 351.3732966674435
+      },
+      "cpu": {
+        "window_seconds": 7.55329615600931,
+        "processes": {
+          "0": {
+            "cpu_seconds": 2.1,
+            "percent_of_one_core": 27.80243163548229
+          },
+          "1": {
+            "cpu_seconds": 0.7000000000000001,
+            "percent_of_one_core": 9.26747721182743
+          },
+          "2": {
+            "cpu_seconds": 0.71,
+            "percent_of_one_core": 9.399869743424965
+          },
+          "client": {
+            "cpu_seconds": 2.1599999999999997,
+            "percent_of_one_core": 28.596786825067493
+          }
+        },
+        "system_percent": {
+          "user": 60.72386058981233,
+          "nice": 0.0,
+          "system": 30.697050938337803,
+          "idle": 2.0777479892761392,
+          "iowait": 0.13404825737265416,
+          "irq": 0.0,
+          "softirq": 6.367292225201072,
+          "steal": 0.0
+        }
+      },
+      "stages": {
+        "write_queue_wait": {
+          "count": 10000,
+          "mean_us": 4138.1427
+        },
+        "leader_log_write": {
+          "count": 657,
+          "mean_us": 2531.138508371385,
+          "mean_entries": 15.220700152207002
+        },
+        "replication_data_ack": {
+          "count": 1118,
+          "mean_us": 9115.232558139534
+        },
+        "kv_apply": {
+          "count": 633,
+          "mean_us": 1979.568720379147,
+          "mean_entries": 15.797788309636651
+        },
+        "apply_dispatch": {
+          "count": 633,
+          "mean_us": 0.0
+        },
+        "write_completed": {
+          "count": 10000,
+          "mean_us": 20230.1062
+        },
+        "local_read": {
+          "count": 10000,
+          "mean_us": 28.41
+        }
+      },
+      "info_summary": {
+        "sample_count": 8,
+        "sampling_overhead_seconds": 0.25927418800711166,
+        "leadership_disagreements": 0,
+        "max_apply_lag": 0,
+        "term_increases": 0,
+        "terms_seen": [
+          1
+        ]
+      },
+      "info_during_errors": [],
+      "error": null,
+      "cleanup_error": null
+    },
+    {
+      "pipeline": 16,
+      "async_apply": true,
+      "repeat": 0,
+      "status": "PASS",
+      "artifact": "/home/a/.cache/raft-kv-apply-compare/run-hvpuvo7v/p16-async-1-r0",
+      "goodput_ops_per_second": 2835.1489023700797,
+      "errors": 0,
+      "errors_by_category": {
+        "moved": 0,
+        "overload": 0,
+        "other": 0,
+        "timeout": 0,
+        "connection": 0
+      },
+      "elapsed_seconds": 7.054303209006321,
+      "batch_latency_ms": {
+        "p50": 180.17343950486975,
+        "p95": 232.2705448626948,
+        "p99": 244.34977005876138
+      },
+      "cpu": {
+        "window_seconds": 7.063288983001257,
+        "processes": {
+          "0": {
+            "cpu_seconds": 0.78,
+            "percent_of_one_core": 11.043014123833437
+          },
+          "1": {
+            "cpu_seconds": 2.24,
+            "percent_of_one_core": 31.713271329983208
+          },
+          "2": {
+            "cpu_seconds": 0.77,
+            "percent_of_one_core": 10.901437019681726
+          },
+          "client": {
+            "cpu_seconds": 1.58,
+            "percent_of_one_core": 22.369182455970297
+          }
+        },
+        "system_percent": {
+          "user": 62.01716738197425,
+          "nice": 0.0,
+          "system": 28.540772532188843,
+          "idle": 2.1459227467811157,
+          "iowait": 0.1430615164520744,
+          "irq": 0.0,
+          "softirq": 7.15307582260372,
+          "steal": 0.0
+        }
+      },
+      "stages": {
+        "write_queue_wait": {
+          "count": 10000,
+          "mean_us": 4161.6487
+        },
+        "leader_log_write": {
+          "count": 673,
+          "mean_us": 1933.7741456166418,
+          "mean_entries": 14.85884101040119
+        },
+        "replication_data_ack": {
+          "count": 1337,
+          "mean_us": 4990.982797307404
+        },
+        "kv_apply": {
+          "count": 668,
+          "mean_us": 1837.2859281437127,
+          "mean_entries": 14.970059880239521
+        },
+        "apply_dispatch": {
+          "count": 668,
+          "mean_us": 2040.9850299401198
+        },
+        "write_completed": {
+          "count": 10000,
+          "mean_us": 18312.4739
+        },
+        "local_read": {
+          "count": 10000,
+          "mean_us": 30.1301
+        }
+      },
+      "info_summary": {
+        "sample_count": 7,
+        "sampling_overhead_seconds": 0.11557978999917395,
+        "leadership_disagreements": 0,
+        "max_apply_lag": 26,
+        "term_increases": 0,
+        "terms_seen": [
+          1
+        ]
+      },
+      "info_during_errors": [],
+      "error": null,
+      "cleanup_error": null
+    },
+    {
+      "pipeline": 16,
+      "async_apply": true,
+      "repeat": 1,
+      "status": "PASS",
+      "artifact": "/home/a/.cache/raft-kv-apply-compare/run-hvpuvo7v/p16-async-1-r1",
+      "goodput_ops_per_second": 3253.2010595595198,
+      "errors": 0,
+      "errors_by_category": {
+        "moved": 0,
+        "overload": 0,
+        "other": 0,
+        "timeout": 0,
+        "connection": 0
+      },
+      "elapsed_seconds": 6.147790940012783,
+      "batch_latency_ms": {
+        "p50": 152.34017700277036,
+        "p95": 224.57402095024008,
+        "p99": 316.93309399983264
+      },
+      "cpu": {
+        "window_seconds": 6.179845493010362,
+        "processes": {
+          "0": {
+            "cpu_seconds": 2.16,
+            "percent_of_one_core": 34.95233015846499
+          },
+          "1": {
+            "cpu_seconds": 0.71,
+            "percent_of_one_core": 11.488960376162103
+          },
+          "2": {
+            "cpu_seconds": 0.74,
+            "percent_of_one_core": 11.974409406140783
+          },
+          "client": {
+            "cpu_seconds": 1.6300000000000003,
+            "percent_of_one_core": 26.37606396217497
+          }
+        },
+        "system_percent": {
+          "user": 61.582381729200655,
+          "nice": 0.0,
+          "system": 29.200652528548122,
+          "idle": 1.468189233278956,
+          "iowait": 0.08156606851549755,
+          "irq": 0.0,
+          "softirq": 7.66721044045677,
+          "steal": 0.0
+        }
+      },
+      "stages": {
+        "write_queue_wait": {
+          "count": 10000,
+          "mean_us": 3666.1695
+        },
+        "leader_log_write": {
+          "count": 638,
+          "mean_us": 1680.3432601880877,
+          "mean_entries": 15.67398119122257
+        },
+        "replication_data_ack": {
+          "count": 1241,
+          "mean_us": 4562.11361804996
+        },
+        "kv_apply": {
+          "count": 634,
+          "mean_us": 1651.2460567823343,
+          "mean_entries": 15.772870662460567
+        },
+        "apply_dispatch": {
+          "count": 634,
+          "mean_us": 1737.1198738170347
+        },
+        "write_completed": {
+          "count": 10000,
+          "mean_us": 15991.699
+        },
+        "local_read": {
+          "count": 10000,
+          "mean_us": 25.2968
+        }
+      },
+      "info_summary": {
+        "sample_count": 6,
+        "sampling_overhead_seconds": 0.20558433601399884,
+        "leadership_disagreements": 0,
+        "max_apply_lag": 29,
+        "term_increases": 0,
+        "terms_seen": [
+          1
+        ]
+      },
+      "info_during_errors": [],
+      "error": null,
+      "cleanup_error": null
+    },
+    {
+      "pipeline": 16,
+      "async_apply": false,
+      "repeat": 1,
+      "status": "PASS",
+      "artifact": "/home/a/.cache/raft-kv-apply-compare/run-hvpuvo7v/p16-async-0-r1",
+      "goodput_ops_per_second": 2892.041685217697,
+      "errors": 0,
+      "errors_by_category": {
+        "moved": 0,
+        "overload": 0,
+        "other": 0,
+        "timeout": 0,
+        "connection": 0
+      },
+      "elapsed_seconds": 6.91552964199218,
+      "batch_latency_ms": {
+        "p50": 163.32622399932006,
+        "p95": 245.6247826965407,
+        "p99": 349.1391559963813
+      },
+      "cpu": {
+        "window_seconds": 6.928255364997312,
+        "processes": {
+          "0": {
+            "cpu_seconds": 0.59,
+            "percent_of_one_core": 8.515852388766978
+          },
+          "1": {
+            "cpu_seconds": 1.83,
+            "percent_of_one_core": 26.41357605329419
+          },
+          "2": {
+            "cpu_seconds": 0.56,
+            "percent_of_one_core": 8.082842945270354
+          },
+          "client": {
+            "cpu_seconds": 1.7000000000000002,
+            "percent_of_one_core": 24.537201798142146
+          }
+        },
+        "system_percent": {
+          "user": 63.47131445170661,
+          "nice": 0.0,
+          "system": 28.758169934640524,
+          "idle": 1.1619462599854757,
+          "iowait": 0.2178649237472767,
+          "irq": 0.0,
+          "softirq": 6.390704429920116,
+          "steal": 0.0
+        }
+      },
+      "stages": {
+        "write_queue_wait": {
+          "count": 10000,
+          "mean_us": 4149.3879
+        },
+        "leader_log_write": {
+          "count": 618,
+          "mean_us": 2241.2038834951454,
+          "mean_entries": 16.181229773462782
+        },
+        "replication_data_ack": {
+          "count": 1072,
+          "mean_us": 8272.425373134329
+        },
+        "kv_apply": {
+          "count": 599,
+          "mean_us": 1690.7646076794658,
+          "mean_entries": 16.69449081803005
+        },
+        "apply_dispatch": {
+          "count": 599,
+          "mean_us": 0.0
+        },
+        "write_completed": {
+          "count": 10000,
+          "mean_us": 17725.2133
+        },
+        "local_read": {
+          "count": 10000,
+          "mean_us": 22.9781
+        }
+      },
+      "info_summary": {
+        "sample_count": 7,
+        "sampling_overhead_seconds": 0.29089214600389823,
+        "leadership_disagreements": 0,
+        "max_apply_lag": 0,
+        "term_increases": 0,
+        "terms_seen": [
+          1
+        ]
+      },
+      "info_during_errors": [],
+      "error": null,
+      "cleanup_error": null
+    },
+    {
+      "pipeline": 16,
+      "async_apply": false,
+      "repeat": 2,
+      "status": "PASS",
+      "artifact": "/home/a/.cache/raft-kv-apply-compare/run-hvpuvo7v/p16-async-0-r2",
+      "goodput_ops_per_second": 3657.6726974953294,
+      "errors": 0,
+      "errors_by_category": {
+        "moved": 0,
+        "overload": 0,
+        "other": 0,
+        "timeout": 0,
+        "connection": 0
+      },
+      "elapsed_seconds": 5.467957811997621,
+      "batch_latency_ms": {
+        "p50": 129.44354599312646,
+        "p95": 213.20076019983384,
+        "p99": 227.33480711016458
+      },
+      "cpu": {
+        "window_seconds": 5.470962070001406,
+        "processes": {
+          "0": {
+            "cpu_seconds": 0.5700000000000001,
+            "percent_of_one_core": 10.41864287682502
+          },
+          "1": {
+            "cpu_seconds": 1.7499999999999998,
+            "percent_of_one_core": 31.987061463936453
+          },
+          "2": {
+            "cpu_seconds": 0.5,
+            "percent_of_one_core": 9.13916041826756
+          },
+          "client": {
+            "cpu_seconds": 1.33,
+            "percent_of_one_core": 24.31016671259171
+          }
+        },
+        "system_percent": {
+          "user": 61.84331797235023,
+          "nice": 0.0,
+          "system": 29.032258064516128,
+          "idle": 2.119815668202765,
+          "iowait": 0.3686635944700461,
+          "irq": 0.0,
+          "softirq": 6.635944700460829,
+          "steal": 0.0
+        }
+      },
+      "stages": {
+        "write_queue_wait": {
+          "count": 10000,
+          "mean_us": 3047.5049
+        },
+        "leader_log_write": {
+          "count": 617,
+          "mean_us": 1746.706645056726,
+          "mean_entries": 16.207455429497568
+        },
+        "replication_data_ack": {
+          "count": 1069,
+          "mean_us": 6210.028063610851
+        },
+        "kv_apply": {
+          "count": 601,
+          "mean_us": 1324.4342762063227,
+          "mean_entries": 16.638935108153078
+        },
+        "apply_dispatch": {
+          "count": 601,
+          "mean_us": 0.0
+        },
+        "write_completed": {
+          "count": 10000,
+          "mean_us": 13393.3873
+        },
+        "local_read": {
+          "count": 10000,
+          "mean_us": 17.1479
+        }
+      },
+      "info_summary": {
+        "sample_count": 6,
+        "sampling_overhead_seconds": 0.14870972800417803,
+        "leadership_disagreements": 0,
+        "max_apply_lag": 0,
+        "term_increases": 0,
+        "terms_seen": [
+          1
+        ]
+      },
+      "info_during_errors": [],
+      "error": null,
+      "cleanup_error": null
+    },
+    {
+      "pipeline": 16,
+      "async_apply": true,
+      "repeat": 2,
+      "status": "PASS",
+      "artifact": "/home/a/.cache/raft-kv-apply-compare/run-hvpuvo7v/p16-async-1-r2",
+      "goodput_ops_per_second": 3200.8153941516975,
+      "errors": 0,
+      "errors_by_category": {
+        "moved": 0,
+        "overload": 0,
+        "other": 0,
+        "timeout": 0,
+        "connection": 0
+      },
+      "elapsed_seconds": 6.248407838997082,
+      "batch_latency_ms": {
+        "p50": 157.4629559981986,
+        "p95": 226.48465370220939,
+        "p99": 274.1790579917142
+      },
+      "cpu": {
+        "window_seconds": 6.2634310299908975,
+        "processes": {
+          "0": {
+            "cpu_seconds": 0.71,
+            "percent_of_one_core": 11.335640108438009
+          },
+          "1": {
+            "cpu_seconds": 2.11,
+            "percent_of_one_core": 33.68760651944253
+          },
+          "2": {
+            "cpu_seconds": 0.72,
+            "percent_of_one_core": 11.495297011373754
+          },
+          "client": {
+            "cpu_seconds": 1.73,
+            "percent_of_one_core": 27.62064420788416
+          }
+        },
+        "system_percent": {
+          "user": 60.176991150442475,
+          "nice": 0.0,
+          "system": 30.97345132743363,
+          "idle": 2.091713596138375,
+          "iowait": 0.08045052292839903,
+          "irq": 0.0,
+          "softirq": 6.67739340305712,
+          "steal": 0.0
+        }
+      },
+      "stages": {
+        "write_queue_wait": {
+          "count": 10000,
+          "mean_us": 3904.5563
+        },
+        "leader_log_write": {
+          "count": 646,
+          "mean_us": 1829.4427244582043,
+          "mean_entries": 15.479876160990711
+        },
+        "replication_data_ack": {
+          "count": 1264,
+          "mean_us": 4954.40585443038
+        },
+        "kv_apply": {
+          "count": 638,
+          "mean_us": 1737.3934169278996,
+          "mean_entries": 15.67398119122257
+        },
+        "apply_dispatch": {
+          "count": 638,
+          "mean_us": 1831.2366771159875
+        },
+        "write_completed": {
+          "count": 10000,
+          "mean_us": 17478.7434
+        },
+        "local_read": {
+          "count": 10000,
+          "mean_us": 30.5785
+        }
+      },
+      "info_summary": {
+        "sample_count": 7,
+        "sampling_overhead_seconds": 0.2135217240138445,
+        "leadership_disagreements": 0,
+        "max_apply_lag": 22,
+        "term_increases": 0,
+        "terms_seen": [
+          1
+        ]
+      },
+      "info_during_errors": [],
+      "error": null,
+      "cleanup_error": null
+    }
+  ]
+}
