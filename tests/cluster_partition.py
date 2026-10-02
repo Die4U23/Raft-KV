@@ -111,7 +111,7 @@ class PartitionCluster(Cluster):
         self.window = window
         self.report.update(test='raft_tcp_partition', snapshots=[], probes=[], partitions=[],
                            observation_seconds=window,
-                           scope='three local processes; TCP cut, silent drop, one-way reply drop, short delay, frame reorder, and leader-link stall')
+                           scope='three local processes; TCP cut, silent drop, one-way reply drop, one leader outbound link, short delay, frame reorder, and leader-link stall')
 
     def capture(self, phase):
         self.running(range(3))
@@ -203,6 +203,44 @@ class PartitionCluster(Cluster):
             self.expect_held(before_proxy, flows)
         finally:
             self.mesh.delay(0)
+        return minimum
+
+    def drop_one_leader_outbound(self, expected):
+        # One directed edge: the leader's bytes toward a single follower are
+        # discarded. The reverse direction and the other follower stay open, so
+        # a write can still commit. The lagging follower must not see that key
+        # until the direction is restored.
+        leader = self.wait_for('leader before directed drop', lambda: self.leader(range(3)))
+        others = [node for node in range(3) if node != leader]
+        lagging = others[0]
+        peer = others[1]
+        flows = [(leader, lagging)]
+        term = self.info(leader)['term']
+        before = self.mesh.snapshot()
+        proxy = self.mesh.silence(flows)
+        self.report['partitions'].append(dict(phase='directed_outbound', kind='silence', flows=flows,
+                                              proxy_at_cut=proxy))
+        minimum = self.write(leader, 'directed-write', 'kept')
+        expected.append(('default', 'directed-write', b'kept'))
+
+        def reachable():
+            state = self.info(leader)
+            if state['term'] != term or state['leader_id'] != leader or state['state'] != 'leader':
+                raise AssertionError('one directed drop changed leadership: {}'.format(state))
+            other = self.info(peer)
+            if other['term'] != term or other['leader_id'] != leader:
+                raise AssertionError('reachable follower changed leadership: {}'.format(other))
+            with self.client(peer) as client:
+                if client.command('GET', 'directed-write') != b'kept':
+                    return None
+            return state['commit_index']
+
+        self.wait_for('directed write on the reachable follower', reachable)
+        with self.client(lagging) as client:
+            if client.command('GET', 'directed-write') is not None:
+                raise AssertionError('lagging follower served the write while its inbound link was dropped')
+        self.expect_flows(before, flows, [])
+        self.report['directed_lagging'] = lagging
         return minimum
 
     def survive_short_delay(self, expected):
@@ -376,6 +414,11 @@ class PartitionCluster(Cluster):
         uncertain.append(('asymmetric-probe', 'uncertain-asymmetric'))
         minimum = self.heal('asymmetric_heal', expected, minimum, uncertain[-1:])
         self.step('healing the one-way drop restores convergence')
+
+        minimum = self.drop_one_leader_outbound(expected)
+        self.step('dropping only the leader outbound link to one follower still commits on the other two')
+        minimum = self.heal('directed_heal', expected, minimum, [])
+        self.step('restoring that direction lets the lagging follower catch up')
 
         minimum = self.survive_short_delay(expected)
         self.step('40 ms ordered delay still commits the write without changing leader')
