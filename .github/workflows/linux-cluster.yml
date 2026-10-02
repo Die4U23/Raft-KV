@@ -49,7 +49,7 @@ jobs:
         run: |
           report=$(find "$HOME/build-linux-ci/reports" -name build-report.json -print -quit)
           test -n "$report"
-          python3 tests/cluster_partition.py --build-report "$report" --timeout 120 \
+          python3 tests/cluster_partition.py --build-report "$report" --timeout 180 \
             --artifacts "$HOME/build-linux-ci/partition"
           python3 tests/cluster_write_restart.py --build-report "$report" --timeout 180 \
             --artifacts "$HOME/build-linux-ci/write-restart"

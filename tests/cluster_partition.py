@@ -15,7 +15,7 @@ import time
 import traceback
 
 from cluster_smoke import Cluster, RespError, encode_command, expect
-from raft_proxy import RaftProxyMesh
+from raft_proxy import RaftProxyMesh, flow_target
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -78,6 +78,22 @@ def assert_frozen(before, current):
         expect(current[field], before[field], 'isolated node {} {}'.format(current['node_id'], field))
 
 
+def both_directions(leader, others):
+    flows = []
+    for other in others:
+        flows.append((leader, other))
+        flows.append((other, leader))
+    return flows
+
+
+def replies_toward(leader, others):
+    return [(other, leader) for other in others]
+
+
+def outbound_from(leader, others):
+    return [(leader, other) for other in others]
+
+
 def check_reconnects(snapshot, limit):
     counts = [edge['refused'] for edge in snapshot['edges'].values()]
     if any(count < 0 for count in counts):
@@ -94,7 +110,8 @@ class PartitionCluster(Cluster):
         self.mesh = None
         self.window = window
         self.report.update(test='raft_tcp_partition', snapshots=[], probes=[], partitions=[],
-                           observation_seconds=window, scope='three local processes; TCP disconnect/refusal partition')
+                           observation_seconds=window,
+                           scope='three local processes; TCP cut, silent drop, and one-way reply drop')
 
     def capture(self, phase):
         self.running(range(3))
@@ -119,7 +136,51 @@ class PartitionCluster(Cluster):
 
     def cut(self, groups, phase):
         snapshot = self.mesh.partition(groups)
-        self.report['partitions'].append(dict(phase=phase, groups=groups, proxy_at_cut=snapshot))
+        self.report['partitions'].append(dict(phase=phase, kind='partition', groups=groups,
+                                              proxy_at_cut=snapshot))
+
+    def expect_flows(self, before, dropped, forwarded):
+        after = self.mesh.snapshot()
+        for writer, recipient in dropped:
+            edge, direction = flow_target(writer, recipient)
+            key = '{}->{}'.format(*edge)
+            field = 'dropped_{}_bytes'.format(direction)
+            if after['edges'][key][field] <= before['edges'][key][field]:
+                raise AssertionError('{}->{} dropped no {} bytes'.format(writer, recipient, direction))
+            if after['edges'][key]['cut'] != before['edges'][key]['cut']:
+                raise AssertionError('silent flow {}->{} reset the connection'.format(writer, recipient))
+            if after['edges'][key]['refused'] != before['edges'][key]['refused']:
+                raise AssertionError('silent flow {}->{} refused a connection'.format(writer, recipient))
+        for writer, recipient in forwarded:
+            edge, direction = flow_target(writer, recipient)
+            key = '{}->{}'.format(*edge)
+            field = '{}_bytes'.format(direction)
+            if after['edges'][key][field] <= before['edges'][key][field]:
+                raise AssertionError('{}->{} forwarded no {}'.format(writer, recipient, direction))
+
+    def lose_leader(self, phase, flow_fn, forward_fn, probe_key, probe_value, expected):
+        leader = self.wait_for('leader before ' + phase, lambda: self.leader(range(3)))
+        majority = [node for node in range(3) if node != leader]
+        flows = flow_fn(leader, majority)
+        forwarded = forward_fn(leader, majority) if forward_fn else []
+        baseline = self.capture('before_' + phase)
+        before_proxy = self.mesh.snapshot()
+        proxy = self.mesh.silence(flows)
+        self.report['partitions'].append(dict(phase=phase, kind='silence', flows=flows,
+                                              proxy_at_cut=proxy))
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            until = time.monotonic() + self.window
+            future = pool.submit(probe_write, self, leader, probe_key, probe_value, self.window)
+            prior = baseline[str(leader)]['commit_index']
+            new_leader = self.wait_for(phase + ' majority election and quorum',
+                                       lambda: self.leader_with_quorum(majority, prior))
+            self.report[phase + '_leader'] = new_leader
+            minimum = self.write(new_leader, phase + '-write', 'kept')
+            expected.append(('default', phase + '-write', b'kept'))
+            self.observe(phase, baseline, [leader], [future],
+                         max(until, time.monotonic() + self.window))
+        self.expect_flows(before_proxy, flows, forwarded)
+        return minimum
 
     def observe(self, phase, baseline, frozen_nodes, futures, until):
         samples = 0
@@ -202,6 +263,20 @@ class PartitionCluster(Cluster):
         uncertain = [('minority-probe', 'uncertain-one')]
         minimum = self.heal('first_heal', expected, minimum, uncertain)
         self.step('first heal preserves acknowledged data and converges on uncertain write outcome')
+
+        minimum = self.lose_leader('silent_drop', both_directions, None,
+                                   'silent-probe', 'uncertain-silent', expected)
+        self.step('silent drop keeps TCP open, isolates the old leader, and lets the majority write')
+        uncertain.append(('silent-probe', 'uncertain-silent'))
+        minimum = self.heal('silent_heal', expected, minimum, uncertain[-1:])
+        self.step('healing the silent drop restores a clean TCP stream and convergence')
+
+        minimum = self.lose_leader('asymmetric_replies', replies_toward, outbound_from,
+                                   'asymmetric-probe', 'uncertain-asymmetric', expected)
+        self.step('dropping only replies to the leader isolates it while its outbound bytes still flow')
+        uncertain.append(('asymmetric-probe', 'uncertain-asymmetric'))
+        minimum = self.heal('asymmetric_heal', expected, minimum, uncertain[-1:])
+        self.step('healing the one-way drop restores convergence')
 
         baseline = self.capture('before_no_quorum')
         self.cut([[0], [1], [2]], 'no_quorum')
