@@ -12,7 +12,7 @@ from unittest.mock import patch
 import cluster_partition
 from cluster_partition import assert_frozen, classify_reply, file_hash, probe_write, validate_build
 from cluster_smoke import RespClient, RespError
-from raft_proxy import RaftProxyMesh
+from raft_proxy import RaftProxyMesh, flow_target
 
 
 class Echo(socketserver.BaseRequestHandler):
@@ -94,6 +94,66 @@ class RelayTests(unittest.TestCase):
             with self.connect(0, 1) as recovered:
                 self.echo(recovered)
             self.assertEqual(self.mesh.snapshot()['errors'], [])
+
+    def test_flow_target_follows_the_lower_id_dialer(self):
+        self.assertEqual(flow_target(0, 1), ((0, 1), 'request'))
+        self.assertEqual(flow_target(1, 0), ((0, 1), 'reply'))
+        with self.assertRaises(ValueError):
+            flow_target(2, 2)
+
+    def test_silence_drops_one_direction_and_keeps_the_socket_open(self):
+        self.mesh.silence([(1, 0)])
+        with self.connect(0, 1) as dial:
+            dial.sendall(b'abc')
+            dial.settimeout(0.4)
+            with self.assertRaises(socket.timeout):
+                dial.recv(1)
+            dial.sendall(b'more')
+            edge = self.mesh.snapshot()['edges']['0->1']
+            self.assertGreater(edge['request_bytes'], 0)
+            self.assertGreater(edge['dropped_reply_bytes'], 0)
+            self.assertEqual(edge['dropped_request_bytes'], 0)
+            self.assertEqual(edge['cut'], 0)
+            self.assertEqual(edge['refused'], 0)
+            self.mesh.partition([[0, 1, 2]])
+            self.assert_closed(dial)
+        with self.connect(0, 1) as recovered:
+            self.echo(recovered)
+        self.assertEqual(self.mesh.snapshot()['errors'], [])
+
+    def test_resuming_a_dropped_direction_resets_the_socket(self):
+        with self.connect(0, 1) as dial:
+            dial.settimeout(1)
+            dial.sendall(b'abc')
+            self.assertEqual(dial.recv(3), b'abc')
+            self.mesh.silence([(1, 0)])
+            dial.sendall(b'def')
+            dial.settimeout(0.4)
+            with self.assertRaises(socket.timeout):
+                dial.recv(1)
+            self.mesh.silence([])
+            self.assert_closed(dial)
+        with self.connect(0, 1) as recovered:
+            recovered.settimeout(1)
+            recovered.sendall(b'xyz')
+            self.assertEqual(recovered.recv(3), b'xyz')
+
+    def test_silence_both_directions_discards_the_request_without_refusing(self):
+        self.mesh.silence([(0, 1), (1, 0)])
+        with self.connect(0, 1) as dial:
+            dial.sendall(b'ping')
+            dial.settimeout(0.4)
+            with self.assertRaises(socket.timeout):
+                dial.recv(1)
+            edge = self.mesh.snapshot()['edges']['0->1']
+            self.assertGreater(edge['dropped_request_bytes'], 0)
+            self.assertEqual(edge['request_bytes'], 0)
+            self.assertEqual(edge['cut'], 0)
+            self.assertEqual(edge['refused'], 0)
+        with self.assertRaises(ValueError):
+            self.mesh.silence([(0, 0)])
+        with self.assertRaises(ValueError):
+            self.mesh.silence([(0, 9)])
 
     def test_all_isolated_blocks_every_directed_edge(self):
         self.mesh.partition([[0], [1], [2]])
