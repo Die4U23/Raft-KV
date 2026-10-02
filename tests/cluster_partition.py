@@ -111,7 +111,7 @@ class PartitionCluster(Cluster):
         self.window = window
         self.report.update(test='raft_tcp_partition', snapshots=[], probes=[], partitions=[],
                            observation_seconds=window,
-                           scope='three local processes; TCP cut, silent drop, one-way reply drop, one leader outbound link, one follower reply, short delay, frame reorder, and leader-link stall')
+                           scope='three local processes; TCP cut, silent drop, one-way reply drop, one leader outbound link, one follower reply, one follower-follower direction, leader outbound drop, short delay, frame reorder, and leader-link stall')
 
     def capture(self, phase):
         self.running(range(3))
@@ -281,6 +281,59 @@ class PartitionCluster(Cluster):
                 raise AssertionError('follower served the write while its replies were dropped')
         self.expect_flows(before, flows, forwarded)
         self.report['one_reply_quiet'] = quiet
+        return minimum
+
+    def one_way_between_followers(self):
+        # A vote is a request plus its response. With both of the leader's
+        # links discarded and one direction between the followers discarded,
+        # neither follower can finish a vote. Commit stays put and TCP stays up.
+        leader = self.wait_for('leader before follower link', lambda: self.leader(range(3)))
+        followers = [node for node in range(3) if node != leader]
+        flows = both_directions(leader, followers)
+        flows.append((followers[0], followers[1]))
+        forwarded = [(followers[1], followers[0])]
+        baseline = self.capture('before_follower_link')
+        before = self.mesh.snapshot()
+        proxy = self.mesh.silence(flows)
+        self.report['partitions'].append(dict(phase='follower_link', kind='silence', flows=flows,
+                                              proxy_at_cut=proxy))
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            until = time.monotonic() + self.window
+            futures = [pool.submit(probe_write, self, node, 'follower-link-{}'.format(node),
+                                   'uncertain-link-{}'.format(node), self.window)
+                       for node in range(3)]
+            self.observe('follower_link', baseline, range(3), futures, until)
+        self.expect_flows(before, flows, forwarded)
+        self.report['follower_link_open'] = forwarded
+
+    def drop_leader_outbound(self, expected):
+        # The leader's bytes toward both followers are discarded. Their replies
+        # and the link between them stay open, so the two followers can elect.
+        # The new leader can still reach the old one, so that node's commit may
+        # advance. The probe itself must not be acknowledged.
+        leader = self.wait_for('leader before outbound drop', lambda: self.leader(range(3)))
+        majority = [node for node in range(3) if node != leader]
+        flows = outbound_from(leader, majority)
+        forwarded = both_directions(majority[0], majority[1:])
+        baseline = self.capture('before_outbound')
+        before = self.mesh.snapshot()
+        proxy = self.mesh.silence(flows)
+        self.report['partitions'].append(dict(phase='leader_outbound', kind='silence', flows=flows,
+                                              proxy_at_cut=proxy))
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(probe_write, self, leader, 'outbound-probe', 'uncertain-outbound', self.window)
+            prior = baseline[str(leader)]['commit_index']
+            new_leader = self.wait_for('outbound majority election and quorum',
+                                       lambda: self.leader_with_quorum(majority, prior))
+            self.report['outbound_leader'] = new_leader
+            minimum = self.write(new_leader, 'outbound-write', 'kept')
+            expected.append(('default', 'outbound-write', b'kept'))
+            while not future.done():
+                if time.monotonic() >= self.deadline:
+                    raise TimeoutError('Outbound-drop probe did not finish')
+                time.sleep(0.05)
+            self.report['probes'].append(future.result())
+        self.expect_flows(before, flows, forwarded)
         return minimum
 
     def survive_short_delay(self, expected):
@@ -464,6 +517,19 @@ class PartitionCluster(Cluster):
         self.step('dropping one follower reply still commits on the other two')
         minimum = self.heal('one_reply_heal', expected, minimum, [])
         self.step('restoring that reply lets the quiet follower serve the write')
+
+        self.one_way_between_followers()
+        self.step('one follower-follower direction blocks a vote once the leader links are dropped')
+        uncertain.extend(('follower-link-{}'.format(node), 'uncertain-link-{}'.format(node))
+                         for node in range(3))
+        minimum = self.heal('follower_link_heal', expected, minimum, uncertain[-3:])
+        self.step('restoring the follower link elects a leader and converges')
+
+        minimum = self.drop_leader_outbound(expected)
+        self.step('dropping leader outbound to both followers elects a new majority leader')
+        uncertain.append(('outbound-probe', 'uncertain-outbound'))
+        minimum = self.heal('outbound_heal', expected, minimum, uncertain[-1:])
+        self.step('restoring leader outbound converges')
 
         minimum = self.survive_short_delay(expected)
         self.step('40 ms ordered delay still commits the write without changing leader')
