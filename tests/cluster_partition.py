@@ -111,7 +111,7 @@ class PartitionCluster(Cluster):
         self.window = window
         self.report.update(test='raft_tcp_partition', snapshots=[], probes=[], partitions=[],
                            observation_seconds=window,
-                           scope='three local processes; TCP cut, silent drop, one-way reply drop, short delay, and leader-link stall')
+                           scope='three local processes; TCP cut, silent drop, one-way reply drop, short delay, frame reorder, and leader-link stall')
 
     def capture(self, phase):
         self.running(range(3))
@@ -229,6 +229,32 @@ class PartitionCluster(Cluster):
                 raise AssertionError('delay held no bytes')
         finally:
             self.mesh.delay(0)
+        return minimum
+
+    def survive_reordered_frames(self, expected):
+        # Two complete frames already in one read are swapped. A lone frame is
+        # forwarded at once, so a peer with one AppendEntries in flight is not
+        # held until a second frame exists. This phase checks that the write
+        # still commits and leadership stays. The swap itself is covered by the
+        # helper test, which can put two frames in a single send.
+        leader = self.wait_for('leader before reorder', lambda: self.leader(range(3)))
+        term = self.info(leader)['term']
+        before = self.mesh.snapshot()
+        self.mesh.reorder()
+        try:
+            minimum = self.write(leader, 'reordered-write', 'kept')
+            expected.append(('default', 'reordered-write', b'kept'))
+            self.wait_for('reordered write converges', lambda: self.settled(expected, minimum))
+            for node in range(3):
+                state = self.info(node)
+                if state['term'] != term or state['leader_id'] != leader:
+                    raise AssertionError('frame reorder changed leadership: {}'.format(state))
+            after = self.mesh.snapshot()
+            for key, edge in after['edges'].items():
+                if edge['cut'] != before['edges'][key]['cut']:
+                    raise AssertionError('reorder reset {}'.format(key))
+        finally:
+            self.mesh.reorder([])
         return minimum
 
     def lose_leader(self, phase, flow_fn, forward_fn, probe_key, probe_value, expected):
@@ -353,6 +379,9 @@ class PartitionCluster(Cluster):
 
         minimum = self.survive_short_delay(expected)
         self.step('40 ms ordered delay still commits the write without changing leader')
+
+        minimum = self.survive_reordered_frames(expected)
+        self.step('swapping complete frames that share a read still commits without changing leader')
 
         minimum = self.stall_leader(expected)
         self.step('400 ms stall on the leader links elects a new majority leader without closing TCP')

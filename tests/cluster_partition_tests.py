@@ -12,7 +12,7 @@ from unittest.mock import patch
 import cluster_partition
 from cluster_partition import assert_frozen, classify_reply, file_hash, probe_write, validate_build
 from cluster_smoke import RespClient, RespError
-from raft_proxy import RaftProxyMesh, flow_target
+from raft_proxy import RaftProxyMesh, flow_target, reorder_complete_frames
 
 
 class Echo(socketserver.BaseRequestHandler):
@@ -158,6 +158,50 @@ class RelayTests(unittest.TestCase):
             self.mesh.delay(-0.1)
         with self.assertRaises(ValueError):
             self.mesh.delay(1.5)
+
+    def test_two_complete_frames_in_one_read_swap_and_a_lone_frame_does_not(self):
+        def frame(body):
+            payload = bytes([2, 0, 0, 0, 1]) + body
+            return len(payload).to_bytes(4, 'big') + payload
+
+        first, second, third = frame(b'one'), frame(b'two'), frame(b'three')
+        swapped, moved = reorder_complete_frames(first + second + third)
+        self.assertEqual(swapped, second + first + third)
+        self.assertEqual(moved, len(first) + len(second))
+        unchanged, idle = reorder_complete_frames(first)
+        self.assertEqual(unchanged, first)
+        self.assertEqual(idle, 0)
+        self.assertEqual(reorder_complete_frames(first[:4])[0], first[:4])
+        self.assertEqual(reorder_complete_frames(b'\xff\xff\xff\xffxxxx')[1], 0)
+
+        self.mesh.reorder([(0, 1)])
+        blob = first + second + third
+        with self.connect(0, 1) as dial:
+            dial.settimeout(1)
+            dial.sendall(blob)
+            received = b''
+            while len(received) < len(blob):
+                received += dial.recv(len(blob) - len(received))
+            self.assertEqual(received, second + first + third)
+            edge = self.mesh.snapshot()['edges']['0->1']
+            self.assertGreater(edge['reordered_request_bytes'], 0)
+            self.assertEqual(edge['reordered_reply_bytes'], 0)
+            self.assertEqual(edge['cut'], 0)
+            started = time.monotonic()
+            dial.sendall(first)
+            alone = b''
+            while len(alone) < len(first):
+                alone += dial.recv(len(first) - len(alone))
+            self.assertEqual(alone, first)
+            self.assertLess(time.monotonic() - started, 0.2)
+        self.mesh.reorder([])
+        with self.connect(0, 1) as dial:
+            dial.settimeout(1)
+            dial.sendall(blob)
+            received = b''
+            while len(received) < len(blob):
+                received += dial.recv(len(blob) - len(received))
+            self.assertEqual(received, blob)
 
     def test_delay_can_hold_one_direction(self):
         self.mesh.delay(0.25, [(1, 0)])

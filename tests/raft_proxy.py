@@ -3,11 +3,52 @@
 partition() aborts crossing connections and refuses new ones. silence() keeps
 the TCP connection open and discards the named directions; a later partition()
 aborts those relays so a truncated byte stream is not forwarded afterward.
-delay() holds each chunk and then forwards it in the same order.
+delay() holds each chunk and then forwards it in the same order. reorder()
+swaps complete Raft frames that already share one read.
 """
 import asyncio
 import threading
 import time
+
+# payload_length includes the 5-byte type and sender header. Matches RaftCodec.
+_MIN_PAYLOAD = 5
+_MAX_PAYLOAD = 10 * 1024 * 1024
+
+
+def reorder_complete_frames(data):
+    """Swap adjacent complete frames already present in this buffer.
+
+    A lone complete frame, a short tail, and an illegal length stay as they
+    arrived. Nothing is kept for a later read: holding one frame until the
+    next one exists stalls a peer that sends only one AppendEntries at a time.
+    Returns the bytes to forward and how many of them left their original order.
+    """
+    frames = []
+    offset = 0
+    size = len(data)
+    while offset + 4 <= size:
+        length = int.from_bytes(data[offset:offset + 4], 'big')
+        if length < _MIN_PAYLOAD or length > _MAX_PAYLOAD:
+            return data, 0
+        end = offset + 4 + length
+        if end > size:
+            break
+        frames.append(data[offset:end])
+        offset = end
+    if len(frames) < 2:
+        return data, 0
+    swapped = bytearray()
+    moved = 0
+    index = 0
+    while index + 1 < len(frames):
+        swapped.extend(frames[index + 1])
+        swapped.extend(frames[index])
+        moved += len(frames[index]) + len(frames[index + 1])
+        index += 2
+    if index < len(frames):
+        swapped.extend(frames[index])
+    swapped.extend(data[offset:])
+    return bytes(swapped), moved
 
 
 def flow_target(writer, recipient):
@@ -35,6 +76,7 @@ class RaftProxyMesh:
         self.drops = set()
         self.hold_seconds = 0.0
         self.hold_targets = None
+        self.reorder_targets = False
         self.epoch = 0
         self.errors = []
         self.events = []
@@ -87,7 +129,8 @@ class RaftProxyMesh:
                 self.stats[edge] = dict(accepted=0, refused=0, cut=0,
                                         request_bytes=0, reply_bytes=0,
                                         dropped_request_bytes=0, dropped_reply_bytes=0,
-                                        delayed_request_bytes=0, delayed_reply_bytes=0)
+                                        delayed_request_bytes=0, delayed_reply_bytes=0,
+                                        reordered_request_bytes=0, reordered_reply_bytes=0)
                 self.servers[edge] = await asyncio.start_server(
                     lambda reader, writer, edge=edge, destination=destination:
                     self._relay(edge, destination, reader, writer), '127.0.0.1', 0)
@@ -119,6 +162,10 @@ class RaftProxyMesh:
                     data = await source.read(65536)
                     if not data:
                         return
+                    if self._should_reorder(edge, direction):
+                        data, moved = reorder_complete_frames(data)
+                        if moved:
+                            self.stats[edge]['reordered_' + direction + '_bytes'] += moved
                     hold = self.hold_seconds
                     if hold > 0 and self.hold_targets is not None and (edge, direction) not in self.hold_targets:
                         hold = 0.0
@@ -210,6 +257,28 @@ class RaftProxyMesh:
         self.events.append(dict(monotonic_seconds=time.monotonic(), kind='delay', seconds=seconds,
                                 flows=None if flows is None else [list(flow) for flow in flows]))
         return self._snapshot()
+
+    def _should_reorder(self, edge, direction):
+        targets = self.reorder_targets
+        if targets is False:
+            return False
+        if targets is None:
+            return True
+        return (edge, direction) in targets
+
+    async def _reorder(self, flows):
+        self.reorder_targets = None if flows is None else self._targets(flows)
+        self.events.append(dict(monotonic_seconds=time.monotonic(), kind='reorder',
+                                flows=None if flows is None else [list(flow) for flow in flows]))
+        return self._snapshot()
+
+    def reorder(self, flows=None):
+        """Swap complete Raft frames that already share one read.
+
+        A single frame is forwarded immediately. None covers every direction.
+        An empty list turns the swap off. The socket stays open.
+        """
+        return self.call(self._reorder(flows))
 
     def delay(self, seconds, flows=None):
         """Hold each later chunk, then forward it in the same order.
