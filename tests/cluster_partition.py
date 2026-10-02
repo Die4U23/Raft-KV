@@ -111,7 +111,7 @@ class PartitionCluster(Cluster):
         self.window = window
         self.report.update(test='raft_tcp_partition', snapshots=[], probes=[], partitions=[],
                            observation_seconds=window,
-                           scope='three local processes; TCP cut, silent drop, one-way reply drop, and short delay')
+                           scope='three local processes; TCP cut, silent drop, one-way reply drop, short delay, and leader-link stall')
 
     def capture(self, phase):
         self.running(range(3))
@@ -157,6 +157,53 @@ class PartitionCluster(Cluster):
             field = '{}_bytes'.format(direction)
             if after['edges'][key][field] <= before['edges'][key][field]:
                 raise AssertionError('{}->{} forwarded no {}'.format(writer, recipient, direction))
+
+    def expect_held(self, before, flows):
+        after = self.mesh.snapshot()
+        for writer, recipient in flows:
+            edge, direction = flow_target(writer, recipient)
+            key = '{}->{}'.format(*edge)
+            field = 'delayed_{}_bytes'.format(direction)
+            if after['edges'][key][field] <= before['edges'][key][field]:
+                raise AssertionError('{}->{} held no {} bytes'.format(writer, recipient, direction))
+            if after['edges'][key]['cut'] != before['edges'][key]['cut']:
+                raise AssertionError('stall {}->{} reset the connection'.format(writer, recipient))
+            if after['edges'][key]['refused'] != before['edges'][key]['refused']:
+                raise AssertionError('stall {}->{} refused a connection'.format(writer, recipient))
+
+    def stall_leader(self, expected):
+        # 400 ms is past the 300 ms maximum election timeout. Only the leader's
+        # links are held, so the other two nodes can still elect. Held chunks
+        # are forwarded in order when the stall ends; the sockets stay open.
+        leader = self.wait_for('leader before stall', lambda: self.leader(range(3)))
+        majority = [node for node in range(3) if node != leader]
+        flows = both_directions(leader, majority)
+        baseline = self.capture('before_stall')
+        before_proxy = self.mesh.snapshot()
+        proxy = self.mesh.delay(0.40, flows)
+        self.report['partitions'].append(dict(phase='stall', kind='delay', seconds=0.40,
+                                              flows=flows, proxy_at_cut=proxy))
+        try:
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(probe_write, self, leader, 'stall-probe', 'uncertain-stall', self.window)
+                prior = baseline[str(leader)]['commit_index']
+                new_leader = self.wait_for('stall majority election and quorum',
+                                           lambda: self.leader_with_quorum(majority, prior))
+                self.report['stall_leader'] = new_leader
+                minimum = self.write(new_leader, 'stall-write', 'kept')
+                expected.append(('default', 'stall-write', b'kept'))
+                while not future.done():
+                    if time.monotonic() >= self.deadline:
+                        raise TimeoutError('Stalled leader probe did not finish')
+                    time.sleep(0.05)
+                # Held bytes are delivered after 400 ms, so the old leader can
+                # learn the new leader's entries during a long window. The probe
+                # itself must still not be acknowledged.
+                self.report['probes'].append(future.result())
+            self.expect_held(before_proxy, flows)
+        finally:
+            self.mesh.delay(0)
+        return minimum
 
     def survive_short_delay(self, expected):
         # 40 ms is under the 150 ms CheckQuorum and election floors, so this
@@ -306,6 +353,12 @@ class PartitionCluster(Cluster):
 
         minimum = self.survive_short_delay(expected)
         self.step('40 ms ordered delay still commits the write without changing leader')
+
+        minimum = self.stall_leader(expected)
+        self.step('400 ms stall on the leader links elects a new majority leader without closing TCP')
+        uncertain.append(('stall-probe', 'uncertain-stall'))
+        minimum = self.heal('stall_heal', expected, minimum, uncertain[-1:])
+        self.step('releasing the stall restores convergence')
 
         baseline = self.capture('before_no_quorum')
         self.cut([[0], [1], [2]], 'no_quorum')

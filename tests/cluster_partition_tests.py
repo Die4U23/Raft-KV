@@ -159,6 +159,19 @@ class RelayTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.mesh.delay(1.5)
 
+    def test_delay_can_hold_one_direction(self):
+        self.mesh.delay(0.25, [(1, 0)])
+        with self.connect(0, 1) as dial:
+            dial.settimeout(2)
+            started = time.monotonic()
+            dial.sendall(b'abc')
+            self.assertEqual(dial.recv(3), b'abc')
+            self.assertGreaterEqual(time.monotonic() - started, 0.2)
+            edge = self.mesh.snapshot()['edges']['0->1']
+            self.assertEqual(edge['delayed_request_bytes'], 0)
+            self.assertGreater(edge['delayed_reply_bytes'], 0)
+            self.assertEqual(edge['cut'], 0)
+
     def test_silence_both_directions_discards_the_request_without_refusing(self):
         self.mesh.silence([(0, 1), (1, 0)])
         with self.connect(0, 1) as dial:

@@ -34,6 +34,7 @@ class RaftProxyMesh:
         self.groups = {node: 0 for node in destinations}
         self.drops = set()
         self.hold_seconds = 0.0
+        self.hold_targets = None
         self.epoch = 0
         self.errors = []
         self.events = []
@@ -119,7 +120,10 @@ class RaftProxyMesh:
                     if not data:
                         return
                     hold = self.hold_seconds
+                    if hold > 0 and self.hold_targets is not None and (edge, direction) not in self.hold_targets:
+                        hold = 0.0
                     if hold > 0:
+                        self.stats[edge]['delayed_' + direction + '_bytes'] += len(data)
                         await asyncio.sleep(hold)
                     if (edge, direction) in self.drops:
                         self.stats[edge]['dropped_' + direction + '_bytes'] += len(data)
@@ -127,8 +131,6 @@ class RaftProxyMesh:
                     target.write(data)
                     await target.drain()
                     self.stats[edge][direction + '_bytes'] += len(data)
-                    if hold > 0:
-                        self.stats[edge]['delayed_' + direction + '_bytes'] += len(data)
 
             pumps = [asyncio.create_task(pump(reader, upstream_writer, 'request')),
                      asyncio.create_task(pump(upstream, writer, 'reply'))]
@@ -200,16 +202,22 @@ class RaftProxyMesh:
     def silence(self, flows):
         return self.call(self._silence(flows))
 
-    async def _delay(self, seconds):
+    async def _delay(self, seconds, flows):
         if seconds < 0 or seconds > 1:
             raise ValueError('delay must be 0..1 seconds')
         self.hold_seconds = seconds
-        self.events.append(dict(monotonic_seconds=time.monotonic(), kind='delay', seconds=seconds))
+        self.hold_targets = None if flows is None else self._targets(flows)
+        self.events.append(dict(monotonic_seconds=time.monotonic(), kind='delay', seconds=seconds,
+                                flows=None if flows is None else [list(flow) for flow in flows]))
         return self._snapshot()
 
-    def delay(self, seconds):
-        """Hold each later chunk, then forward it in the same order. Not a reorder."""
-        return self.call(self._delay(seconds))
+    def delay(self, seconds, flows=None):
+        """Hold each later chunk, then forward it in the same order.
+
+        flows limits the hold to those (writer, recipient) pairs. None holds every
+        direction. This does not reorder chunks and does not close the socket.
+        """
+        return self.call(self._delay(seconds, flows))
 
     async def _partition(self, groups):
         flattened = [node for group in groups for node in group]
