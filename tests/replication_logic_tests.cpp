@@ -185,12 +185,55 @@ static void MatchIndexDoesNotRewind() {
     Check(cluster.Node(10).MatchIndexOf(30) >= after, "delayed old ACK rewound matchIndex");
 }
 
+static void LateAppendDoesNotTruncateANewerSuffix() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    cluster.messages.clear();
+    Check(cluster.Node(10).Propose(Command({"SET", "default:a", "1"}), {}) > 0, "first");
+    auto first = TakeAppendsFrom(cluster, 10);
+    Message saved{};
+    saved.to = 0;
+    std::vector<Message> acks;
+    for (const auto& append : first) {
+        if (append.to == 50) saved = append;
+        acks.push_back(DeliverAppendAndTakeAck(cluster, append));
+    }
+    Check(saved.to == 50, "first write was not sent to follower 50");
+    for (const auto& ack : acks) cluster.Deliver(ack);
+    cluster.Settle();
+    cluster.messages.clear();
+    Check(cluster.Node(10).Propose(Command({"SET", "default:b", "2"}), {}) > 0, "second");
+    auto second = TakeAppendsFrom(cluster, 10);
+    Check(!second.empty(), "second write was not replicated");
+    for (const auto& append : second) {
+        auto ack = DeliverAppendAndTakeAck(cluster, append);
+        cluster.Deliver(ack);
+    }
+    cluster.Settle();
+    std::string value;
+    Check(cluster.State(50).Get("default:b", &value) && value == "2",
+          "newer write missing before the late append");
+    const int64_t commit = cluster.Node(50).GetCommitIndex();
+    cluster.messages.clear();
+    cluster.Deliver(saved);
+    auto late = LastResponse(cluster);
+    Check(late.success(), "a matching older append was rejected");
+    cluster.Settle();
+    Check(cluster.Node(50).GetCommitIndex() >= commit, "late append rewound commit");
+    Check(cluster.State(50).Get("default:a", &value) && value == "1",
+          "late append removed the older key");
+    Check(cluster.State(50).Get("default:b", &value) && value == "2",
+          "late append removed the newer suffix");
+}
+
 int main() {
     try {
         StaleRpcDoesNotCommit();
         OneInflightPerPeer();
         FiveNodeQuorumNeedsTwoFollowers();
         MatchIndexDoesNotRewind();
+        LateAppendDoesNotTruncateANewerSuffix();
         UnsentAppendDoesNotOccupyInflight();
         UncommittedProposalExpiresButStaysInTheLog();
         CommittedWriteDoesNotExpireWhileApplyLags();
