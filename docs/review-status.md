@@ -32,7 +32,7 @@
 
 带 Muduo/RocksDB 的构建另有 `peer_manager_transport_tests`。GitHub Actions `linux-cluster.yml` 会构建真实服务并跑冒烟、`tests/cluster_linearizable.py`（Follower `MOVED`、Leader 写后读、隔离旧 Leader 的 GET 必须失败或重定向）、`tests/cluster_partition.py`、`tests/cluster_write_restart.py` 和 `tests/cluster_overload.py`。
 
-2026-09-08 到 09-13 的分区、写入重启、过载和性能包是更早提交上的归档。那些报告里的 CTest 5/5、7/7 是当时的目标数。分区、写入重启和过载脚本会在当前 Linux CI 里用本次构建的服务再跑；性能对照没有按当前二进制重做。
+2026-09-08 到 09-13 的分区、写入重启、过载和性能包是更早提交上的归档。那些报告里的 CTest 5/5、7/7 是当时的目标数。分区、写入重启和过载脚本会在当前 Linux CI 里用本次构建的服务再跑。2026-09-30 用当前构建在同一台 2 CPU 机器上对照了 `--async_apply`，数据目录在 ext4。12 个单元里有 1 个因 CheckQuorum 卸任出现 `MOVED`，报告状态是 FAIL。零错误单元的吞吐区间重叠，不能写成某一种模式更快。数字在 `docs/benchmarks/async-apply-compare-2026-09-30.json`。这组对照不在 CI 里。
 
 ## 阅读顺序
 

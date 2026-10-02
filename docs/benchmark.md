@@ -62,7 +62,45 @@ python3 tests/load_benchmark.py --host 127.0.0.1 --port 8080 --connections 64 --
 
 在测量前、中、后，以相同频率向所有节点发送 `INFO`，采集其中的 `async_apply / apply_inflight / apply_lag / commit_index / last_applied / term / state / leader_id`，并记录采样开销。`apply_lag` 是已提交但 owner 尚未确认完成应用的日志条数，`apply_inflight=1` 包含完成通知仍排队的阶段。结合日志或单独的诊断采集记录心跳处理延迟、选举和 Leader 切换，比较任期变化是否增多；这些 INFO 字段本身不是心跳延迟测量工具，现有压测客户端也不会自动持续采样它们。
 
-Follower 在异步模式下可以在 Raft 日志同步持久化后、KV 应用结束前回复复制成功；客户端写成功仍需等待 KV 同步持久化和 owner 完成通知。应同时观察有效吞吐、`apply_lag`、心跳及任期变化，确认积压与服务行为，不能仅用复制确认速度代表客户端写入完成速度。已归档的四轮用户回传摘要包含负载指标、CPU 与前后 INFO 阶段差分；完整实验矩阵、运行中持续 INFO/心跳采样及稳定收益验证尚未完成。
+Follower 在异步模式下可以在 Raft 日志同步持久化后、KV 应用结束前回复复制成功；客户端写成功仍需等待 KV 同步持久化和 owner 完成通知。应同时观察有效吞吐、`apply_lag`、心跳及任期变化，确认积压与服务行为，不能仅用复制确认速度代表客户端写入完成速度。已归档的四轮用户回传摘要包含负载指标、CPU 与前后 INFO 阶段差分。
+
+`tests/async_apply_compare.py` 用同一次 Linux 构建、同一台机器，一次只起一组三节点。先做完 `pipeline=1` 的三次重复，再做 `pipeline=16` 的三次重复。每一轮交替哪一种 `--async_apply` 先启动，避免总是同一种模式吃到热缓存。每个单元使用新的数据目录，全体节点带同一个 `--async_apply`、`--group_commit_ms=1` 和 `--snapshot_threshold=1024`。落盘仍是 `DurableWriteOptions` 的 `sync=true`。测量前和测量后各采一次 `INFO`；测量窗口内每秒再采一次，采样耗时写在报告里。这些 `INFO` 字段用来看 `apply_lag` 和任期是否变化，不是心跳延迟。连接数 32、value 128 字节、写入占比 0.5。默认正式请求 20,000、预热 5,000，都在计时外的预热不进入正式数字。
+
+```sh
+python3 tests/async_apply_compare.py --build-report <build-report.json>
+```
+
+报告里的吞吐和 p50/p95/p99 只描述该次运行。三次重复不够写成稳定收益。`pipeline=16` 的延迟是整批延迟，不能和 `pipeline=1` 的延迟放在一起比。
+
+### 2026-09-30 同机对照
+
+数据目录在 `/`（`/dev/sda2`，ext4）。2 个 CPU，内核 `7.0.0-34-generic`，三个服务进程和压测客户端在同一台机器。测量窗口里整机 idle 大约 1% 到 2%，iowait 低于 0.4%。原始数字在 [async-apply-compare-2026-09-30.json](benchmarks/async-apply-compare-2026-09-30.json)。报告状态是 FAIL：12 个单元里有 1 个出现客户端错误。下表的有效吞吐只计成功操作。
+
+`pipeline=1`（延迟是单批，也就是这一配置下的单次请求往返）：
+
+| async_apply | 重复 | 结果 | 有效吞吐（次/秒） | 错误 | p50 / p99（毫秒） | 窗口内最大 apply_lag |
+| --- | ---: | --- | ---: | ---: | --- | ---: |
+| false | 0 | 零错误 | 1378.8 | 0 | 20.2 / 81.4 | 0 |
+| true | 0 | 零错误 | 1721.4 | 0 | 16.8 / 53.5 | 6 |
+| true | 1 | CheckQuorum 卸任 | 1734.7 | 6199（MOVED 6176，other 23） | 不作为对照 | 未记录 |
+| false | 1 | 零错误 | 1549.8 | 0 | 18.6 / 57.2 | 0 |
+| false | 2 | 零错误 | 1574.3 | 0 | 18.1 / 80.8 | 0 |
+| true | 2 | 零错误 | 1802.2 | 0 | 16.3 / 45.5 | 15 |
+
+卸任那一轮的节点日志有 `WARNING RaftNode[0] check quorum failed term=1 fresh=1 need=2`。压测客户端不跟随 `MOVED`。这一轮没有可比的阶段差分。
+
+`pipeline=16`（下表延迟是整批延迟）：
+
+| async_apply | 重复 | 有效吞吐（次/秒） | 错误 | 整批 p50 / p99（毫秒） | 窗口内最大 apply_lag |
+| --- | ---: | ---: | ---: | --- | ---: |
+| false | 0 | 2653.3 | 0 | 186.7 / 351.4 | 0 |
+| true | 0 | 2835.1 | 0 | 180.2 / 244.3 | 26 |
+| true | 1 | 3253.2 | 0 | 152.3 / 316.9 | 29 |
+| false | 1 | 2892.0 | 0 | 163.3 / 349.1 | 0 |
+| false | 2 | 3657.7 | 0 | 129.4 / 227.3 | 0 |
+| true | 2 | 3200.8 | 0 | 157.5 / 274.2 | 22 |
+
+零错误的单元里任期没有增加。同步模式的 `apply_dispatch` 均值是 0；异步模式大约 1.3 到 2.0 毫秒。两种模式的吞吐区间重叠，这次运行不能写成某一种模式更快。
 
 同时保存测量区间起止的阶段计数器。各前缀的准确边界见 [阶段指标说明](concurrency.md)：`write_queue_wait` 到组批即结束，后续可能被拒绝；`write_completed` 到服务端成功回调结束，即使客户端已断连仍计数；`local_read` 包括未命中的正常读取。日志写和 KV 应用以批为样本，`replication_data_ack` 以成功数据 RPC 为样本，包含缓冲和重试且排除空心跳；`apply_dispatch` 是 worker 完成到 owner 收到通知的等待，同步模式为 0。它们都不能替代客户端端到端延迟，也不能把各阶段均值相加。
 

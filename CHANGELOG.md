@@ -4,6 +4,11 @@
 
 截至 **2026-09-23**，下文按提交与代码核对记录。09-13 之后的条目曾漏记，已补录；不以合并说明或未归档压测数字作为收益证明。
 
+## 2026-09-30 — 同步与异步应用的同机对照
+
+- `tests/async_apply_compare.py` 一次只起一组三节点，先跑完 `pipeline=1` 的三次重复，再跑 `pipeline=16`。每一轮交替哪一种 `--async_apply` 先启动。落盘仍是 `sync=true`。
+- 2026-09-30 在 2 CPU、ext4（`/dev/sda2`）上跑完 12 个单元。11 个单元零错误；`pipeline=1`、`async_apply=true` 的一次重复里 Leader 因 CheckQuorum 卸任，6176 次 `MOVED`。原始数字在 `docs/benchmarks/async-apply-compare-2026-09-30.json`。两种模式的吞吐区间重叠，这次结果不是稳定收益。
+
 ## 2026-09-30 — 冒烟会请求每个节点的 /health
 
 - `tests/cluster_smoke.py` 给三个节点各分配一个指标端口。选出 Leader 之后，以及旧 Leader 重启并追上之后，对每个节点发 `GET /health`。三个响应都要是 200，并且其中恰好一个角色是 leader。
