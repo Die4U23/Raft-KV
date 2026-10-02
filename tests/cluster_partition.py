@@ -111,7 +111,7 @@ class PartitionCluster(Cluster):
         self.window = window
         self.report.update(test='raft_tcp_partition', snapshots=[], probes=[], partitions=[],
                            observation_seconds=window,
-                           scope='three local processes; TCP cut, silent drop, and one-way reply drop')
+                           scope='three local processes; TCP cut, silent drop, one-way reply drop, and short delay')
 
     def capture(self, phase):
         self.running(range(3))
@@ -157,6 +157,32 @@ class PartitionCluster(Cluster):
             field = '{}_bytes'.format(direction)
             if after['edges'][key][field] <= before['edges'][key][field]:
                 raise AssertionError('{}->{} forwarded no {}'.format(writer, recipient, direction))
+
+    def survive_short_delay(self, expected):
+        # 40 ms is under the 150 ms CheckQuorum and election floors, so this
+        # checks that a late-but-ordered path still commits. It is not a stall
+        # long enough to force an election, and it does not reorder bytes.
+        leader = self.wait_for('leader before delay', lambda: self.leader(range(3)))
+        term = self.info(leader)['term']
+        before = self.mesh.snapshot()
+        self.mesh.delay(0.04)
+        try:
+            minimum = self.write(leader, 'delayed-write', 'kept')
+            expected.append(('default', 'delayed-write', b'kept'))
+            self.wait_for('delayed write converges', lambda: self.settled(expected, minimum))
+            for node in range(3):
+                state = self.info(node)
+                if state['term'] != term or state['leader_id'] != leader:
+                    raise AssertionError('40 ms delay changed leadership: {}'.format(state))
+            held = sum(edge['delayed_request_bytes'] + edge['delayed_reply_bytes']
+                       for edge in self.mesh.snapshot()['edges'].values())
+            earlier = sum(edge['delayed_request_bytes'] + edge['delayed_reply_bytes']
+                          for edge in before['edges'].values())
+            if held <= earlier:
+                raise AssertionError('delay held no bytes')
+        finally:
+            self.mesh.delay(0)
+        return minimum
 
     def lose_leader(self, phase, flow_fn, forward_fn, probe_key, probe_value, expected):
         leader = self.wait_for('leader before ' + phase, lambda: self.leader(range(3)))
@@ -277,6 +303,9 @@ class PartitionCluster(Cluster):
         uncertain.append(('asymmetric-probe', 'uncertain-asymmetric'))
         minimum = self.heal('asymmetric_heal', expected, minimum, uncertain[-1:])
         self.step('healing the one-way drop restores convergence')
+
+        minimum = self.survive_short_delay(expected)
+        self.step('40 ms ordered delay still commits the write without changing leader')
 
         baseline = self.capture('before_no_quorum')
         self.cut([[0], [1], [2]], 'no_quorum')

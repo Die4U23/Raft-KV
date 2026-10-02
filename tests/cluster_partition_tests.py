@@ -138,6 +138,27 @@ class RelayTests(unittest.TestCase):
             recovered.sendall(b'xyz')
             self.assertEqual(recovered.recv(3), b'xyz')
 
+    def test_delay_holds_each_chunk_then_forwards_it_in_order(self):
+        self.mesh.delay(0.2)
+        with self.connect(0, 1) as dial:
+            dial.settimeout(2)
+            started = time.monotonic()
+            dial.sendall(b'xyz')
+            self.assertEqual(dial.recv(3), b'xyz')
+            self.assertGreaterEqual(time.monotonic() - started, 0.35)
+            edge = self.mesh.snapshot()['edges']['0->1']
+            self.assertGreater(edge['delayed_request_bytes'], 0)
+            self.assertGreater(edge['delayed_reply_bytes'], 0)
+            self.mesh.delay(0)
+            started = time.monotonic()
+            dial.sendall(b'ok')
+            self.assertEqual(dial.recv(2), b'ok')
+            self.assertLess(time.monotonic() - started, 0.2)
+        with self.assertRaises(ValueError):
+            self.mesh.delay(-0.1)
+        with self.assertRaises(ValueError):
+            self.mesh.delay(1.5)
+
     def test_silence_both_directions_discards_the_request_without_refusing(self):
         self.mesh.silence([(0, 1), (1, 0)])
         with self.connect(0, 1) as dial:
