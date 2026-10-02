@@ -3,6 +3,7 @@
 partition() aborts crossing connections and refuses new ones. silence() keeps
 the TCP connection open and discards the named directions; a later partition()
 aborts those relays so a truncated byte stream is not forwarded afterward.
+delay() holds each chunk and then forwards it in the same order.
 """
 import asyncio
 import threading
@@ -32,6 +33,7 @@ class RaftProxyMesh:
         self.active = {}
         self.groups = {node: 0 for node in destinations}
         self.drops = set()
+        self.hold_seconds = 0.0
         self.epoch = 0
         self.errors = []
         self.events = []
@@ -83,7 +85,8 @@ class RaftProxyMesh:
                 edge = (src, dst)
                 self.stats[edge] = dict(accepted=0, refused=0, cut=0,
                                         request_bytes=0, reply_bytes=0,
-                                        dropped_request_bytes=0, dropped_reply_bytes=0)
+                                        dropped_request_bytes=0, dropped_reply_bytes=0,
+                                        delayed_request_bytes=0, delayed_reply_bytes=0)
                 self.servers[edge] = await asyncio.start_server(
                     lambda reader, writer, edge=edge, destination=destination:
                     self._relay(edge, destination, reader, writer), '127.0.0.1', 0)
@@ -115,12 +118,17 @@ class RaftProxyMesh:
                     data = await source.read(65536)
                     if not data:
                         return
+                    hold = self.hold_seconds
+                    if hold > 0:
+                        await asyncio.sleep(hold)
                     if (edge, direction) in self.drops:
                         self.stats[edge]['dropped_' + direction + '_bytes'] += len(data)
                         continue
                     target.write(data)
                     await target.drain()
                     self.stats[edge][direction + '_bytes'] += len(data)
+                    if hold > 0:
+                        self.stats[edge]['delayed_' + direction + '_bytes'] += len(data)
 
             pumps = [asyncio.create_task(pump(reader, upstream_writer, 'request')),
                      asyncio.create_task(pump(upstream, writer, 'reply'))]
@@ -191,6 +199,17 @@ class RaftProxyMesh:
 
     def silence(self, flows):
         return self.call(self._silence(flows))
+
+    async def _delay(self, seconds):
+        if seconds < 0 or seconds > 1:
+            raise ValueError('delay must be 0..1 seconds')
+        self.hold_seconds = seconds
+        self.events.append(dict(monotonic_seconds=time.monotonic(), kind='delay', seconds=seconds))
+        return self._snapshot()
+
+    def delay(self, seconds):
+        """Hold each later chunk, then forward it in the same order. Not a reorder."""
+        return self.call(self._delay(seconds))
 
     async def _partition(self, groups):
         flattened = [node for group in groups for node in group]
