@@ -111,7 +111,7 @@ class PartitionCluster(Cluster):
         self.window = window
         self.report.update(test='raft_tcp_partition', snapshots=[], probes=[], partitions=[],
                            observation_seconds=window,
-                           scope='three local processes; TCP cut, silent drop, one-way reply drop, one leader outbound link, short delay, frame reorder, and leader-link stall')
+                           scope='three local processes; TCP cut, silent drop, one-way reply drop, one leader outbound link, one follower reply, short delay, frame reorder, and leader-link stall')
 
     def capture(self, phase):
         self.running(range(3))
@@ -241,6 +241,46 @@ class PartitionCluster(Cluster):
                 raise AssertionError('lagging follower served the write while its inbound link was dropped')
         self.expect_flows(before, flows, [])
         self.report['directed_lagging'] = lagging
+        return minimum
+
+    def drop_one_follower_reply(self, expected):
+        # The other single directed edge: one follower's replies to the leader
+        # are discarded. The leader's bytes toward that follower, and the other
+        # follower, stay open. The write still commits. A retried AppendEntries
+        # keeps the commit index from the first send, so this follower does not
+        # serve the new key until the direction is restored.
+        leader = self.wait_for('leader before one reply drop', lambda: self.leader(range(3)))
+        others = [node for node in range(3) if node != leader]
+        quiet = others[0]
+        peer = others[1]
+        flows = [(quiet, leader)]
+        forwarded = [(leader, quiet)]
+        term = self.info(leader)['term']
+        before = self.mesh.snapshot()
+        proxy = self.mesh.silence(flows)
+        self.report['partitions'].append(dict(phase='one_reply', kind='silence', flows=flows,
+                                              proxy_at_cut=proxy))
+        minimum = self.write(leader, 'one-reply-write', 'kept')
+        expected.append(('default', 'one-reply-write', b'kept'))
+
+        def reachable():
+            state = self.info(leader)
+            if state['term'] != term or state['leader_id'] != leader or state['state'] != 'leader':
+                raise AssertionError('one reply drop changed leadership: {}'.format(state))
+            other = self.info(peer)
+            if other['term'] != term or other['leader_id'] != leader:
+                raise AssertionError('reachable follower changed leadership: {}'.format(other))
+            with self.client(peer) as client:
+                if client.command('GET', 'one-reply-write') != b'kept':
+                    return None
+            return state['commit_index']
+
+        self.wait_for('one-reply write on the reachable follower', reachable)
+        with self.client(quiet) as client:
+            if client.command('GET', 'one-reply-write') is not None:
+                raise AssertionError('follower served the write while its replies were dropped')
+        self.expect_flows(before, flows, forwarded)
+        self.report['one_reply_quiet'] = quiet
         return minimum
 
     def survive_short_delay(self, expected):
@@ -419,6 +459,11 @@ class PartitionCluster(Cluster):
         self.step('dropping only the leader outbound link to one follower still commits on the other two')
         minimum = self.heal('directed_heal', expected, minimum, [])
         self.step('restoring that direction lets the lagging follower catch up')
+
+        minimum = self.drop_one_follower_reply(expected)
+        self.step('dropping one follower reply still commits on the other two')
+        minimum = self.heal('one_reply_heal', expected, minimum, [])
+        self.step('restoring that reply lets the quiet follower serve the write')
 
         minimum = self.survive_short_delay(expected)
         self.step('40 ms ordered delay still commits the write without changing leader')
