@@ -324,6 +324,18 @@ class Cluster:
                 return leader["node_id"]
         return None
 
+    def leader_with_quorum(self, node_ids, minimum_commit):
+        # A freshly elected leader steps down via CheckQuorum unless a follower
+        # has answered an AppendEntries in its own term. Each leader proposes a
+        # no-op on election; it commits exactly once that answer has arrived, so
+        # it is the signal that the leader is safe to write to.
+        leader_id = self.leader(node_ids)
+        if leader_id is None:
+            return None
+        if self.info(leader_id)["commit_index"] <= minimum_commit:
+            return None
+        return leader_id
+
     def convergence(self, expected, minimum_index):
         self.running(range(3))
         for node in self.nodes:
@@ -404,7 +416,8 @@ class Cluster:
         self.nodes[leader].stop(crash=True)
         self.step("leader killed abruptly")
         survivors = [node_id for node_id in range(3) if node_id != leader]
-        new_leader = self.wait_for("election after leader loss", lambda: self.leader(survivors))
+        new_leader = self.wait_for("election after leader loss and quorum",
+                                   lambda: self.leader_with_quorum(survivors, committed))
         self.report["failover_leader"] = new_leader
         with self.client(new_leader) as client:
             expect(client.command("GET", "shared"), original, "committed value after failover")

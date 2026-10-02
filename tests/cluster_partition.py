@@ -190,7 +190,8 @@ class PartitionCluster(Cluster):
         with ThreadPoolExecutor(max_workers=1) as pool:
             until = time.monotonic() + self.window
             future = pool.submit(probe_write, self, leader, 'minority-probe', 'uncertain-one', self.window)
-            new_leader = self.wait_for('majority election', lambda: self.leader(majority))
+            new_leader = self.wait_for('majority election and quorum',
+                                       lambda: self.leader_with_quorum(majority, minimum))
             self.report['majority_leader'] = new_leader
             minimum = self.write(new_leader, 'majority-write', 'with-two-nodes')
             expected.append(('default', 'majority-write', b'with-two-nodes'))

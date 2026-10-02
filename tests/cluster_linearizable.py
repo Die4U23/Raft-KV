@@ -53,6 +53,7 @@ def run_linearizable(cluster):
         with cluster.client(leader) as client:
             expect(client.command('SET', 'k', 'old'), 'OK', 'linearizable SET')
             expect(client.command('GET', 'k'), b'old', 'leader GET after SET')
+        committed = cluster.info(leader)['commit_index']
         cluster.step('leader write-then-read under ReadIndex')
 
         follower = next(node_id for node_id in range(3) if node_id != leader)
@@ -64,7 +65,8 @@ def run_linearizable(cluster):
 
         majority = [node for node in range(3) if node != leader]
         mesh.partition([[leader], majority])
-        new_leader = cluster.wait_for('majority election', lambda: cluster.leader(majority))
+        new_leader = cluster.wait_for('majority election and quorum',
+                                      lambda: cluster.leader_with_quorum(majority, committed))
         cluster.report['majority_leader'] = new_leader
         with cluster.client(new_leader) as client:
             expect(client.command('SET', 'k', 'new'), 'OK', 'majority SET')
