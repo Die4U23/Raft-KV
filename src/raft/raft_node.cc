@@ -638,6 +638,8 @@ void RaftNode::MaybeSnapshot() {
     if (!_running || _apply_inflight || _snapshot_threshold <= 0) return;
     const int64_t index = _last_applied;
     if (index <= _log->SnapshotIndex()) return;
+    // Applied entries still stored above the snapshot stay below this threshold.
+    // Entries appended after the snapshot remain until the next time it is reached.
     if (index - _log->SnapshotIndex() < _snapshot_threshold) return;
     const int64_t term = _log->GetTerm(index);
     if (term <= 0) return;
