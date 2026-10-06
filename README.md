@@ -78,7 +78,18 @@ ctest --test-dir build-portable --output-on-failure
 python3 -m unittest discover -s tests -p '*_tests.py'
 ```
 
-### 2. 启动三节点
+### 2. 一条命令演示
+
+用已经编好的 Linux 服务起三个进程：选出 Leader，写入并在三个节点读到，Follower 上的 `SET` 返回 `MOVED`，杀掉 Leader 后新 Leader 仍能读到旧数据并继续写，旧进程用原来的目录重启后三个节点一致。这是同一台机器上的三个进程。
+
+```bash
+python3 scripts/demo.py \
+  --binary build-linux-repro/server/raft_kv_server
+```
+
+加上 `--hold` 时，演示结束后进程先留着，可以用 `redis-cli -p <客户端端口>` 再试，按回车才退出。
+
+### 3. 手动启动三节点
 
 为每个节点使用配对且独立的 KV / Raft 目录：
 
@@ -109,7 +120,7 @@ curl -fsS localhost:9090/health
 - `--leader_only_reads=true`：仅在 Leader 节点响应读请求（默认 false）
 - `--metrics_port=9090`：在该端口提供 `GET /metrics`（Prometheus 文本）和 `GET /health`。默认 0，不监听。不能与 `client_port` 或 `raft_port` 相同
 
-### 3. 读写
+### 4. 读写
 
 ```bash
 redis-cli -p 8080 SET user:1 alice
