@@ -1,5 +1,6 @@
 // Production RaftNode snapshots: compact an applied prefix, restart from it,
-// and install it on a follower that never saw the compacted entries.
+// install it on a follower that never saw the compacted entries, and keep the
+// applied suffix shorter than the snapshot threshold.
 #include "in_process_cluster.h"
 #include <iostream>
 
@@ -201,6 +202,33 @@ static void InterruptedInstallRestartsAndReplicates() {
           "entry after the snapshot did not replicate");
 }
 
+static void AppliedEntriesStayWithinSnapshotThreshold() {
+    Cluster cluster;
+    cluster.Elect(10);
+    constexpr int64_t threshold = 4;
+    for (int id : {10, 30, 50}) cluster.Node(id).SetSnapshotThreshold(threshold);
+    for (int i = 0; i < 20; ++i) {
+        const auto key = "default:k" + std::to_string(i);
+        Check(cluster.Node(10).Propose(Command({"SET", key, "v"}),
+            [](bool ok, const std::string&) { Check(ok, "SET failed"); }) > 0,
+            "proposal rejected");
+        cluster.Pump();
+    }
+    cluster.Settle();
+    for (int id : {10, 30, 50}) {
+        const auto applied = cluster.Node(id).GetLastApplied();
+        const auto snapshot = cluster.Node(id).SnapshotIndex();
+        Check(applied >= 20, "node did not apply the writes");
+        Check(snapshot > 0 && applied - snapshot < threshold,
+              "applied log suffix reached the snapshot threshold");
+        std::string value;
+        Check(cluster.State(id).Get("default:k0", &value) && value == "v",
+              "snapshotted key missing");
+        Check(cluster.State(id).Get("default:k19", &value) && value == "v",
+              "latest key missing");
+    }
+}
+
 static void OlderSnapshotDoesNotReplaceState() {
     Cluster cluster({10, 30});
     cluster.Elect(10);
@@ -230,6 +258,7 @@ int main() {
         LaggingPeerInstallsChunkedSnapshot();
         InterruptedInstallRestartsAndReplicates();
         DivergentFollowerJumpsToSnapshot();
+        AppliedEntriesStayWithinSnapshotThreshold();
         OlderSnapshotDoesNotReplaceState();
         std::cout << "PASS: snapshots\n";
         return 0;
