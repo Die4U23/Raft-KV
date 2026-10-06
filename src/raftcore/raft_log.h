@@ -43,6 +43,8 @@ private:
     void LoadSnapshot();
     // False when this log was written before tail metadata existed.
     bool LoadTail();
+    // Read every entry after the snapshot. A hole or a corrupt value fails open.
+    void VerifySuffix() const;
     void PersistSnapshot(int64_t index, int64_t term, const std::string& data, bool keep_suffix);
     std::unique_ptr<rocksdb::DB> _db;
     int64_t _last_index = 0;
