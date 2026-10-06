@@ -18,7 +18,8 @@ RaftLog::RaftLog(const std::string& path) {
     if (LoadTail()) return;
 
     // Logs written before the tail record still need one contiguous scan.
-    // The scan result is stored so the next open checks only the last entry.
+    // The scan result is stored. Later opens still read each suffix entry so a
+    // corrupt middle record fails here instead of on a later Get.
     std::unique_ptr<rocksdb::Iterator> it(_db->NewIterator(rocksdb::ReadOptions()));
     for (it->SeekToFirst(); it->Valid(); it->Next()) {
         const std::string key = it->key().ToString();
@@ -28,7 +29,8 @@ RaftLog::RaftLog(const std::string& path) {
         if (_last_index == std::numeric_limits<int64_t>::max() ||
             key != IndexToKey(_last_index + 1) ||
             !entry.ParseFromString(it->value().ToString()) ||
-            entry.index() != _last_index + 1 || entry.term() <= 0)
+            entry.index() != _last_index + 1 || entry.term() <= 0 ||
+            entry.term() < _last_term)
             throw std::runtime_error("corrupt or non-contiguous Raft log");
         ++_last_index;
         _last_term = entry.term();
@@ -205,7 +207,17 @@ bool RaftLog::LoadTail() {
     }
     _last_index = index;
     _last_term = term;
+    VerifySuffix();
     return true;
+}
+void RaftLog::VerifySuffix() const {
+    int64_t previous_term = _snapshot_index == 0 ? 0 : _snapshot_term;
+    for (int64_t index = _snapshot_index + 1; index <= _last_index; ++index) {
+        raftcore::LogEntry entry;
+        if (!Get(index, &entry) || entry.term() < previous_term)
+            throw std::runtime_error("corrupt or non-contiguous Raft log");
+        previous_term = entry.term();
+    }
 }
 void RaftLog::CompactApplied(int64_t index, int64_t term, const std::string& data) {
     if (index <= _snapshot_index) return;

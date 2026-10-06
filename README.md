@@ -144,7 +144,7 @@ redis-cli -p 8080 DEL user:1
 ## 当前边界
 
 - 集群是固定成员的单 Raft 组，没有动态成员变更和多分片。
-- 快照只截掉已应用前缀（`--snapshot_threshold`，默认 1024）。快照之后的日志仍会增长。重启读取保存的日志尾，不再为发现末尾而扫描后缀。
+- 快照只截掉已应用前缀（`--snapshot_threshold`，默认 1024）。快照之后的日志仍会增长。重启用尾记录确定终点，并读出这段后缀；中间条目损坏会在打开时失败。
 - 普通 `SET` / `DEL` 不去重。`IDEMP <client-id> <request-id> SET|DEL ...` 只保留该客户端最近一次请求：相同 id 返回第一次的回复，更小的 id 返回 stale。
 - 已受理但 1000 ms 内还没提交的写，客户端收到 `-ERR proposal timeout; outcome unknown`。这条日志仍留在 Raft 里，稍后仍可能提交。
 - 已有验证不覆盖整机掉电、存储介质损坏、长时间压测或完整 Raft 正确性证明。
