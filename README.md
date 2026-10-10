@@ -49,14 +49,25 @@ The table below is the archive from 2026-09-08 through 09-13, when the portable 
 | Crash and restart during writes | 1,704 acknowledged keys remain on all three replicas after two recoveries | [Recovery record](docs/benchmarks/write-restart-validation.md) |
 | Overload and a 60-second window | Admission control, `BUSY`, recovery to zero, and resource thresholds passed | [Overload record](docs/benchmarks/overload-validation.md) |
 
-An archived two-core VM baseline, with three nodes and the client on one machine, 32 connections, `pipeline=1`, 128-byte values, and 50% GET / 50% SET:
+One comparison run on 2026-10-10, on this two-core machine, with three nodes and the client together. 32 connections, 128-byte values, 50% GET / 50% SET, 5,000 warmup requests, then 20,000 measured requests. `group_commit_ms=1` and `snapshot_threshold=1024`. Each mode ran once. All four cells finished with zero errors. During the measured windows the machine was about 1% to 2% idle.
 
-| Mode | Combined throughput | Two-round p50 | Two-round p99 |
+`pipeline=1` latency is one round trip:
+
+| Mode | Goodput | p50 | p99 |
 | --- | ---: | ---: | ---: |
-| Synchronous apply | 3,656.53 ops/s | 7.88 / 8.85 ms | 20.61 / 25.67 ms |
-| Serial async apply | 3,824.56 ops/s | 8.35 / 8.05 ms | 18.39 / 26.89 ms |
+| Synchronous apply | 2,428.82 ops/s | 12.53 ms | 28.46 ms |
+| Serial async apply | 2,654.65 ops/s | 11.37 ms | 29.61 ms |
 
-These numbers belong to that VM and that load. They are for regression and mechanism checks, not a general capacity claim. Parameters, CPU cost, and raw evidence are in the [performance baseline](docs/benchmarks/ubuntu-2cpu-abba.md).
+`pipeline=16` latency is the whole batch of 16 commands:
+
+| Mode | Goodput | Batch p50 | Batch p99 |
+| --- | ---: | ---: | ---: |
+| Synchronous apply | 5,360.11 ops/s | 87.67 ms | 177.91 ms |
+| Serial async apply | 5,731.63 ops/s | 83.47 ms | 146.30 ms |
+
+[![Goodput and latency from one 2026-10-10 run. pipeline=1 goodput is 2428.82 sync and 2654.65 async ops/s, with p50 12.53 and 11.37 ms and p99 28.46 and 29.61 ms. pipeline=16 goodput is 5360.11 sync and 5731.63 async ops/s, with batch p50 87.67 and 83.47 ms and batch p99 177.91 and 146.30 ms.](docs/benchmarks/figures/apply-compare-2026-10-10.svg)](docs/benchmarks/async-apply-compare-2026-10-10.json)
+
+These numbers belong to that machine and that load. Each mode was measured once, so the gap in this run is not a stable difference. At `pipeline=16` the async cell's largest observed `apply_lag` was 32; the other three cells stayed at 0. The earlier four-round archive remains in the [performance baseline](docs/benchmarks/ubuntu-2cpu-abba.md). This run's report is [async-apply-compare-2026-10-10.json](docs/benchmarks/async-apply-compare-2026-10-10.json).
 
 ## Quick start
 
