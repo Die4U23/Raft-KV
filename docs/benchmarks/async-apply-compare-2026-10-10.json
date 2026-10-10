@@ -1,0 +1,470 @@
+{
+  "status": "PASS",
+  "test": "async_apply_compare",
+  "note": "One machine, one binary, sequential cells. Three repeats are this run only; do not treat a difference as a stable benefit. pipeline=1 latency and pipeline=16 batch latency are separate measurements. INFO polls during the timed window add the recorded sampling overhead and are not a heartbeat-delay measurement. RocksDB writes use DurableWriteOptions sync=true.",
+  "identity": {
+    "binary": {
+      "path": "/home/a/projects/raft-kv/build-linux-repro/server/raft_kv_server",
+      "sha256": "82f994a9b72ffdefd27748974ce4e485006627c675b7458ffd3883c28f700506"
+    },
+    "compiled_inputs": {
+      "CMakeLists.txt": "4ab1caf88b9ef7738e0542b0ead56422ceafa6947d0fb06e2450e1d0a954aaca",
+      "third_party/muduo.zip": "910d21d1343164e9517f32a5b77025cfeed0f20aae2ae86dd1ed399a7b4d2192",
+      "src/storage/rocksdb_store.h": "7a4c1ec7e7a714873bb6b65fc9ccb7942f8baef51c4c8634c5ac76168a0e63c5",
+      "src/storage/rocksdb_store.cpp": "c7ca7ad2a2fe3d670941df7b244d548b591bdb2afa4defd9b98a8ede86622191",
+      "src/storage/storage_error.h": "e494ff3ad86bdcc92869a67ceae55528aa8e3a11f1d59c5847248f066c06f836",
+      "src/raftcore/raft_log.cc": "d19978ca4bb7b668fbe748fca6d822c0f1af1f98937e4eac810eae51a3e1d759",
+      "src/raftcore/raft_log.h": "d8fb5e0258c5436ac208552a345d537b9506a6ca73ad7fd3b4a4894f8472fc73",
+      "src/common/metrics.h": "ac82995af66d66d59daf909e2943089bc952aafa8905a6879830e4f78b70b3d1",
+      "src/common/command_buffer.h": "ae2722a7706297f11c5276a4a6af335c44c57dbe5dbd1345e94652515860232f",
+      "src/common/session_queue.h": "bf19e82c1df668c7ff37364a7b5a22f4b6810c006e4073c9def6e55c1383094b",
+      "src/common/resp_parser.h": "99c2d0f560219b534857af14e15b5a3d0743aa4842aa032a55edb18dac0c6533",
+      "src/common/command_type.h": "dc9705f4ebda1c65bc729c084855911b0e2eb235e5b0923c26a77e19d8c8078e",
+      "src/common/prometheus_text.h": "5d17839ee8504fd5ee230eae1393102c395c377b7ac9aee44c5376fb4058356d",
+      "src/common/batch_flush_policy.h": "0df1957a3f66c30f25885647d89ec355365aebc8e2dd74b0d47d48d56fe92341",
+      "src/common/log.h": "32174dbb5a58e1dc07a848bc866eff5ea18ddae5be7081e4ea6ff06600b52435",
+      "src/common/peer_retry_policy.h": "6d176ed021b052cd8cafd888cc6bd44920761d3d57ee759bc2261072b82ed271",
+      "src/server/main.cpp": "4d11d79e1a7007260178181fff6e09dbed4f5e06d873962237b50017f8ec736b",
+      "src/raft/apply_executor.h": "c404fd71979d69be73b4a7ad3088b7f46e18ea16ee1473d95ea5d1cf358fc032",
+      "src/raft/raft_node.h": "fac1d43ff7af0530580a5b789d483a71546ed686887c2fec89f4e1ad218d7d0d",
+      "src/raft/peer_manager.cc": "9664272eef565ffd64d9af42227ad2aa55ffab48730fa5b8d9d31d9d4e900497",
+      "src/raft/kv_state_machine.h": "f4b3ba06d5257f7a4e2870bfa8a8eb5518fc6272d1600f34b697e5af1e332391",
+      "src/raft/peer_manager.h": "9f5bc70bfe62914acb55da2254a719333c12f8bf325c60d09ce6f703cb6e0665",
+      "src/raft/kv_state_machine.cc": "ad46ff224b6b5bc08c38a7b9a446af7fe87295b8e9f2dfbf7cb9c49f69a0aba4",
+      "src/raft/serial_apply_executor.h": "e1e0a1512269e536e0ad258087252be46cb8aea52a87d3a1abf73d46712e62ba",
+      "src/raft/raft_codec.h": "f63f305e35a29a2fdf6ea44a868f1d4bad7336d6ad4c8a4be95f2acb8395ba73",
+      "src/raft/serial_apply_executor.cc": "3b7771964b1b195e3dab72394e368c23d75657141f2b7ef55368673088cf78f6",
+      "src/raft/raft_node.cc": "2154745b27cafeb28b21f9e7c6cc8abddda3069914db1959daa84e5f2d7a5bea",
+      "src/raft/peers.h": "653a298fa88db12d54a78eed51c60aa714e276b8fa152a9c5d059d2bcd901b3f",
+      "src/namespace/namespace_manager.cc": "a72e2ecd0752288ecac43f5976bd404c1c9178e10560cd8cf04bc4e79e1e4274",
+      "src/namespace/namespace_manager.h": "d1d9b7c77b993a0bc7a367ed75f3169ede0f9ec9c91bf85f43fd95fb5379491a",
+      "proto/raft_messages.proto": "56b9e85383fac5b79de390e34d64834cc72d2601dafc39b026f0c8044290dc37"
+    },
+    "script_sha256": "2ab8edee120291bbe6dedb3544cc63a1dbcecfed3ad778d98c68fd2b939833ca",
+    "build_report_sha256": "2e7a41292829dc79a2c8d98fc1ca24210754a4aef8f7293a36c2292019bd2577"
+  },
+  "environment": {
+    "cpu_count": 2,
+    "affinity": [
+      0,
+      1
+    ],
+    "kernel": "7.0.0-34-generic",
+    "filesystem": {
+      "device": "/dev/sda2",
+      "mount": "/",
+      "fstype": "ext4"
+    },
+    "deployment": "three servers and one Python load process on one machine, one cell at a time"
+  },
+  "configuration": {
+    "connections": 32,
+    "requests": 20000,
+    "warmup_requests": 5000,
+    "value_size": 128,
+    "write_ratio": 0.5,
+    "pipelines": [
+      1,
+      16
+    ],
+    "repeats": 1,
+    "group_commit_ms": 1,
+    "snapshot_threshold": 1024,
+    "linearizable_reads": false,
+    "info_interval_seconds": 1.0
+  },
+  "cells": [
+    {
+      "pipeline": 1,
+      "async_apply": false,
+      "repeat": 0,
+      "status": "PASS",
+      "artifact": "/home/a/projects/raft-kv/build-linux-repro/apply-compare/run-mqpha0_8/p1-async-0-r0",
+      "goodput_ops_per_second": 2428.816899197129,
+      "errors": 0,
+      "errors_by_category": {
+        "moved": 0,
+        "overload": 0,
+        "other": 0,
+        "timeout": 0,
+        "connection": 0
+      },
+      "elapsed_seconds": 8.234461810032371,
+      "batch_latency_ms": {
+        "p50": 12.532859982457012,
+        "p95": 21.453773920075037,
+        "p99": 28.458505995222342
+      },
+      "cpu": {
+        "window_seconds": 8.238858025986701,
+        "processes": {
+          "0": {
+            "cpu_seconds": 0.72,
+            "percent_of_one_core": 8.739075218058165
+          },
+          "1": {
+            "cpu_seconds": 2.5300000000000002,
+            "percent_of_one_core": 30.708139307898836
+          },
+          "2": {
+            "cpu_seconds": 0.64,
+            "percent_of_one_core": 7.768066860496147
+          },
+          "client": {
+            "cpu_seconds": 3.22,
+            "percent_of_one_core": 39.08308639187124
+          }
+        },
+        "system_percent": {
+          "user": 70.7673568818514,
+          "nice": 0.0,
+          "system": 24.543239951278927,
+          "idle": 1.0353227771010962,
+          "iowait": 0.0,
+          "irq": 0.0,
+          "softirq": 3.6540803897685747,
+          "steal": 0.0
+        }
+      },
+      "stages": {
+        "write_queue_wait": {
+          "count": 10000,
+          "mean_us": 1402.8777
+        },
+        "leader_log_write": {
+          "count": 1445,
+          "mean_us": 142.9356401384083,
+          "mean_entries": 6.920415224913495
+        },
+        "replication_data_ack": {
+          "count": 2868,
+          "mean_us": 1591.7838214783822
+        },
+        "kv_apply": {
+          "count": 1440,
+          "mean_us": 133.65555555555557,
+          "mean_entries": 6.944444444444445
+        },
+        "apply_dispatch": {
+          "count": 1440,
+          "mean_us": 0.0
+        },
+        "write_completed": {
+          "count": 10000,
+          "mean_us": 3762.371
+        },
+        "local_read": {
+          "count": 10000,
+          "mean_us": 19.0699
+        }
+      },
+      "info_summary": {
+        "sample_count": 9,
+        "sampling_overhead_seconds": 0.11233864387031645,
+        "leadership_disagreements": 0,
+        "max_apply_lag": 0,
+        "term_increases": 0,
+        "terms_seen": [
+          1
+        ]
+      },
+      "info_during_errors": [],
+      "error": null,
+      "cleanup_error": null
+    },
+    {
+      "pipeline": 1,
+      "async_apply": true,
+      "repeat": 0,
+      "status": "PASS",
+      "artifact": "/home/a/projects/raft-kv/build-linux-repro/apply-compare/run-mqpha0_8/p1-async-1-r0",
+      "goodput_ops_per_second": 2654.646339910979,
+      "errors": 0,
+      "errors_by_category": {
+        "moved": 0,
+        "overload": 0,
+        "other": 0,
+        "timeout": 0,
+        "connection": 0
+      },
+      "elapsed_seconds": 7.533960248983931,
+      "batch_latency_ms": {
+        "p50": 11.369031970389187,
+        "p95": 22.076932006166317,
+        "p99": 29.60857204918282
+      },
+      "cpu": {
+        "window_seconds": 7.542420586978551,
+        "processes": {
+          "0": {
+            "cpu_seconds": 2.55,
+            "percent_of_one_core": 33.8087749230319
+          },
+          "1": {
+            "cpu_seconds": 0.78,
+            "percent_of_one_core": 10.341507623515641
+          },
+          "2": {
+            "cpu_seconds": 0.74,
+            "percent_of_one_core": 9.811173899232788
+          },
+          "client": {
+            "cpu_seconds": 3.02,
+            "percent_of_one_core": 40.04019618335543
+          }
+        },
+        "system_percent": {
+          "user": 70.12726054922975,
+          "nice": 0.0,
+          "system": 24.04554588077696,
+          "idle": 2.4112525117213663,
+          "iowait": 0.0,
+          "irq": 0.0,
+          "softirq": 3.415941058271936,
+          "steal": 0.0
+        }
+      },
+      "stages": {
+        "write_queue_wait": {
+          "count": 10000,
+          "mean_us": 1669.5083
+        },
+        "leader_log_write": {
+          "count": 1322,
+          "mean_us": 140.09682299546142,
+          "mean_entries": 7.564296520423601
+        },
+        "replication_data_ack": {
+          "count": 2615,
+          "mean_us": 1612.6963671128108
+        },
+        "kv_apply": {
+          "count": 1312,
+          "mean_us": 113.16006097560975,
+          "mean_entries": 7.621951219512195
+        },
+        "apply_dispatch": {
+          "count": 1312,
+          "mean_us": 876.0846036585366
+        },
+        "write_completed": {
+          "count": 10000,
+          "mean_us": 5897.473
+        },
+        "local_read": {
+          "count": 10000,
+          "mean_us": 18.6051
+        }
+      },
+      "info_summary": {
+        "sample_count": 8,
+        "sampling_overhead_seconds": 0.11883981799473986,
+        "leadership_disagreements": 0,
+        "max_apply_lag": 0,
+        "term_increases": 0,
+        "terms_seen": [
+          1
+        ]
+      },
+      "info_during_errors": [],
+      "error": null,
+      "cleanup_error": null
+    },
+    {
+      "pipeline": 16,
+      "async_apply": false,
+      "repeat": 0,
+      "status": "PASS",
+      "artifact": "/home/a/projects/raft-kv/build-linux-repro/apply-compare/run-mqpha0_8/p16-async-0-r0",
+      "goodput_ops_per_second": 5360.106691721844,
+      "errors": 0,
+      "errors_by_category": {
+        "moved": 0,
+        "overload": 0,
+        "other": 0,
+        "timeout": 0,
+        "connection": 0
+      },
+      "elapsed_seconds": 3.7312690120306797,
+      "batch_latency_ms": {
+        "p50": 87.66581802046858,
+        "p95": 137.79769668471997,
+        "p99": 177.9109917767346
+      },
+      "cpu": {
+        "window_seconds": 3.7356754270149395,
+        "processes": {
+          "0": {
+            "cpu_seconds": 0.27,
+            "percent_of_one_core": 7.227608641999942
+          },
+          "1": {
+            "cpu_seconds": 1.37,
+            "percent_of_one_core": 36.673421627925634
+          },
+          "2": {
+            "cpu_seconds": 0.27,
+            "percent_of_one_core": 7.227608641999942
+          },
+          "client": {
+            "cpu_seconds": 1.0499999999999998,
+            "percent_of_one_core": 28.107366941110882
+          }
+        },
+        "system_percent": {
+          "user": 73.62045760430686,
+          "nice": 0.0,
+          "system": 22.476446837146703,
+          "idle": 1.0767160161507403,
+          "iowait": 0.0,
+          "irq": 0.0,
+          "softirq": 2.826379542395693,
+          "steal": 0.0
+        }
+      },
+      "stages": {
+        "write_queue_wait": {
+          "count": 10000,
+          "mean_us": 3240.504
+        },
+        "leader_log_write": {
+          "count": 547,
+          "mean_us": 195.3144424131627,
+          "mean_entries": 18.281535648994517
+        },
+        "replication_data_ack": {
+          "count": 989,
+          "mean_us": 3922.8159757330636
+        },
+        "kv_apply": {
+          "count": 523,
+          "mean_us": 312.5315487571702,
+          "mean_entries": 19.120458891013385
+        },
+        "apply_dispatch": {
+          "count": 523,
+          "mean_us": 0.0
+        },
+        "write_completed": {
+          "count": 10000,
+          "mean_us": 9500.0056
+        },
+        "local_read": {
+          "count": 10000,
+          "mean_us": 23.802
+        }
+      },
+      "info_summary": {
+        "sample_count": 4,
+        "sampling_overhead_seconds": 0.11183155496837571,
+        "leadership_disagreements": 0,
+        "max_apply_lag": 0,
+        "term_increases": 0,
+        "terms_seen": [
+          1
+        ]
+      },
+      "info_during_errors": [],
+      "error": null,
+      "cleanup_error": null
+    },
+    {
+      "pipeline": 16,
+      "async_apply": true,
+      "repeat": 0,
+      "status": "PASS",
+      "artifact": "/home/a/projects/raft-kv/build-linux-repro/apply-compare/run-mqpha0_8/p16-async-1-r0",
+      "goodput_ops_per_second": 5731.625928124047,
+      "errors": 0,
+      "errors_by_category": {
+        "moved": 0,
+        "overload": 0,
+        "other": 0,
+        "timeout": 0,
+        "connection": 0
+      },
+      "elapsed_seconds": 3.489411250979174,
+      "batch_latency_ms": {
+        "p50": 83.4712480136659,
+        "p95": 133.97025495069101,
+        "p99": 146.29850196826737
+      },
+      "cpu": {
+        "window_seconds": 3.5067588179954328,
+        "processes": {
+          "0": {
+            "cpu_seconds": 1.56,
+            "percent_of_one_core": 44.4855229847755
+          },
+          "1": {
+            "cpu_seconds": 0.36000000000000004,
+            "percent_of_one_core": 10.26588991956358
+          },
+          "2": {
+            "cpu_seconds": 0.35000000000000003,
+            "percent_of_one_core": 9.980726310686812
+          },
+          "client": {
+            "cpu_seconds": 1.0,
+            "percent_of_one_core": 28.516360887676605
+          }
+        },
+        "system_percent": {
+          "user": 71.55172413793103,
+          "nice": 0.0,
+          "system": 23.850574712643677,
+          "idle": 1.5804597701149425,
+          "iowait": 0.0,
+          "irq": 0.0,
+          "softirq": 3.0172413793103448,
+          "steal": 0.0
+        }
+      },
+      "stages": {
+        "write_queue_wait": {
+          "count": 10000,
+          "mean_us": 2884.0961
+        },
+        "leader_log_write": {
+          "count": 516,
+          "mean_us": 179.09883720930233,
+          "mean_entries": 19.37984496124031
+        },
+        "replication_data_ack": {
+          "count": 1028,
+          "mean_us": 2291.726653696498
+        },
+        "kv_apply": {
+          "count": 516,
+          "mean_us": 199.54263565891472,
+          "mean_entries": 19.37984496124031
+        },
+        "apply_dispatch": {
+          "count": 516,
+          "mean_us": 976.8139534883721
+        },
+        "write_completed": {
+          "count": 10000,
+          "mean_us": 9031.1965
+        },
+        "local_read": {
+          "count": 10000,
+          "mean_us": 19.3071
+        }
+      },
+      "info_summary": {
+        "sample_count": 4,
+        "sampling_overhead_seconds": 0.06180301390122622,
+        "leadership_disagreements": 0,
+        "max_apply_lag": 32,
+        "term_increases": 0,
+        "terms_seen": [
+          1
+        ]
+      },
+      "info_during_errors": [],
+      "error": null,
+      "cleanup_error": null
+    }
+  ]
+}

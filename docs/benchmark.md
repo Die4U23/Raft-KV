@@ -105,3 +105,16 @@ python3 tests/async_apply_compare.py --build-report <build-report.json>
 同时保存测量区间起止的阶段计数器。各前缀的准确边界见 [阶段指标说明](concurrency.md)：`write_queue_wait` 到组批即结束，后续可能被拒绝；`write_completed` 到服务端成功回调结束，即使客户端已断连仍计数；`local_read` 包括未命中的正常读取。日志写和 KV 应用以批为样本，`replication_data_ack` 以成功数据 RPC 为样本，包含缓冲和重试且排除空心跳；`apply_dispatch` 是 worker 完成到 owner 收到通知的等待，同步模式为 0。它们都不能替代客户端端到端延迟，也不能把各阶段均值相加。
 
 这些服务端计数器使用固定内存，自进程启动累计，重启归零，不保留分位数；`_avg_us` 和 `_avg_entries` 是向下取整的累计均值。在确认进程未重启且 `Δcount > 0` 时，用 `Δtotal_us / Δcount` 得到测量区间均值，用 `Δentries / Δcount` 得到区间平均批大小。同步模式也会记录 `apply_dispatch` 样本，只是每个样本的耗时为 0。`_bytes` 只累计命令字节，no-op 计一条且占 0 命令字节；累计最大值不能差分成区间最大值。结合客户端错误率解读成功阶段样本，另记录 `flush_immediate_scheduled / flush_delayed_scheduled / flush_promotions` 的增量；这些是调度动作次数，不是成功写数或落盘次数。
+
+### 2026-10-10 同机一轮
+
+同一脚本、同一台机器（2 个 CPU，内核 `7.0.0-34-generic`，数据目录在 `/` 的 ext4 上），`--repeats 1`。先构建当前源码，再按脚本顺序跑四个单元：`pipeline=1` 的同步、异步，然后 `pipeline=16` 的同步、异步。正式请求 20,000，预热 5,000。四个单元错误都是 0，报告状态 PASS。原始数字在 [async-apply-compare-2026-10-10.json](benchmarks/async-apply-compare-2026-10-10.json)，README 里的图用的就是这组数。
+
+| pipeline | async_apply | 有效吞吐（次/秒） | p50 / p99（毫秒） | 窗口内最大 apply_lag |
+| ---: | --- | ---: | --- | ---: |
+| 1 | false | 2428.82 | 12.53 / 28.46 | 0 |
+| 1 | true | 2654.65 | 11.37 / 29.61 | 0 |
+| 16 | false | 5360.11 | 87.67 / 177.91 | 0 |
+| 16 | true | 5731.63 | 83.47 / 146.30 | 32 |
+
+`pipeline=16` 的 p50 / p99 是整批延迟。每种模式只有一个样本。测量窗口里整机 idle 大约 1% 到 2%，iowait 为 0。这一轮不能写成某一种模式更快，也不能和 2026-09-07 或 2026-09-30 的数字直接相减。

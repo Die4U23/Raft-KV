@@ -49,14 +49,25 @@ Muduo Client Server ── GET ──► KVStateMachine ──► RocksDB
 | 持续写入中崩溃/重启 | 1,704 个已确认键在两次恢复后的三副本上保留 | [恢复验证](docs/benchmarks/write-restart-validation.md) |
 | 过载与 60 秒观察 | 连接准入、`BUSY`、恢复清零和资源阈值均通过 | [过载验证](docs/benchmarks/overload-validation.md) |
 
-已归档的双核 VM 基线在三节点和客户端同机、32 连接、`pipeline=1`、128 字节 value、50% GET / 50% SET 下测得：
+2026-10-10 在这台双核机器上跑了一次对照：三个节点和客户端同机，32 连接，128 字节 value，50% GET / 50% SET，预热 5,000 次，再正式测量 20,000 次。`group_commit_ms=1`，`snapshot_threshold=1024`。每种模式各一次。四个单元错误都是 0。测量窗口里整机空闲大约 1% 到 2%。
 
-| 模式 | 合并吞吐 | 两轮 p50 | 两轮 p99 |
+`pipeline=1` 的延迟是单次请求往返：
+
+| 模式 | 有效吞吐 | p50 | p99 |
 | --- | ---: | ---: | ---: |
-| 同步应用 | 3,656.53 ops/s | 7.88 / 8.85 ms | 20.61 / 25.67 ms |
-| 串行异步应用 | 3,824.56 ops/s | 8.35 / 8.05 ms | 18.39 / 26.89 ms |
+| 同步应用 | 2,428.82 ops/s | 12.53 ms | 28.46 ms |
+| 串行异步应用 | 2,654.65 ops/s | 11.37 ms | 29.61 ms |
 
-这些是指定 VM 和负载下的测量值，用于回归与机制分析，不是通用容量承诺。完整参数、CPU 成本和原始证据见[性能基线](docs/benchmarks/ubuntu-2cpu-abba.md)。
+`pipeline=16` 的延迟是 16 条命令的整批延迟：
+
+| 模式 | 有效吞吐 | 整批 p50 | 整批 p99 |
+| --- | ---: | ---: | ---: |
+| 同步应用 | 5,360.11 ops/s | 87.67 ms | 177.91 ms |
+| 串行异步应用 | 5,731.63 ops/s | 83.47 ms | 146.30 ms |
+
+[![2026-10-10 一次运行的有效吞吐与延迟。pipeline=1 有效吞吐同步 2428.82、异步 2654.65 次/秒，p50 为 12.53、11.37 毫秒，p99 为 28.46、29.61 毫秒。pipeline=16 有效吞吐同步 5360.11、异步 5731.63 次/秒，整批 p50 为 87.67、83.47 毫秒，整批 p99 为 177.91、146.30 毫秒。](docs/benchmarks/figures/apply-compare-2026-10-10-cn.svg)](docs/benchmarks/async-apply-compare-2026-10-10.json)
+
+这些是这台机器、这份负载上的一次测量。每种模式只跑了一次，这次的差距不是稳定差异。`pipeline=16` 的异步单元里，观察到的最大 `apply_lag` 是 32；其余三个单元是 0。更早的四轮归档仍在[性能基线](docs/benchmarks/ubuntu-2cpu-abba.md)。这次的报告是 [async-apply-compare-2026-10-10.json](docs/benchmarks/async-apply-compare-2026-10-10.json)。
 
 ## 快速开始
 
