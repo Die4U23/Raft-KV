@@ -171,6 +171,7 @@ void RaftNode::BecomeFollower(int32_t term) {
     _leader_id = -1;
     _votes.clear();
     _peer_active.clear();
+    _lease_confirmed.clear();
     for (auto& item : _inflight) item.second = {};
     _snapshot_receive = {};
     ResetElectionTimer();
@@ -235,6 +236,7 @@ void RaftNode::BecomeLeader() {
     _state = LEADER;
     _leader_id = _node_id;
     _peer_active.clear();
+    _lease_confirmed.clear();
     EventLog(LogLevel::Info) << "RaftNode[" << _node_id << "] becomes leader term="
                             << _current_term << " commit=" << _commit_index;
     for (const auto& peer : _all_peers) {
@@ -284,10 +286,11 @@ void RaftNode::CheckQuorum() {
     BecomeFollower(_current_term);
 }
 bool RaftNode::ReadLeaseValid() const {
-    // A follower will not campaign for up to the longest election timeout after
-    // hearing this leader, and the previous leader has already lost its lease:
-    // this term is at least that old, and a majority answered inside the window
-    // CheckQuorum uses to step down. The leader counts itself.
+    // Lease evidence is a correlated successful AppendEntries acknowledgement,
+    // aged from the ORIGINAL send, not its arrival (or a retry). A delayed ACK
+    // cannot extend the interval during which the follower suppresses elections.
+    // As with the election/probe timeout protocol, this assumes monotonic clocks
+    // progressing at comparable rates; it does not tolerate arbitrary clock drift.
     if (!_lease_reads || !IsLeader() || !_can_serve_read) return false;
     const auto now = Now();
     if (now - _leader_since < std::chrono::milliseconds(kMaxElectionTimeoutMs))
@@ -297,8 +300,8 @@ bool RaftNode::ReadLeaseValid() const {
     int fresh = 1;
     for (const auto& peer : _all_peers) {
         if (peer.id == _node_id) continue;
-        const auto found = _peer_active.find(peer.id);
-        if (found != _peer_active.end() && now - found->second < window)
+        const auto found = _lease_confirmed.find(peer.id);
+        if (found != _lease_confirmed.end() && now - found->second < window)
             ++fresh;
     }
     return fresh >= QuorumSize();
@@ -502,6 +505,8 @@ void RaftNode::HandleAppendEntriesResponse(int from,
     // retries since its first send attempt. This is not pure RTT/quorum latency.
     if (response.success() && flight.entries > 0)
         _replication_data_ack.Observe(ElapsedMicros(flight.first_send));
+    if (response.success() && flight.type == RaftMsgType::kAppendEntries)
+        _lease_confirmed[from] = flight.lease_sent_at;
     const int64_t acknowledged = flight.last_index;
     flight = {};
     if (response.success()) {
@@ -715,6 +720,7 @@ void RaftNode::SendAppendEntries(int peer) {
     }
     std::string payload;
     request.SerializeToString(&payload);
+    const auto lease_sent_at = Now();
     if (!_peer_mgr->Send(peer, RaftMsgType::kAppendEntries, payload)) return;
     flight.id = request.rpc_id();
     flight.last_index = last;
@@ -724,6 +730,7 @@ void RaftNode::SendAppendEntries(int peer) {
     flight.snapshot = false;
     flight.payload = std::move(payload);
     flight.first_send = SteadyClock::now();
+    flight.lease_sent_at = lease_sent_at;
     BindReadIndexProbe(peer, flight.id);
 }
 void RaftNode::BroadcastAppendEntries() {

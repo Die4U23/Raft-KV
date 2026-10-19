@@ -130,6 +130,7 @@ curl -fsS localhost:9090/health
 **Optional flags**:
 - `--linearizable_reads=true`: ReadIndex linearizable reads (default false)
 - `--lease_reads=true`: with linearizable reads, a leader whose lease is valid confirms a GET locally (default false)
+  Lease freshness uses the original send time of a correlated successful AppendEntries RPC, not ACK arrival or retry time. Uncorrelated replies cannot renew it. This optimization assumes monotonic election clocks progressing at comparable rates; keep it disabled where that assumption is not justified.
 - `--leader_only_reads=true`: only the leader answers reads (default false)
 - `--metrics_port=9090`: serve `GET /metrics` (Prometheus text) and `GET /health` on that port. The default is 0, which does not listen. The port must differ from `client_port` and `raft_port`
 
