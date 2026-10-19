@@ -438,6 +438,73 @@ static void LeaseReadWaitsForApply() {
     Check(cluster.State(10).Get("default:k", &value) && value == "v", "applied value missing");
 }
 
+static void DelayedHeartbeatCannotRenewLease() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    cluster.Node(10).SetLeaseReads(true);
+    Check(cluster.Node(10).Propose(Command({"SET", "default:k", "old"}), {}) > 0, "seed");
+    cluster.Pump();
+    KeepLeaderLeaseFresh(cluster, 10);
+    cluster.messages.clear();
+    cluster.Advance(10, RaftNode::kHeartbeatIntervalMs);
+    cluster.Node(10).Tick();
+    const auto appends = TakeAppendsFrom(cluster, 10);
+    Check(appends.size() >= 2, "missing heartbeat for delayed lease test");
+    std::vector<Message> acks;
+    for (const auto& append : appends)
+        acks.push_back(DeliverAppendAndTakeAck(cluster, append));
+    cluster.Deliver(acks.back());
+    cluster.Partition(10);
+    cluster.messages.clear();
+    cluster.Advance(10, 140);
+    // This reply was generated before the partition and buffered in transit.
+    // Inject it directly because the cluster transport drops partitioned traffic.
+    raftcore::AppendEntriesResponse delayed;
+    Check(delayed.ParseFromString(acks.front().payload), "delayed ack decode");
+    cluster.Node(10).HandleAppendEntriesResponse(acks.front().from, delayed);
+    const int leader = cluster.ElectAmong({30, 50});
+    Check(cluster.Node(leader).Propose(Command({"SET", "default:k", "new"}), {}) > 0,
+          "new majority write rejected");
+    cluster.Pump();
+    cluster.Settle();
+    cluster.Advance(10, 70);
+    std::string value;
+    Check(cluster.State(leader).Get("default:k", &value) && value == "new", "new value missing");
+    Check(cluster.State(10).Get("default:k", &value) && value == "old", "old leader caught up");
+    bool done = false, ok = true;
+    Check(cluster.Node(10).RequestReadIndex(
+        [&](bool success, int64_t, const std::string&) { done = true; ok = success; }),
+          "read was not admitted for quorum confirmation");
+    Check(!done, "delayed pre-partition heartbeat renewed the old leader's lease");
+    Check(Metric(cluster.Node(10), "read_index_lease") == 0, "stale read counted as lease");
+    cluster.Pump();
+    cluster.Advance(10, RaftNode::kMinElectionTimeoutMs);
+    cluster.Node(10).Tick();
+    Check(done && !ok, "isolated old leader confirmed a read or failed to time out");
+}
+
+static void UncorrelatedAckCannotRenewLease() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    cluster.Node(10).SetLeaseReads(true);
+    KeepLeaderLeaseFresh(cluster, 10);
+    cluster.Advance(10, RaftNode::kMinElectionTimeoutMs);
+    cluster.messages.clear();
+    raftcore::AppendEntriesResponse response;
+    response.set_term(cluster.Node(10).GetCurrentTerm());
+    response.set_rpc_id(0);  // Never a valid in-flight RPC.
+    response.set_success(true);
+    response.set_last_log_index(cluster.Node(10).GetCommitIndex());
+    cluster.Node(10).HandleAppendEntriesResponse(30, response);
+    bool done = false;
+    Check(cluster.Node(10).RequestReadIndex(
+        [&](bool, int64_t, const std::string&) { done = true; }), "read rejected");
+    Check(!done, "uncorrelated reply renewed the read lease");
+    Check(!TakeAppendsFrom(cluster, 10).empty(), "missing fresh quorum probe");
+}
+
 static void SingleNodeReadPipelineDoesNotGrowTheStack() {
     Cluster cluster({10});
     cluster.Elect(10);
@@ -467,6 +534,8 @@ int main() {
         ElectionClockMatchesReadIndexLease();
         NewTermDoesNotUseLease();
         FreshLeaseSkipsProbe();
+        DelayedHeartbeatCannotRenewLease();
+        UncorrelatedAckCannotRenewLease();
         StaleQuorumDoesNotUseLease();
         LeaseReadWaitsForApply();
         SingleNodeReadPipelineDoesNotGrowTheStack();

@@ -105,6 +105,7 @@ private:
         int elapsed_ms = 0;
         size_t entries = 0;
         SteadyClock::time_point first_send;
+        SteadyClock::time_point lease_sent_at{};  // Original send on the election clock
         std::string payload;
         RaftMsgType type = RaftMsgType::kAppendEntries;
         bool snapshot = false;
@@ -211,6 +212,8 @@ private:
     SteadyClock::time_point _election_deadline{};
     SteadyClock::time_point _leader_since{};
     std::map<int, SteadyClock::time_point> _peer_active;
+    // Separate safety evidence from receive-time liveness used by CheckQuorum.
+    std::map<int, SteadyClock::time_point> _lease_confirmed;
     std::function<SteadyClock::time_point()> _clock;
     int _heartbeat_timer_ms = 0;
     struct Pending {
