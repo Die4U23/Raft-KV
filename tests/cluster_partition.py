@@ -159,17 +159,30 @@ class PartitionCluster(Cluster):
                 raise AssertionError('{}->{} forwarded no {}'.format(writer, recipient, direction))
 
     def expect_held(self, before, flows):
-        after = self.mesh.snapshot()
-        for writer, recipient in flows:
-            edge, direction = flow_target(writer, recipient)
-            key = '{}->{}'.format(*edge)
-            field = 'delayed_{}_bytes'.format(direction)
-            if after['edges'][key][field] <= before['edges'][key][field]:
-                raise AssertionError('{}->{} held no {} bytes'.format(writer, recipient, direction))
-            if after['edges'][key]['cut'] != before['edges'][key]['cut']:
-                raise AssertionError('stall {}->{} reset the connection'.format(writer, recipient))
-            if after['edges'][key]['refused'] != before['edges'][key]['refused']:
-                raise AssertionError('stall {}->{} refused a connection'.format(writer, recipient))
+        # Election/probe completion does not guarantee every directed relay has
+        # received traffic yet. Observe the configured stall before declaring a
+        # coverage failure, without relaxing connection or traffic assertions.
+        until = min(self.deadline, time.monotonic() + self.window)
+        while True:
+            after = self.mesh.snapshot()
+            missing = []
+            for writer, recipient in flows:
+                edge, direction = flow_target(writer, recipient)
+                key = '{}->{}'.format(*edge)
+                field = 'delayed_{}_bytes'.format(direction)
+                if after['edges'][key]['cut'] != before['edges'][key]['cut']:
+                    raise AssertionError('stall {}->{} reset the connection'.format(writer, recipient))
+                if after['edges'][key]['refused'] != before['edges'][key]['refused']:
+                    raise AssertionError('stall {}->{} refused a connection'.format(writer, recipient))
+                if after['edges'][key][field] <= before['edges'][key][field]:
+                    missing.append('{}->{} held no {} bytes (before={}, after={})'.format(
+                        writer, recipient, direction, before['edges'][key][field], after['edges'][key][field]))
+            if not missing:
+                return
+            remaining = until - time.monotonic()
+            if remaining <= 0:
+                raise AssertionError('; '.join(missing) + ' before bounded observation deadline')
+            time.sleep(min(0.05, remaining))
 
     def stall_leader(self, expected):
         # 400 ms is past the 300 ms maximum election timeout. Only the leader's

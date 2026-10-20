@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import cluster_partition
@@ -30,6 +31,66 @@ class Echo(socketserver.BaseRequestHandler):
 
 class EchoServer(socketserver.ThreadingTCPServer):
     daemon_threads = True
+
+
+class HeldObservationTests(unittest.TestCase):
+    def fixture(self, ready_at=0.4, broken=None, deadline=10.0):
+        clock = [0.0]
+        baseline = {'edges': {'0->1': {'delayed_request_bytes': 0,
+                    'delayed_reply_bytes': 0, 'cut': 0, 'refused': 0}}}
+
+        def snapshot():
+            edge = dict(baseline['edges']['0->1'])
+            edge['delayed_request_bytes'] = 1
+            edge['delayed_reply_bytes'] = int(clock[0] >= ready_at)
+            if broken:
+                edge[broken] = 1
+            return {'edges': {'0->1': edge}}
+
+        cluster = cluster_partition.PartitionCluster.__new__(cluster_partition.PartitionCluster)
+        cluster.mesh = SimpleNamespace(snapshot=snapshot)
+        cluster.window = 1.0
+        cluster.deadline = deadline
+        return cluster, baseline, clock
+
+    def observe(self, cluster, baseline, clock):
+        def sleep(seconds):
+            self.assertGreater(seconds, 0)
+            clock[0] += seconds
+        with patch('cluster_partition.time.monotonic', side_effect=lambda: clock[0]), \
+                patch('cluster_partition.time.sleep', side_effect=sleep):
+            cluster.expect_held(baseline, [(0, 1), (1, 0)])
+
+    def test_waits_for_both_directions_without_requiring_slow_election(self):
+        cluster, baseline, clock = self.fixture()
+        self.observe(cluster, baseline, clock)
+        self.assertGreaterEqual(clock[0], 0.4)
+        self.assertLess(clock[0], 1.0)
+
+    def test_observed_traffic_returns_without_sleep(self):
+        cluster, baseline, clock = self.fixture(ready_at=0)
+        self.observe(cluster, baseline, clock)
+        self.assertEqual(clock[0], 0)
+
+    def test_missing_direction_still_fails_at_observation_deadline(self):
+        cluster, baseline, clock = self.fixture(ready_at=10)
+        with self.assertRaisesRegex(AssertionError, '1->0 held no reply bytes'):
+            self.observe(cluster, baseline, clock)
+        self.assertAlmostEqual(clock[0], 1.0)
+
+    def test_connection_cut_or_refusal_fails_immediately(self):
+        for field in ('cut', 'refused'):
+            with self.subTest(field=field):
+                cluster, baseline, clock = self.fixture(broken=field)
+                with self.assertRaises(AssertionError):
+                    self.observe(cluster, baseline, clock)
+                self.assertEqual(clock[0], 0)
+
+    def test_global_deadline_bounds_observation(self):
+        cluster, baseline, clock = self.fixture(ready_at=10, deadline=0.15)
+        with self.assertRaisesRegex(AssertionError, 'bounded observation deadline'):
+            self.observe(cluster, baseline, clock)
+        self.assertAlmostEqual(clock[0], 0.15)
 
 
 class RelayTests(unittest.TestCase):
