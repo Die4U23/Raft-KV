@@ -176,8 +176,11 @@ class RaftProxyMesh:
                         self.stats[edge]['dropped_' + direction + '_bytes'] += len(data)
                         continue
                     target.write(data)
-                    await target.drain()
+                    # Count bytes admitted to the writer before yielding. A
+                    # silence snapshot must not attribute a pre-cut write to
+                    # post-cut forwarding merely because drain completed later.
                     self.stats[edge][direction + '_bytes'] += len(data)
+                    await target.drain()
 
             pumps = [asyncio.create_task(pump(reader, upstream_writer, 'request')),
                      asyncio.create_task(pump(upstream, writer, 'reply'))]
