@@ -52,6 +52,8 @@ std::string RaftNode::MetricsInfo() const {
            "replication_retry_attempts:" + std::to_string(_replication_retry_attempts) + "\r\n" +
            "proposal_timeouts:" + std::to_string(_proposal_timeouts) + "\r\n";
 
+    info += "snapshot_oversize_skips:" + std::to_string(_snapshot_oversize_skips) + "\r\n";
+
     // ReadIndex metrics
     info += "read_index_total:" + std::to_string(_read_index_total) + "\r\n";
     info += "read_index_succeeded:" + std::to_string(_read_index_succeeded) + "\r\n";
@@ -633,6 +635,7 @@ void RaftNode::HandleInstallSnapshotResponse(int from,
 void RaftNode::SetSnapshotThreshold(int64_t entries) {
     if (entries < 0) throw std::invalid_argument("negative snapshot threshold");
     _snapshot_threshold = entries;
+    _last_snapshot_attempt = _log->SnapshotIndex();
 }
 void RaftNode::SetSnapshotChunkBytes(size_t bytes) {
     if (bytes == 0 || bytes > RaftCodec::kMaxFrameSize / 2)
@@ -658,12 +661,24 @@ void RaftNode::MaybeSnapshot() {
     if (!_running || _apply_inflight || _snapshot_threshold <= 0) return;
     const int64_t index = _last_applied;
     if (index <= _log->SnapshotIndex()) return;
-    // Applied entries still stored above the snapshot stay below this threshold.
-    // Entries appended after the snapshot remain until the next time it is reached.
-    if (index - _log->SnapshotIndex() < _snapshot_threshold) return;
+    // A size-limit skip retains every log entry. Retry only after another
+    // threshold of applied entries, rather than exporting on every heartbeat.
+    const int64_t previous = std::max(_log->SnapshotIndex(), _last_snapshot_attempt);
+    if (index <= previous || index - previous < _snapshot_threshold) return;
     const int64_t term = _log->GetTerm(index);
     if (term <= 0) return;
-    _log->CompactApplied(index, term, _sm->ExportSnapshot());
+    const auto data = _sm->ExportSnapshot();
+    _last_snapshot_attempt = index;
+    if (data.size() > RaftLog::kMaxSnapshotBytes) {
+        ++_snapshot_oversize_skips;
+        EventLog(LogLevel::Warning) << "RaftNode[" << _node_id
+            << "] automatic snapshot skipped: bytes=" << data.size()
+            << " limit=" << RaftLog::kMaxSnapshotBytes
+            << "; retaining log; retry after " << _snapshot_threshold << " applied entries";
+        return;
+    }
+    // Storage/consistency failures remain fatal; only the known size limit is skipped.
+    _log->CompactApplied(index, term, data);
 }
 void RaftNode::SendSnapshotChunk(int peer) {
     auto& flight = _inflight.at(peer);
