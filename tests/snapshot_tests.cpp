@@ -252,8 +252,143 @@ static void OlderSnapshotDoesNotReplaceState() {
           "older snapshot replaced newer state");
 }
 
+static raftcore::InstallSnapshot InstallRequest(const std::string& data) {
+    raftcore::InstallSnapshot request;
+    request.set_term(1);
+    request.set_leader_id(10);
+    request.set_last_included_index(1);
+    request.set_last_included_term(1);
+    request.set_offset(0);
+    request.set_data(data);
+    request.set_done(true);
+    request.set_rpc_id(99);
+    return request;
+}
+
+static void SnapshotKVCommitCrashRecovers() {
+    Cluster cluster({10, 30});
+    KVStateMachine donor(cluster.Path(10, "/donor"));
+    donor.Apply(1, Command({"SET", "default:recovered", "value"}));
+    auto log = rocksdb::testing::StateFor(cluster.Path(30, "/log"));
+    auto kv = rocksdb::testing::StateFor(cluster.Path(30, "/kv"));
+    kv->after_write = [log] { log->fail_writes = 1; };
+    Throws([&] { cluster.Node(30).HandleInstallSnapshot(10, InstallRequest(donor.ExportSnapshot())); });
+    kv->after_write = {};
+    Check(cluster.State(30).LastApplied() == 1, "fixture missed durable KV commit window");
+    cluster.messages.clear();
+    log->fail_writes = 1;
+    Throws([&] { cluster.Restart(30); });
+    Check(log->data.count("raftkv-install-intent-v1") == 1,
+          "failed Raft finalization during recovery erased the intent");
+    cluster.Restart(30);
+    std::string value;
+    Check(cluster.State(30).Get("default:recovered", &value) && value == "value",
+          "redo recovery lost snapshot KV data");
+    Check(cluster.Node(30).SnapshotIndex() == 1, "redo recovery did not finalize Raft metadata");
+    auto writes = kv->successful_writes;
+    cluster.Restart(30);
+    Check(kv->successful_writes == writes, "completed intent replayed on second restart");
+    cluster.messages.clear();
+    cluster.Elect(30);
+    Check(cluster.Node(30).Propose(Command({"SET", "default:after-redo", "next"}),
+          [](bool ok, const std::string&) { Check(ok, "post-recovery write failed"); }) > 0,
+          "post-recovery proposal rejected");
+    cluster.Pump();
+    cluster.Settle();
+    Check(cluster.State(10).Get("default:recovered", &value) && value == "value",
+          "recovered snapshot did not replicate to peer");
+    Check(cluster.State(10).Get("default:after-redo", &value) && value == "next",
+          "new writes did not replicate after recovery");
+}
+
+static void SnapshotIntentBeforeKVAndRepeatedRecoveryFailure() {
+    Cluster cluster({10, 30});
+    KVStateMachine donor(cluster.Path(10, "/donor"));
+    donor.Apply(1, Command({"SET", "default:redo", "v"}));
+    auto kv = rocksdb::testing::StateFor(cluster.Path(30, "/kv"));
+    auto log = rocksdb::testing::StateFor(cluster.Path(30, "/log"));
+    kv->fail_writes = 1;
+    Throws([&] { cluster.Node(30).HandleInstallSnapshot(10, InstallRequest(donor.ExportSnapshot())); });
+    Check(cluster.State(30).LastApplied() == 0, "failed KV write changed applied marker");
+    Check(log->data.count("raftkv-install-intent-v1") == 1, "redo intent missing before KV write");
+    kv->fail_writes = 1;
+    Throws([&] { cluster.Restart(30); });
+    Check(log->data.count("raftkv-install-intent-v1") == 1, "failed recovery erased intent");
+    cluster.Restart(30);
+    Check(cluster.Node(30).SnapshotIndex() == 1, "second recovery did not complete");
+    Check(log->data.count("raftkv-install-intent-v1") == 0, "completed intent not removed");
+    Check(kv->non_sync_writes == 0 && log->non_sync_writes == 0, "redo protocol used async writes");
+}
+
+static void SnapshotIntentFailureDoesNotMutateKV() {
+    Cluster cluster({10, 30});
+    cluster.Node(30).HandleAppendEntries(10, History(10, 1, 0, 0));
+    cluster.messages.clear();
+    KVStateMachine donor(cluster.Path(10, "/donor"));
+    donor.Apply(1, Command({"SET", "default:redo", "v"}));
+    auto log = rocksdb::testing::StateFor(cluster.Path(30, "/log"));
+    auto kv = rocksdb::testing::StateFor(cluster.Path(30, "/kv"));
+    const auto before = kv->data;
+    log->fail_writes = 1;
+    Throws([&] { cluster.Node(30).HandleInstallSnapshot(10, InstallRequest(donor.ExportSnapshot())); });
+    Check(kv->data == before && cluster.State(30).LastApplied() == 0,
+          "KV changed before durable snapshot intent");
+    Check(cluster.messages.empty(), "failed install acknowledged");
+    cluster.Restart(30);
+    Check(cluster.Node(30).SnapshotIndex() == 0, "failed intent changed Raft snapshot");
+}
+
+static void InvalidSnapshotDoesNotPersistIntent() {
+    Cluster cluster({10, 30});
+    auto log = rocksdb::testing::StateFor(cluster.Path(30, "/log"));
+    Throws([&] { cluster.Node(30).HandleInstallSnapshot(10, InstallRequest("bad")); });
+    Check(log->data.count("raftkv-install-intent-v1") == 0, "invalid bytes persisted a redo intent");
+    Check(cluster.State(30).LastApplied() == 0, "invalid bytes changed KV");
+    cluster.Restart(30);
+}
+
+static void SnapshotStoreValidationPrecedesIntent() {
+    Cluster cluster({10, 30});
+    const auto put32 = [](std::string* out, uint32_t value) {
+        for (int shift = 24; shift >= 0; shift -= 8)
+            out->push_back(static_cast<char>((value >> shift) & 0xff));
+    };
+    const std::string key = std::string(1, '\0') + "raftkv:last_applied";
+    std::string bytes;
+    put32(&bytes, 1); put32(&bytes, static_cast<uint32_t>(key.size()));
+    bytes += key; put32(&bytes, 0);
+    auto log = rocksdb::testing::StateFor(cluster.Path(30, "/log"));
+    Throws([&] { cluster.Node(30).HandleInstallSnapshot(10, InstallRequest(bytes)); });
+    Check(log->data.count("raftkv-install-intent-v1") == 0,
+          "reserved applied marker persisted a poisoned intent");
+    cluster.Restart(30);
+}
+
+static void AmbiguousKVWriteCanReplay() {
+    Cluster cluster({10, 30});
+    KVStateMachine donor(cluster.Path(10, "/donor"));
+    donor.Apply(1, Command({"SET", "default:ambiguous", "v"}));
+    auto kv = rocksdb::testing::StateFor(cluster.Path(30, "/kv"));
+    kv->after_write = [] { throw std::runtime_error("crash after durable KV write"); };
+    Throws([&] { cluster.Node(30).HandleInstallSnapshot(10, InstallRequest(donor.ExportSnapshot())); });
+    kv->after_write = {};
+    // The in-memory marker did not advance, but the persisted KV batch did.
+    Check(cluster.State(30).LastApplied() == 0, "fixture did not interrupt KV completion");
+    cluster.Restart(30);
+    std::string value;
+    Check(cluster.State(30).Get("default:ambiguous", &value) && value == "v",
+          "ambiguous KV write could not replay");
+    Check(cluster.Node(30).SnapshotIndex() == 1, "ambiguous replay not finalized");
+}
+
 int main() {
     try {
+        SnapshotKVCommitCrashRecovers();
+        SnapshotIntentBeforeKVAndRepeatedRecoveryFailure();
+        SnapshotIntentFailureDoesNotMutateKV();
+        InvalidSnapshotDoesNotPersistIntent();
+        SnapshotStoreValidationPrecedesIntent();
+        AmbiguousKVWriteCanReplay();
         SnapshotSurvivesRestart();
         LaggingPeerInstallsChunkedSnapshot();
         InterruptedInstallRestartsAndReplicates();

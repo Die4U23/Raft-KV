@@ -111,7 +111,8 @@ std::vector<std::pair<std::string, std::string>> RocksDBStore::ExportEntries() c
     return entries;
 }
 void RocksDBStore::ReplaceAll(int64_t index,
-                              const std::vector<std::pair<std::string, std::string>>& entries) {
+                              const std::vector<std::pair<std::string, std::string>>& entries,
+                              const std::function<void()>& after_validation) {
     if (index < LastApplied()) throw std::runtime_error("KV snapshot would move backwards");
     rocksdb::WriteBatch batch;
     std::unique_ptr<rocksdb::Iterator> it(_db->NewIterator(rocksdb::ReadOptions()));
@@ -131,6 +132,9 @@ void RocksDBStore::ReplaceAll(int64_t index,
         encoded >>= 8;
     }
     batch.Put(AppliedKey(), value);
+    // Validation and iterator reads must finish before recording a durable redo
+    // intent. The callback must persist successfully before any KV replacement.
+    if (after_validation) after_validation();
     RequireStorageOK(_db->Write(DurableWriteOptions(), &batch), "install KV snapshot");
     _last_applied.store(index, std::memory_order_release);
 }

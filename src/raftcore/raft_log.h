@@ -29,6 +29,11 @@ public:
     void CompactApplied(int64_t index, int64_t term, const std::string& data);
     // Install a leader snapshot. A matching entry at index keeps the suffix.
     void InstallSnapshot(int64_t index, int64_t term, const std::string& data);
+    // Durable redo intent, staged only after the KV payload has validated.
+    // Complete with InstallSnapshot after the KV replacement. Recovery replays
+    // KV first, then finalizes Raft metadata and deletes this intent atomically.
+    void StageSnapshotInstall(int64_t index, int64_t term, const std::string& data);
+    bool LoadPendingSnapshot(int64_t* index, int64_t* term, std::string* data) const;
     int64_t SnapshotIndex() const { return _snapshot_index; }
     int64_t SnapshotTerm() const { return _snapshot_term; }
     const std::string& SnapshotData() const { return _snapshot_data; }
@@ -38,6 +43,7 @@ private:
     static std::string SnapshotMetaKey();
     static std::string SnapshotDataKey();
     static std::string TailKey();
+    static std::string SnapshotIntentKey();
     static std::string EncodeTail(int64_t index, int64_t term);
     void PutTail(rocksdb::WriteBatch* batch, int64_t index, int64_t term);
     void LoadSnapshot();

@@ -3,6 +3,7 @@
 #include <rocksdb/write_batch.h>
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <utility>
@@ -33,7 +34,8 @@ public:
     // User keys only. The lastApplied marker is not included.
     std::vector<std::pair<std::string, std::string>> ExportEntries() const;
     // Replace user keys and set lastApplied. index must not move backwards.
-    void ReplaceAll(int64_t index, const std::vector<std::pair<std::string, std::string>>& entries);
+    void ReplaceAll(int64_t index, const std::vector<std::pair<std::string, std::string>>& entries,
+                    const std::function<void()>& after_validation = {});
 private:
     static std::string AppliedKey();
     std::unique_ptr<rocksdb::DB> _db;
