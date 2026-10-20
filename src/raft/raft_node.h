@@ -56,7 +56,8 @@ public:
     int64_t GetCommitIndex() const { return _commit_index; }
     int64_t GetLastApplied() const { return _last_applied; }
     int64_t SnapshotIndex() const { return _log->SnapshotIndex(); }
-    // Applied entries retained before the log prefix is replaced by a snapshot.
+    // Applied-entry interval between automatic snapshot attempts. Oversized
+    // exports retain the log and retry after this interval.
     // Zero disables snapshots. The server default is separate from unit tests.
     void SetSnapshotThreshold(int64_t entries);
     void SetSnapshotChunkBytes(size_t bytes);
@@ -204,6 +205,8 @@ private:
     std::map<int, Inflight> _inflight;
     SnapshotReceive _snapshot_receive;
     int64_t _snapshot_threshold = 0;
+    int64_t _last_snapshot_attempt = 0;
+    uint64_t _snapshot_oversize_skips = 0;
     bool _lease_reads = false;
     size_t _snapshot_chunk_bytes = 256 * 1024;
     uint64_t _rpc_sequence = 0;

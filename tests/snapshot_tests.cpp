@@ -381,8 +381,58 @@ static void AmbiguousKVWriteCanReplay() {
     Check(cluster.Node(30).SnapshotIndex() == 1, "ambiguous replay not finalized");
 }
 
+
+static void OversizedAutomaticSnapshotRetainsReplicationAndRecovery() {
+    Cluster cluster;
+    cluster.Elect(10);
+    // 513 legal 64 KiB values exceed 32 MiB, while each command stays < 1 MiB.
+    for (int id : {10, 30, 50}) cluster.Node(id).SetSnapshotThreshold(514);
+    cluster.Partition(50);
+    const std::string value(64 * 1024, 'x');
+    int callbacks = 0;
+    for (int i = 0; i < 513; ++i) {
+        Check(cluster.Node(10).Propose(Command({"SET", "default:large:" + std::to_string(i), value}),
+            [&](bool ok, const std::string& reply) {
+                Check(ok && reply == "+OK\r\n", "large SET failed"); ++callbacks;
+            }) > 0, "large proposal rejected");
+        cluster.Pump();
+    }
+    cluster.Settle();
+    Check(callbacks == 513, "large write acknowledgements missing");
+    Check(Metric(cluster.Node(10), "snapshot_oversize_skips") == 1, "oversize skip not counted");
+    Check(cluster.Node(10).SnapshotIndex() == 0, "oversized snapshot compacted log");
+    cluster.Settle();
+    Check(Metric(cluster.Node(10), "snapshot_oversize_skips") == 1, "idle retry rebuilt oversized snapshot");
+    cluster.Heal(50);
+    for (int i = 0; i < 30; ++i) cluster.Settle();
+    std::string got;
+    Check(cluster.State(50).Get("default:large:512", &got) && got == value,
+          "retained log did not catch up lagging peer");
+    cluster.Restart(10);
+    cluster.Node(10).SetSnapshotThreshold(514);
+    for (int i = 0; i < 513; ++i)
+        Check(cluster.State(10).Get("default:large:" + std::to_string(i), &got) && got == value,
+              "restart lost oversized state");
+    cluster.Elect(10);
+    Check(cluster.Node(10).IsLeader(), "restart could not elect leader");
+    Check(Metric(cluster.Node(10), "snapshot_oversize_skips") == 1, "restart did not safely skip oversized state");
+    for (int i = 0; i < 513; ++i) {
+        Check(cluster.Node(10).Propose(Command({"DEL", "default:large:" + std::to_string(i)}),
+            [](bool ok, const std::string&) { Check(ok, "delete failed"); }) > 0, "delete rejected");
+        cluster.Pump();
+    }
+    Check(cluster.Node(10).Propose(Command({"SET", "default:small", "restored"}),
+        [](bool ok, const std::string&) { Check(ok, "post-shrink write failed"); }) > 0, "small write rejected");
+    cluster.Pump();
+    cluster.Settle();
+    Check(cluster.Node(10).SnapshotIndex() > 0, "snapshot did not resume after shrink and retry interval");
+    cluster.Restart(10);
+    Check(cluster.State(10).Get("default:small", &got) && got == "restored", "small recovery failed");
+}
+
 int main() {
     try {
+        OversizedAutomaticSnapshotRetainsReplicationAndRecovery();
         SnapshotKVCommitCrashRecovers();
         SnapshotIntentBeforeKVAndRepeatedRecoveryFailure();
         SnapshotIntentFailureDoesNotMutateKV();
