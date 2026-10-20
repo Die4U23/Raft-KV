@@ -24,7 +24,7 @@ RaftLog::RaftLog(const std::string& path) {
     for (it->SeekToFirst(); it->Valid(); it->Next()) {
         const std::string key = it->key().ToString();
         if (key == IndexToKey(0) || key == SnapshotMetaKey() || key == SnapshotDataKey() ||
-            key == TailKey()) continue;
+            key == TailKey() || key == SnapshotIntentKey()) continue;
         raftcore::LogEntry entry;
         if (_last_index == std::numeric_limits<int64_t>::max() ||
             key != IndexToKey(_last_index + 1) ||
@@ -49,6 +49,7 @@ RaftLog::~RaftLog() = default;
 std::string RaftLog::SnapshotMetaKey() { return "raftkv-snapshot-meta"; }
 std::string RaftLog::SnapshotDataKey() { return "raftkv-snapshot-data"; }
 std::string RaftLog::TailKey() { return "raftkv-log-tail"; }
+std::string RaftLog::SnapshotIntentKey() { return "raftkv-install-intent-v1"; }
 std::string RaftLog::EncodeTail(int64_t index, int64_t term) {
     std::string out(16, '\0');
     uint64_t fields[] = {static_cast<uint64_t>(index), static_cast<uint64_t>(term)};
@@ -225,6 +226,42 @@ void RaftLog::CompactApplied(int64_t index, int64_t term, const std::string& dat
         throw std::runtime_error("cannot snapshot an absent Raft entry");
     PersistSnapshot(index, term, data, true);
 }
+void RaftLog::StageSnapshotInstall(int64_t index, int64_t term, const std::string& data) {
+    if (index <= _snapshot_index || term <= 0 || term > INT32_MAX ||
+        data.size() > kMaxSnapshotBytes)
+        throw std::runtime_error("invalid pending Raft snapshot");
+    std::string existing;
+    const auto status = _db->Get(rocksdb::ReadOptions(), SnapshotIntentKey(), &existing);
+    if (!status.IsNotFound()) {
+        RequireStorageOK(status, "read pending Raft snapshot before staging");
+        throw std::runtime_error("pending Raft snapshot must recover before another install");
+    }
+    rocksdb::WriteBatch batch;
+    batch.Put(SnapshotIntentKey(), EncodeTail(index, term) + data);
+    // Preserve the old tail, including 0/0, so restart can validate the old log
+    // before replaying an install that advances beyond its last entry.
+    PutTail(&batch, _last_index, _last_term);
+    RequireStorageOK(_db->Write(DurableWriteOptions(), &batch), "stage Raft snapshot install");
+}
+bool RaftLog::LoadPendingSnapshot(int64_t* index, int64_t* term, std::string* data) const {
+    std::string record;
+    const auto status = _db->Get(rocksdb::ReadOptions(), SnapshotIntentKey(), &record);
+    if (status.IsNotFound()) return false;
+    RequireStorageOK(status, "read pending Raft snapshot");
+    if (record.size() < 16 || record.size() - 16 > kMaxSnapshotBytes)
+        throw std::runtime_error("corrupt pending Raft snapshot");
+    uint64_t fields[2] = {};
+    for (int field = 0; field < 2; ++field)
+        for (int byte = 0; byte < 8; ++byte)
+            fields[field] = (fields[field] << 8) | static_cast<uint8_t>(record[field * 8 + byte]);
+    if (fields[0] <= static_cast<uint64_t>(_snapshot_index) || fields[0] > uint64_t(INT64_MAX) ||
+        fields[1] == 0 || fields[1] > uint64_t(INT32_MAX))
+        throw std::runtime_error("invalid pending Raft snapshot metadata");
+    *index = static_cast<int64_t>(fields[0]);
+    *term = static_cast<int64_t>(fields[1]);
+    *data = record.substr(16);
+    return true;
+}
 void RaftLog::InstallSnapshot(int64_t index, int64_t term, const std::string& data) {
     if (index <= 0 || term <= 0) throw std::runtime_error("invalid Raft snapshot");
     if (index < _snapshot_index) throw std::runtime_error("Raft snapshot would move backwards");
@@ -250,6 +287,7 @@ void RaftLog::PersistSnapshot(int64_t index, int64_t term, const std::string& da
     rocksdb::WriteBatch batch;
     batch.Put(SnapshotMetaKey(), meta);
     batch.Put(SnapshotDataKey(), data);
+    batch.Delete(SnapshotIntentKey());
     PutTail(&batch, keep_suffix ? _last_index : index, keep_suffix ? _last_term : term);
     const int64_t delete_through = keep_suffix ? index : _last_index;
     for (int64_t entry = _snapshot_index + 1; entry <= delete_through; ++entry) {

@@ -17,6 +17,18 @@ RaftNode::RaftNode(int id, const std::vector<PeerInfo>& peers,
     if (!sm || !peer_mgr) throw std::invalid_argument("missing Raft dependency");
     _log = std::make_unique<RaftLog>(log_path);
     _log->LoadHardState(&_current_term, &_voted_for);
+    if (_current_term < _log->LastTerm())
+        throw std::runtime_error("inconsistent Raft term recovery state");
+    int64_t pending_index = 0, pending_term = 0;
+    std::string pending_data;
+    if (_log->LoadPendingSnapshot(&pending_index, &pending_term, &pending_data)) {
+        if (pending_term > _current_term)
+            throw std::runtime_error("pending snapshot term exceeds durable hard state");
+        // Replacing the same index is idempotent. Either database may have been
+        // written before a crash; replay always restores KV before finalizing Raft.
+        _sm->InstallSnapshot(pending_index, pending_data);
+        _log->InstallSnapshot(pending_index, pending_term, pending_data);
+    }
     _last_applied = _sm->LastApplied();
     _commit_index = _last_applied;
     if (_last_applied < _log->SnapshotIndex() || _last_applied > _log->LastIndex() ||
@@ -567,7 +579,10 @@ void RaftNode::HandleInstallSnapshot(int from, const raftcore::InstallSnapshot& 
                 } else if (!request.done()) {
                     response.set_success(true);
                 } else {
-                    _sm->InstallSnapshot(request.last_included_index(), _snapshot_receive.data);
+                    _sm->InstallSnapshot(request.last_included_index(), _snapshot_receive.data, [&] {
+                        _log->StageSnapshotInstall(request.last_included_index(),
+                                                   request.last_included_term(), _snapshot_receive.data);
+                    });
                     _log->InstallSnapshot(request.last_included_index(), request.last_included_term(),
                                           _snapshot_receive.data);
                     _last_applied = request.last_included_index();

@@ -2,6 +2,7 @@
 // TEST DOUBLE: per-path in-process map with atomic copy-and-swap writes and
 // injected I/O failures. This models the storage contract, not RocksDB's WAL,
 // fsync, file locks, compaction, power loss, or actual filesystem persistence.
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -48,6 +49,7 @@ struct State {
     int fail_writes = 0;
     int fail_opens = 0;
     int fail_iterators = 0;
+    std::function<void()> after_write; // Fault injection after the durable atomic swap.
     size_t successful_writes = 0;
     size_t non_sync_writes = 0;
 };
@@ -105,6 +107,8 @@ public:
         state_->data.swap(staged);
         ++state_->successful_writes;
         if (!options.sync) ++state_->non_sync_writes;
+        auto after_write = state_->after_write;
+        if (after_write) after_write();
         return {};
     }
     Iterator* NewIterator(const ReadOptions&) {

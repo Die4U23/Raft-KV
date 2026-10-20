@@ -164,7 +164,8 @@ std::string KVStateMachine::ExportSnapshot() const {
     }
     return out;
 }
-void KVStateMachine::InstallSnapshot(int64_t index, const std::string& bytes) {
+void KVStateMachine::InstallSnapshot(int64_t index, const std::string& bytes,
+                                     const std::function<void()>& after_validation) {
     if (bytes.size() < 4) throw std::runtime_error("truncated KV snapshot");
     const uint32_t count = ReadU32(bytes.data());
     std::vector<std::pair<std::string, std::string>> entries;
@@ -185,5 +186,5 @@ void KVStateMachine::InstallSnapshot(int64_t index, const std::string& bytes) {
         entries.emplace_back(std::move(key), std::move(value));
     }
     if (offset != bytes.size()) throw std::runtime_error("KV snapshot has trailing bytes");
-    _store->ReplaceAll(index, entries);
+    _store->ReplaceAll(index, entries, after_validation);
 }
