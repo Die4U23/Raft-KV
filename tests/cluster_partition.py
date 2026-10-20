@@ -139,14 +139,19 @@ class PartitionCluster(Cluster):
         self.report['partitions'].append(dict(phase=phase, kind='partition', groups=groups,
                                               proxy_at_cut=snapshot))
 
-    def expect_flows(self, before, dropped, forwarded):
+    def expect_flows(self, before, dropped, forwarded, required_dropped=None):
         after = self.mesh.snapshot()
+        required = set(dropped if required_dropped is None else required_dropped)
+        if not required.issubset(set(dropped)):
+            raise ValueError('Required dropped traffic must be configured for suppression')
         for writer, recipient in dropped:
             edge, direction = flow_target(writer, recipient)
             key = '{}->{}'.format(*edge)
             field = 'dropped_{}_bytes'.format(direction)
-            if after['edges'][key][field] <= before['edges'][key][field]:
+            if (writer, recipient) in required and after['edges'][key][field] <= before['edges'][key][field]:
                 raise AssertionError('{}->{} dropped no {} bytes'.format(writer, recipient, direction))
+            if required_dropped is not None and after['edges'][key][direction + '_bytes'] != before['edges'][key][direction + '_bytes']:
+                raise AssertionError('silent flow {}->{} forwarded bytes after suppression'.format(writer, recipient))
             if after['edges'][key]['cut'] != before['edges'][key]['cut']:
                 raise AssertionError('silent flow {}->{} reset the connection'.format(writer, recipient))
             if after['edges'][key]['refused'] != before['edges'][key]['refused']:
@@ -401,7 +406,7 @@ class PartitionCluster(Cluster):
             self.mesh.reorder([])
         return minimum
 
-    def lose_leader(self, phase, flow_fn, forward_fn, probe_key, probe_value, expected):
+    def lose_leader(self, phase, flow_fn, forward_fn, probe_key, probe_value, expected, required_flow_fn=None):
         leader = self.wait_for('leader before ' + phase, lambda: self.leader(range(3)))
         majority = [node for node in range(3) if node != leader]
         flows = flow_fn(leader, majority)
@@ -410,6 +415,7 @@ class PartitionCluster(Cluster):
         before_proxy = self.mesh.snapshot()
         proxy = self.mesh.silence(flows)
         self.report['partitions'].append(dict(phase=phase, kind='silence', flows=flows,
+                                              old_leader=leader, proxy_before=before_proxy,
                                               proxy_at_cut=proxy))
         with ThreadPoolExecutor(max_workers=1) as pool:
             until = time.monotonic() + self.window
@@ -422,7 +428,13 @@ class PartitionCluster(Cluster):
             expected.append(('default', phase + '-write', b'kept'))
             self.observe(phase, baseline, [leader], [future],
                          max(until, time.monotonic() + self.window))
-        self.expect_flows(before_proxy, flows, forwarded)
+        # Dropping a request can prevent its reply from ever existing. In the
+        # bidirectional case require active old-leader traffic to every peer,
+        # while still enforcing suppression and connection checks in BOTH directions.
+        required = required_flow_fn(leader, majority) if required_flow_fn else None
+        self.report['partitions'][-1]['required_dropped_flows'] = flows if required is None else required
+        self.expect_flows(proxy if required is not None else before_proxy,
+                          flows, forwarded, required_dropped=required)
         return minimum
 
     def observe(self, phase, baseline, frozen_nodes, futures, until):
@@ -508,7 +520,7 @@ class PartitionCluster(Cluster):
         self.step('first heal preserves acknowledged data and converges on uncertain write outcome')
 
         minimum = self.lose_leader('silent_drop', both_directions, None,
-                                   'silent-probe', 'uncertain-silent', expected)
+                                   'silent-probe', 'uncertain-silent', expected, required_flow_fn=outbound_from)
         self.step('silent drop keeps TCP open, isolates the old leader, and lets the majority write')
         uncertain.append(('silent-probe', 'uncertain-silent'))
         minimum = self.heal('silent_heal', expected, minimum, uncertain[-1:])
@@ -648,6 +660,9 @@ def main():
                                                    encoding='utf-8')
     print('{}: real Linux partition test; report: {}'.format(cluster.report['status'], artifacts / 'report.json'))
     if cluster.report['status'] != 'PASS':
+        print('PARTITION_DIAGNOSTICS=' + json.dumps(
+            {key: cluster.report.get(key) for key in ('partitions', 'silent_drop_leader', 'proxy')},
+            ensure_ascii=False, sort_keys=True))
         print(cluster.report.get('error', cluster.report.get('cleanup_error')), file=sys.stderr)
         return 1
     return 0

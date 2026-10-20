@@ -1,4 +1,5 @@
 """Cross-platform helper tests with real loopback TCP; does not validate the Raft service."""
+import asyncio
 import socket
 import socketserver
 import json
@@ -31,6 +32,85 @@ class Echo(socketserver.BaseRequestHandler):
 
 class EchoServer(socketserver.ThreadingTCPServer):
     daemon_threads = True
+
+
+class SilentTrafficTests(unittest.TestCase):
+    def fixture(self):
+        # Leader 2 sends toward peers 0 and 1. A dropped request need not
+        # produce passive peer traffic in the opposite TCP direction.
+        fields = dict(request_bytes=10, reply_bytes=20, dropped_request_bytes=0,
+                      dropped_reply_bytes=0, cut=0, refused=0)
+        before = {'edges': {key: dict(fields) for key in ('0->2', '1->2')}}
+        after = {'edges': {key: dict(fields, dropped_reply_bytes=5)
+                           for key in before['edges']}}
+        cluster = cluster_partition.PartitionCluster.__new__(cluster_partition.PartitionCluster)
+        cluster.mesh = SimpleNamespace(snapshot=lambda: after)
+        return cluster, before, after
+
+    def check(self, cluster, before):
+        cluster.expect_flows(before, [(2, 0), (0, 2), (2, 1), (1, 2)], [],
+                             required_dropped=[(2, 0), (2, 1)])
+
+    def test_passive_peer_need_not_reply_to_dropped_request(self):
+        cluster, before, after = self.fixture()
+        self.check(cluster, before)
+
+    def test_all_leader_ids_use_physical_tcp_direction(self):
+        for leader in range(3):
+            with self.subTest(leader=leader):
+                others = [node for node in range(3) if node != leader]
+                flows = cluster_partition.both_directions(leader, others)
+                required = cluster_partition.outbound_from(leader, others)
+                before = {'edges': {}}
+                for src, dst in required:
+                    edge, direction = flow_target(src, dst)
+                    before['edges']['{}->{}'.format(*edge)] = dict(
+                        request_bytes=0, reply_bytes=0, dropped_request_bytes=0,
+                        dropped_reply_bytes=0, cut=0, refused=0)
+                after = {'edges': {key: dict(value) for key, value in before['edges'].items()}}
+                for src, dst in required:
+                    edge, direction = flow_target(src, dst)
+                    after['edges']['{}->{}'.format(*edge)]['dropped_' + direction + '_bytes'] = 1
+                cluster = cluster_partition.PartitionCluster.__new__(cluster_partition.PartitionCluster)
+                cluster.mesh = SimpleNamespace(snapshot=lambda: after)
+                cluster.expect_flows(before, flows, [], required_dropped=required)
+
+    def test_each_old_leader_outbound_must_be_exercised(self):
+        for key in ('0->2', '1->2'):
+            with self.subTest(key=key):
+                cluster, before, after = self.fixture()
+                after['edges'][key]['dropped_reply_bytes'] = 0
+                with self.assertRaisesRegex(AssertionError, 'dropped no'):
+                    self.check(cluster, before)
+
+    def test_passive_direction_cannot_leak_or_reset(self):
+        for field in ('request_bytes', 'cut', 'refused'):
+            with self.subTest(field=field):
+                cluster, before, after = self.fixture()
+                after['edges']['1->2'][field] += 1
+                with self.assertRaises(AssertionError):
+                    self.check(cluster, before)
+
+    def test_active_direction_cannot_leak(self):
+        cluster, before, after = self.fixture()
+        after['edges']['1->2']['reply_bytes'] += 1
+        with self.assertRaisesRegex(AssertionError, 'forwarded bytes'):
+            self.check(cluster, before)
+
+    def test_default_direction_checks_remain_strict(self):
+        cluster, before, after = self.fixture()
+        with self.assertRaisesRegex(AssertionError, '1->2 dropped no request'):
+            cluster.expect_flows(before, [(1, 2)], [])
+
+    def test_required_direction_must_be_suppressed(self):
+        cluster, before, after = self.fixture()
+        with self.assertRaises(ValueError):
+            cluster.expect_flows(before, [(2, 1)], [], required_dropped=[(0, 2)])
+
+    def test_forwarded_traffic_checks_remain_strict(self):
+        cluster, before, after = self.fixture()
+        with self.assertRaisesRegex(AssertionError, 'forwarded no'):
+            cluster.expect_flows(before, [(2, 1)], [(1, 2)])
 
 
 class HeldObservationTests(unittest.TestCase):
@@ -276,6 +356,37 @@ class RelayTests(unittest.TestCase):
             self.assertEqual(edge['delayed_request_bytes'], 0)
             self.assertGreater(edge['delayed_reply_bytes'], 0)
             self.assertEqual(edge['cut'], 0)
+
+    def test_forward_counter_precedes_a_delayed_drain_and_silence_snapshot(self):
+        entered = threading.Event()
+        release = threading.Event()
+        original_drain = asyncio.StreamWriter.drain
+
+        async def delayed_drain(writer):
+            entered.set()
+            while not release.is_set():
+                await asyncio.sleep(0.01)
+            await original_drain(writer)
+
+        with patch('asyncio.StreamWriter.drain', new=delayed_drain):
+            try:
+                with self.connect(0, 1) as dial:
+                    dial.sendall(b'ping')
+                    self.assertTrue(entered.wait(2), 'proxy never reached drain')
+                    at_cut = self.mesh.silence([(0, 1), (1, 0)])
+                    self.assertEqual(at_cut['edges']['0->1']['request_bytes'], 4)
+                    release.set()
+                    dial.sendall(b'post-cut')
+                    deadline = time.monotonic() + 2
+                    while True:
+                        edge = self.mesh.snapshot()['edges']['0->1']
+                        if edge['dropped_request_bytes'] >= 8 or time.monotonic() >= deadline:
+                            break
+                        time.sleep(0.01)
+                    self.assertEqual(edge['request_bytes'], 4)
+                    self.assertEqual(edge['dropped_request_bytes'], 8)
+            finally:
+                release.set()
 
     def test_silence_both_directions_discards_the_request_without_refusing(self):
         self.mesh.silence([(0, 1), (1, 0)])
