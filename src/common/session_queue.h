@@ -106,6 +106,8 @@ inline DrainOutcome DrainCommands(CommandBuffer& input, SessionCommandQueue& que
             out.stop_read = true;
             break;
         }
+        if (!input.CanParse())
+            break;
         auto parsed = input.Next();
         if (parsed.state == RespParser::State::NeedMore)
             break;

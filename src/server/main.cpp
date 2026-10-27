@@ -182,7 +182,7 @@ static void DrainClient(const muduo::net::TcpConnectionPtr& conn,
 static void ScheduleDrain(const muduo::net::TcpConnectionPtr& conn,
                           const std::shared_ptr<ClientSession>& session) {
     if (session->drain_scheduled || session->closing || session->waiting ||
-        session->input.UnreadBytes() == 0) return;
+        !session->input.CanParse() || session->queue.IsFull()) return;
     session->drain_scheduled = true;
     std::weak_ptr<muduo::net::TcpConnection> weak_conn = conn;
     std::weak_ptr<ClientSession> weak_session = session;

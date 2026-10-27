@@ -48,6 +48,14 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 add_test(NAME connection_order_tests COMMAND connection_order_tests)
 
+# Parser progress across fragmented input and queue backpressure.
+add_executable(client_input_tests client_input_tests.cpp)
+target_include_directories(client_input_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(client_input_tests PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+add_test(NAME client_input_tests COMMAND client_input_tests)
+
 add_executable(storage_batch_tests storage_batch_tests.cpp
     ${PROJECT_SOURCE_DIR}/src/raft/kv_state_machine.cc
     ${PROJECT_SOURCE_DIR}/src/raftcore/raft_log.cc
@@ -92,4 +100,3 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(prometheus_text_tests PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 add_test(NAME prometheus_text_tests COMMAND prometheus_text_tests)
-

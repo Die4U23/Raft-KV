@@ -1,5 +1,13 @@
 # 测试
 
+## 半包调度与测试结果判定回归
+
+- `client_input_tests` 检查生产 `CommandBuffer` / `DrainCommands` 的半包等待、补齐恢复、跨解析预算 pipeline，以及队列容量释放后处理已缓冲命令；保留现有 `connection_order_tests` 的队列断言。
+- 完整 Linux 服务构建的 CTest 还会运行 `connection_order_integration`，检查真实 TCP 回复顺序、分片恢复和空闲半包 CPU 消耗。CPU 阈值用于发现忙循环，不代表吞吐性能。
+- `readindex_integration_tests.py` 随 Python helper suite 运行，验证测试脚本的 PASS/FAIL/SKIP 判定；替身检查不证明 Raft 一致性。
+- `python3 tests/test_readindex_integration.py --binary build/raft_kv_server` 运行四个真实集群场景。退出码 `0` 表示全部实际执行并通过，`1` 表示失败，`2` 表示存在跳过或零执行。重启后 Follower 拒绝读的场景不代表持续网络分区验证。
+- `bash scripts/run_new_tests.sh` 运行可移植 CTest 与 Python helper suite；真实服务回归需启用 `RAFTKV_BUILD_SERVER=ON`。
+
 正常性能诊断的[真实 Linux 证据](../docs/benchmarks/profile-validation.md)和[客户端头部读取四轮对照](../docs/benchmarks/client-header-validation.md)均已核验。后者 40 万次正式请求零错误，但未观察到优化收益；继续保留 classic 默认，无需重跑本组。
 
 ## 可移植协议与核心测试
