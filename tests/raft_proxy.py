@@ -1,7 +1,68 @@
-"""Directed TCP relays for fault tests; only owned loopback connections are cut."""
+"""Directed TCP relays for fault tests.
+
+partition() aborts crossing connections and refuses new ones. silence() keeps
+the TCP connection open and discards the named directions; a later partition()
+aborts those relays so a truncated byte stream is not forwarded afterward.
+delay() holds each chunk and then forwards it in the same order. reorder()
+swaps complete Raft frames that already share one read.
+"""
 import asyncio
 import threading
 import time
+
+# payload_length includes the 5-byte type and sender header. Matches RaftCodec.
+_MIN_PAYLOAD = 5
+_MAX_PAYLOAD = 10 * 1024 * 1024
+
+
+def reorder_complete_frames(data):
+    """Swap adjacent complete frames already present in this buffer.
+
+    A lone complete frame, a short tail, and an illegal length stay as they
+    arrived. Nothing is kept for a later read: holding one frame until the
+    next one exists stalls a peer that sends only one AppendEntries at a time.
+    Returns the bytes to forward and how many of them left their original order.
+    """
+    frames = []
+    offset = 0
+    size = len(data)
+    while offset + 4 <= size:
+        length = int.from_bytes(data[offset:offset + 4], 'big')
+        if length < _MIN_PAYLOAD or length > _MAX_PAYLOAD:
+            return data, 0
+        end = offset + 4 + length
+        if end > size:
+            break
+        frames.append(data[offset:end])
+        offset = end
+    if len(frames) < 2:
+        return data, 0
+    swapped = bytearray()
+    moved = 0
+    index = 0
+    while index + 1 < len(frames):
+        swapped.extend(frames[index + 1])
+        swapped.extend(frames[index])
+        moved += len(frames[index]) + len(frames[index + 1])
+        index += 2
+    if index < len(frames):
+        swapped.extend(frames[index])
+    swapped.extend(data[offset:])
+    return bytes(swapped), moved
+
+
+def flow_target(writer, recipient):
+    """Map a Raft sender/receiver pair onto the dialer's relay.
+
+    Only the lower id opens the TCP connection to a higher id. The dialer's
+    bytes are the relay request and the acceptor's bytes are the reply.
+    Both directions share that one connection.
+    """
+    if writer == recipient:
+        raise ValueError('A node has no relay to itself')
+    if writer < recipient:
+        return (writer, recipient), 'request'
+    return (recipient, writer), 'reply'
 
 
 class RaftProxyMesh:
@@ -12,6 +73,10 @@ class RaftProxyMesh:
         self.servers = {}
         self.active = {}
         self.groups = {node: 0 for node in destinations}
+        self.drops = set()
+        self.hold_seconds = 0.0
+        self.hold_targets = None
+        self.reorder_targets = False
         self.epoch = 0
         self.errors = []
         self.events = []
@@ -25,13 +90,34 @@ class RaftProxyMesh:
             self.close()
             raise
 
-    def call(self, coroutine):
+    def call(self, coroutine, timeout=5):
         future = asyncio.run_coroutine_threadsafe(coroutine, self.loop)
         try:
-            return future.result(timeout=5)
+            return future.result(timeout=timeout)
         except BaseException:
             future.cancel()
             raise
+
+    @staticmethod
+    def _abort(stream):
+        transport = getattr(stream, 'transport', None)
+        if transport is not None:
+            try:
+                transport.abort()
+            except Exception:
+                pass
+        try:
+            stream.close()
+        except Exception:
+            pass
+
+    def _cancel_task(self, task):
+        if task is None or task.done() or self.loop.is_closed():
+            return
+        try:
+            task.cancel()
+        except RuntimeError:
+            pass
 
     async def _start(self):
         ports = {}
@@ -41,7 +127,10 @@ class RaftProxyMesh:
                     continue
                 edge = (src, dst)
                 self.stats[edge] = dict(accepted=0, refused=0, cut=0,
-                                        request_bytes=0, reply_bytes=0)
+                                        request_bytes=0, reply_bytes=0,
+                                        dropped_request_bytes=0, dropped_reply_bytes=0,
+                                        delayed_request_bytes=0, delayed_reply_bytes=0,
+                                        reordered_request_bytes=0, reordered_reply_bytes=0)
                 self.servers[edge] = await asyncio.start_server(
                     lambda reader, writer, edge=edge, destination=destination:
                     self._relay(edge, destination, reader, writer), '127.0.0.1', 0)
@@ -68,17 +157,33 @@ class RaftProxyMesh:
             if epoch != self.epoch or not self.allowed(edge):
                 return
 
-            async def pump(source, target, counter):
+            async def pump(source, target, direction):
                 while True:
                     data = await source.read(65536)
                     if not data:
                         return
+                    if self._should_reorder(edge, direction):
+                        data, moved = reorder_complete_frames(data)
+                        if moved:
+                            self.stats[edge]['reordered_' + direction + '_bytes'] += moved
+                    hold = self.hold_seconds
+                    if hold > 0 and self.hold_targets is not None and (edge, direction) not in self.hold_targets:
+                        hold = 0.0
+                    if hold > 0:
+                        self.stats[edge]['delayed_' + direction + '_bytes'] += len(data)
+                        await asyncio.sleep(hold)
+                    if (edge, direction) in self.drops:
+                        self.stats[edge]['dropped_' + direction + '_bytes'] += len(data)
+                        continue
                     target.write(data)
+                    # Count bytes admitted to the writer before yielding. A
+                    # silence snapshot must not attribute a pre-cut write to
+                    # post-cut forwarding merely because drain completed later.
+                    self.stats[edge][direction + '_bytes'] += len(data)
                     await target.drain()
-                    self.stats[edge][counter] += len(data)
 
-            pumps = [asyncio.create_task(pump(reader, upstream_writer, 'request_bytes')),
-                     asyncio.create_task(pump(upstream, writer, 'reply_bytes'))]
+            pumps = [asyncio.create_task(pump(reader, upstream_writer, 'request')),
+                     asyncio.create_task(pump(upstream, writer, 'reply'))]
             done, _ = await asyncio.wait(pumps, return_when=asyncio.FIRST_COMPLETED)
             for completed in done:
                 completed.result()
@@ -90,36 +195,119 @@ class RaftProxyMesh:
         except Exception as error:
             self.errors.append(repr(error))
         finally:
-            for pump_task in pumps:
-                pump_task.cancel()
-            for stream in writers:
-                stream.close()
-            if pumps:
-                await asyncio.gather(*pumps, return_exceptions=True)
-            for stream in writers:
-                try:
-                    await asyncio.wait_for(stream.wait_closed(), timeout=1)
-                except (OSError, asyncio.TimeoutError):
-                    pass
             self.active.pop(task, None)
+            for pump_task in pumps:
+                self._cancel_task(pump_task)
+            for stream in writers:
+                self._abort(stream)
+            if pumps and not self.loop.is_closed():
+                try:
+                    await asyncio.gather(*pumps, return_exceptions=True)
+                except RuntimeError:
+                    pass
+
+    def _abort_active(self, predicate):
+        closing = []
+        for task, (edge, writers) in list(self.active.items()):
+            if not predicate(edge):
+                continue
+            self.stats[edge]['cut'] += 1
+            for writer in writers:
+                self._abort(writer)
+            self._cancel_task(task)
+            closing.append(task)
+        return closing
+
+    def _targets(self, flows):
+        targets = set()
+        for flow in flows:
+            if len(flow) != 2:
+                raise ValueError('Each flow is (writer, recipient)')
+            edge, direction = flow_target(flow[0], flow[1])
+            if edge not in self.stats:
+                raise ValueError('Unknown relay {}->{}'.format(*edge))
+            targets.add((edge, direction))
+        return targets
+
+    async def _silence(self, flows):
+        targets = self._targets(flows)
+        previous = self.drops
+        # A direction that was discarded and would now be forwarded is a truncated
+        # TCP stream. Abort that relay before clearing its drop, so a pump cannot
+        # write the next chunk onto the spliced stream.
+        dirty = set()
+        for edge, direction in previous:
+            if (edge, direction) not in targets:
+                dirty.add(edge)
+        closing = self._abort_active(lambda edge: edge in dirty)
+        if closing:
+            await asyncio.gather(*closing, return_exceptions=True)
+        self.drops = targets
+        self.epoch += 1
+        self.events.append(dict(monotonic_seconds=time.monotonic(), kind='silence',
+                                flows=[list(flow) for flow in flows],
+                                closed_connections=len(closing)))
+        return self._snapshot()
+
+    def silence(self, flows):
+        return self.call(self._silence(flows))
+
+    async def _delay(self, seconds, flows):
+        if seconds < 0 or seconds > 1:
+            raise ValueError('delay must be 0..1 seconds')
+        self.hold_seconds = seconds
+        self.hold_targets = None if flows is None else self._targets(flows)
+        self.events.append(dict(monotonic_seconds=time.monotonic(), kind='delay', seconds=seconds,
+                                flows=None if flows is None else [list(flow) for flow in flows]))
+        return self._snapshot()
+
+    def _should_reorder(self, edge, direction):
+        targets = self.reorder_targets
+        if targets is False:
+            return False
+        if targets is None:
+            return True
+        return (edge, direction) in targets
+
+    async def _reorder(self, flows):
+        self.reorder_targets = None if flows is None else self._targets(flows)
+        self.events.append(dict(monotonic_seconds=time.monotonic(), kind='reorder',
+                                flows=None if flows is None else [list(flow) for flow in flows]))
+        return self._snapshot()
+
+    def reorder(self, flows=None):
+        """Swap complete Raft frames that already share one read.
+
+        A single frame is forwarded immediately. None covers every direction.
+        An empty list turns the swap off. The socket stays open.
+        """
+        return self.call(self._reorder(flows))
+
+    def delay(self, seconds, flows=None):
+        """Hold each later chunk, then forward it in the same order.
+
+        flows limits the hold to those (writer, recipient) pairs. None holds every
+        direction. This does not reorder chunks and does not close the socket.
+        """
+        return self.call(self._delay(seconds, flows))
 
     async def _partition(self, groups):
         flattened = [node for group in groups for node in group]
         if len(flattened) != len(set(flattened)) or set(flattened) != set(self.destinations):
             raise ValueError('Partition must contain every node exactly once')
-        self.groups = {node: group_id for group_id, group in enumerate(groups) for node in group}
-        self.epoch += 1
-        closing = []
-        for task, (edge, writers) in list(self.active.items()):
-            if not self.allowed(edge):
-                self.stats[edge]['cut'] += 1
-                for writer in writers:
-                    writer.close()
-                task.cancel()
-                closing.append(task)
+        new_groups = {node: group_id for group_id, group in enumerate(groups) for node in group}
+        dirty = {edge for edge, _ in self.drops}
+
+        def must_close(edge):
+            return edge in dirty or new_groups[edge[0]] != new_groups[edge[1]]
+
+        closing = self._abort_active(must_close)
         if closing:
             await asyncio.gather(*closing, return_exceptions=True)
-        self.events.append(dict(monotonic_seconds=time.monotonic(), groups=groups,
+        self.drops = set()
+        self.groups = new_groups
+        self.epoch += 1
+        self.events.append(dict(monotonic_seconds=time.monotonic(), kind='partition', groups=groups,
                                 closed_connections=len(closing)))
         return self._snapshot()
 
@@ -139,23 +327,36 @@ class RaftProxyMesh:
     async def _close(self):
         for server in self.servers.values():
             server.close()
-        for server in self.servers.values():
-            await server.wait_closed()
-        tasks = list(self.active)
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        for task, (_, writers) in list(self.active.items()):
+            for writer in writers:
+                self._abort(writer)
+            self._cancel_task(task)
+        pending = [task for task in asyncio.all_tasks(self.loop)
+                   if task is not asyncio.current_task()]
+        for task in pending:
+            self._cancel_task(task)
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     def close(self):
         if self.closed:
             return
         self.closed = True
         try:
-            self.call(self._close())
+            if self.loop.is_running():
+                try:
+                    self.call(self._close(), timeout=2)
+                except (TimeoutError, RuntimeError):
+                    # Shutdown is best-effort: live Raft peers must not fail the test.
+                    pass
         finally:
-            self.loop.call_soon_threadsafe(self.loop.stop)
+            if self.loop.is_running():
+                try:
+                    self.loop.call_soon_threadsafe(self.loop.stop)
+                except RuntimeError:
+                    pass
             self.thread.join(timeout=3)
             if self.thread.is_alive():
                 raise RuntimeError('Proxy thread did not stop')
-            self.loop.close()
+            if not self.loop.is_closed():
+                self.loop.close()

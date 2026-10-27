@@ -24,9 +24,38 @@ public:
     void TruncateSuffix(int64_t start_index);
     void SaveHardState(int32_t term, int32_t voted_for);
     bool LoadHardState(int32_t* term, int32_t* voted_for);
+    // Drop log entries through an applied index and keep the KV bytes that
+    // match that index. Later entries stay. index must still be in the log.
+    void CompactApplied(int64_t index, int64_t term, const std::string& data);
+    // Install a leader snapshot. A matching entry at index keeps the suffix.
+    void InstallSnapshot(int64_t index, int64_t term, const std::string& data);
+    // Durable redo intent, staged only after the KV payload has validated.
+    // Complete with InstallSnapshot after the KV replacement. Recovery replays
+    // KV first, then finalizes Raft metadata and deletes this intent atomically.
+    void StageSnapshotInstall(int64_t index, int64_t term, const std::string& data);
+    bool LoadPendingSnapshot(int64_t* index, int64_t* term, std::string* data) const;
+    int64_t SnapshotIndex() const { return _snapshot_index; }
+    int64_t SnapshotTerm() const { return _snapshot_term; }
+    const std::string& SnapshotData() const { return _snapshot_data; }
+    static constexpr size_t kMaxSnapshotBytes = 32 * 1024 * 1024;
 private:
     static std::string IndexToKey(int64_t index);
+    static std::string SnapshotMetaKey();
+    static std::string SnapshotDataKey();
+    static std::string TailKey();
+    static std::string SnapshotIntentKey();
+    static std::string EncodeTail(int64_t index, int64_t term);
+    void PutTail(rocksdb::WriteBatch* batch, int64_t index, int64_t term);
+    void LoadSnapshot();
+    // False when this log was written before tail metadata existed.
+    bool LoadTail();
+    // Read every entry after the snapshot. A hole or a corrupt value fails open.
+    void VerifySuffix() const;
+    void PersistSnapshot(int64_t index, int64_t term, const std::string& data, bool keep_suffix);
     std::unique_ptr<rocksdb::DB> _db;
     int64_t _last_index = 0;
     int64_t _last_term = 0;
+    int64_t _snapshot_index = 0;
+    int64_t _snapshot_term = 0;
+    std::string _snapshot_data;
 };

@@ -72,6 +72,12 @@ std::vector<bool> RocksDBStore::ApplyBatch(const std::vector<Mutation>& mutation
         case Mutation::Kind::Noop: break;
         default: throw std::runtime_error("invalid state machine mutation");
         }
+        if (!mutation.session_key.empty()) {
+            if (mutation.session_key == AppliedKey())
+                throw std::runtime_error("client session collides with lastApplied");
+            batch.Put(mutation.session_key, mutation.session_value);
+            present[mutation.session_key] = true;
+        }
     }
     std::string value(8, '\0');
     auto encoded = static_cast<uint64_t>(last);
@@ -92,4 +98,43 @@ bool RocksDBStore::ApplyDelete(int64_t index, const std::string& key) {
 }
 void RocksDBStore::ApplyNoop(int64_t index) {
     ApplyBatch({{index, Mutation::Kind::Noop, {}, {}}});
+}
+std::vector<std::pair<std::string, std::string>> RocksDBStore::ExportEntries() const {
+    std::vector<std::pair<std::string, std::string>> entries;
+    std::unique_ptr<rocksdb::Iterator> it(_db->NewIterator(rocksdb::ReadOptions()));
+    for (it->SeekToFirst(); it->Valid(); it->Next()) {
+        const std::string key = it->key().ToString();
+        if (key == AppliedKey()) continue;
+        entries.emplace_back(key, it->value().ToString());
+    }
+    RequireStorageOK(it->status(), "export KV snapshot");
+    return entries;
+}
+void RocksDBStore::ReplaceAll(int64_t index,
+                              const std::vector<std::pair<std::string, std::string>>& entries,
+                              const std::function<void()>& after_validation) {
+    if (index < LastApplied()) throw std::runtime_error("KV snapshot would move backwards");
+    rocksdb::WriteBatch batch;
+    std::unique_ptr<rocksdb::Iterator> it(_db->NewIterator(rocksdb::ReadOptions()));
+    for (it->SeekToFirst(); it->Valid(); it->Next()) {
+        const std::string key = it->key().ToString();
+        if (key != AppliedKey()) batch.Delete(key);
+    }
+    RequireStorageOK(it->status(), "scan KV snapshot");
+    for (const auto& entry : entries) {
+        if (entry.first == AppliedKey()) throw std::runtime_error("KV snapshot contains lastApplied");
+        batch.Put(entry.first, entry.second);
+    }
+    std::string value(8, '\0');
+    auto encoded = static_cast<uint64_t>(index);
+    for (int i = 7; i >= 0; --i) {
+        value[i] = static_cast<char>(encoded & 0xff);
+        encoded >>= 8;
+    }
+    batch.Put(AppliedKey(), value);
+    // Validation and iterator reads must finish before recording a durable redo
+    // intent. The callback must persist successfully before any KV replacement.
+    if (after_validation) after_validation();
+    RequireStorageOK(_db->Write(DurableWriteOptions(), &batch), "install KV snapshot");
+    _last_applied.store(index, std::memory_order_release);
 }

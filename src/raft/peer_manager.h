@@ -47,8 +47,9 @@ public:
     void SetMessageHandler(MessageHandler handler);
     void Start();
 
-    // 发送 Raft RPC 到指定节点
-    void Send(int peer_id, RaftMsgType type, const std::string& payload);
+    // Queue one frame. False when the peer has no live connection or its
+    // output buffer cannot take the frame; the caller must retry.
+    bool Send(int peer_id, RaftMsgType type, const std::string& payload);
 
     // 广播到所有其他节点
     void Broadcast(RaftMsgType type, const std::string& payload);

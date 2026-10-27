@@ -49,9 +49,9 @@ redis-cli -p 8081 GET user:1
 - 客户端需要重定向到 Leader
 
 **一致性保证：**
-- ❌ **线性一致性**：Leader 可能已失去领导权但尚未感知
-- ✅ **读己之写**（同连接）：同一连接上的 GET 能看到之前的 SET
-- ⚠️ **有界过期**：在一个心跳间隔内（50ms）
+- ❌ **线性一致性**：处理读请求前不向多数派确认领导权
+- ✅ **读己之写**（同连接）：同一连接上已成功的 SET 之后，GET 能看到该写入
+- ⚠️ **过期窗口**：隔离中的旧 Leader 在 CheckQuorum 卸任前仍会返回本地值。卸任阈值是最短选举超时 150 ms，不是 50 ms 心跳间隔
 
 **不保证线性一致性的原因：**
 - Leader 可能已被隔离但尚未超时
@@ -76,20 +76,24 @@ redis-cli -p 8080 GET user:1
 
 ---
 
-### 线性一致读（未实现）
+### 线性一致读（`--linearizable_reads=true`）
 
-**计划实现：ReadIndex 协议**
+默认关闭。开启后，Leader 使用 ReadIndex：记录当时的 `commit_index`，向 peer 发送**请求之后新分配**的 AppendEntries，多数派按 `rpc_id` 确认，且 `last_applied >= read_index` 后再读本地 KV。Follower 返回 `-ERR MOVED <leader_id>`，不会静默降级为本地读。
 
-线性一致读需要以下步骤：
-1. **验证领导权**：Leader 向多数派发送心跳以确认其领导地位
-2. **记录读索引**：记录当前的 `commit_index` 作为读屏障
-3. **等待应用**：等待 `last_applied >= read_index`
-4. **执行读取**：在本地状态机上读取数据
+**保证：**
+- 读屏障只接纳该轮创建之后发出的探针 ACK；请求之前已在途的复制/心跳及其重试不能确认这次读。
+- 探针 ACK 必须在最短选举超时（150 ms）内到达。年龄达到 150 ms 的同任期 ACK 不能确认读，并且到达时就失败该轮，不等下一次 Tick。Follower 的选举截止时间用同一把 `steady_clock`：刚收到心跳之后，至少要过 150 ms 才能给其他候选投票。`Tick` 提前触发不会把这段等待缩短。
+- Leader 失去多数派应答超过 150 ms 后卸任（CheckQuorum）。未完成的读失败，而不是继续返回本地值。
+- 多数派确认之后、读本地 KV 之前再检查一次仍是 Leader。已经卸任则 `MOVED`。
+- 同一连接上 GET 仍排在前面的 SET/DEL 之后，保留读己之写。非法 RESP 帧若撞上尚未完成的命令，只关闭连接，不把帧错误插进那条回复。
+- 卸任或 `Stop()` 会拒绝未完成的读；这些失败在 `--linearizable_reads=true` 时映射为 `MOVED`。
 
-**实现后的保证：**
-- ✅ **线性一致性**：读取总是返回最新已提交的数据
-- ✅ **实时性**：读取反映写入的因果关系
-- ⚠️ **性能代价**：需要一次多数派心跳往返（约 10-50ms）
+**不保证 / 已知边界：**
+- 默认 `--linearizable_reads=false` 时 GET 仍是本地读。
+- 应用落后与未发送队列的超时是 1000 ms；探针轮次本身在 150 ms 失败。队列深度上限 10000。
+- 选举超时先走 Pre-Vote。得不到多数派预投票就不会抬任期，隔离节点不能靠连续竞选打断仍有多数派的 Leader。CheckQuorum 仍会让隔离旧 Leader 卸任；在此之前线性一致 GET 超时或 `MOVED`，不会成功返回过期值。刚听过心跳的 Follower 在选举截止时间之前不给预投票，也不给正式投票。进程内回归在 `readindex_tests` 和 `raft_node_coverage_tests`；Linux 三节点在 `tests/cluster_linearizable.py`。
+- 共识检查日志写到 stderr（`INFO` / `WARNING` / `ERROR`），不进入 Raft 日志。
+- 这不是租约读：时钟不同步或 RTT 接近选举超时会使 ReadIndex 失败，而不是放宽确认窗口。
 
 **参考资料：**
 - [Raft 论文第 8 节](https://raft.github.io/raft.pdf)
@@ -102,24 +106,24 @@ redis-cli -p 8080 GET user:1
 ### 读路径分析
 
 1. **接收请求**：客户端通过 RESP 协议发送 GET 命令
-2. **命令解析**：`main.cpp` 中的 `DrainClient` 解析命令
-3. **权限检查**（如果启用 `--leader_only_reads`）：
-   - Follower 返回 `MOVED` 错误
-   - Leader 继续处理
-4. **直接读取**：调用 `KVStateMachine::Get()` 读取本地 RocksDB
-5. **返回结果**：将结果通过 RESP 协议返回客户端
+2. **命令解析**：`main.cpp` 中的 `DrainClient` 解析命令并入每连接队列
+3. **一致性分流**：
+   - `--linearizable_reads=true`：非 Leader 返回 `MOVED`；Leader 调用 `RequestReadIndex`，多数派确认后再读
+   - `--leader_only_reads=true`：非 Leader 返回 `MOVED`；Leader 直接读本地
+   - 默认：任意角色直接读本地
+4. **返回结果**：将结果通过 RESP 协议返回客户端
 
 **关键代码位置：**
-- 读取处理：`src/server/main.cpp:315-325`
+- 读取处理：`src/server/main.cpp`（`ExecuteNextCommand`）
+- ReadIndex：`src/raft/raft_node.cc`（`RequestReadIndex` / `probe_rpc_ids`）
 - 状态机读取：`src/raft/kv_state_machine.cc`
-- Leader 检查：`src/raft/raft_node.h:41`
 
 ### 读己之写保证
 
 **实现方式：**
 - 每个 TCP 连接维护一个命令队列
-- GET 命令在同连接的所有 pending SET 之后执行
-- 保证因果一致性：客户端总能读到自己写入的数据
+- 同连接上，前面的 SET/DEL 完成之前不会执行后面的 GET
+- 这只覆盖这条连接上已经排进队列的命令。其他连接、尚未收到成功回复的写，以及默认模式下的 Follower，都不在这个保证里
 
 **代码位置：**
 - 命令队列：`src/server/main.cpp`（连接级别的顺序保证）
@@ -134,8 +138,8 @@ redis-cli -p 8080 GET user:1
 |------|---------|------|
 | 会话状态读取 | 默认模式 | 读己之写足够，低延迟 |
 | 缓存查询 | 默认模式 | 可容忍短暂过期 |
-| 关键业务决策 | Leader-Only | 更严格保证，重定向可接受 |
-| 金融交易查询 | 等待线性一致读 | 需要强一致性，当前不支持 |
+| 需要线性一致读 | `--linearizable_reads=true` | Leader 走 ReadIndex；Leader-Only 不够 |
+| 金融交易查询 | `--linearizable_reads=true` | Leader 上走 ReadIndex；Follower 返回 MOVED |
 | 监控指标 | 默认模式 | 最终一致性即可 |
 
 ### 客户端最佳实践
@@ -187,7 +191,7 @@ redis-cli -p 8080 GET user:1
 
 | 系统 | 默认读一致性 | 强一致性选项 |
 |------|-------------|-------------|
-| Raft-KV（当前） | 本地读（无保证） | Leader-Only（非线性） |
+| Raft-KV（当前） | 本地读（默认） | `--linearizable_reads=true` 时 Leader 走 ReadIndex；`--leader_only_reads` 不是线性一致读 |
 | etcd | 序列化读 | 线性一致读 |
 | Redis Cluster | 本地读（最终一致） | 无（需要 WAIT 命令） |
 | Consul | Stale 模式 | Consistent 模式 |
@@ -198,15 +202,7 @@ redis-cli -p 8080 GET user:1
 
 ### 短期（下个版本）
 
-1. **实现 ReadIndex 协议**
-   - 为 GET 命令添加 `--consistent` 标志
-   - Leader 验证领导权后执行读取
-   - 提供真正的线性一致性保证
-
-2. **Lease-based Reads（可选）**
-   - 使用时间租约优化 Leader 读取
-   - 避免每次读取的多数派往返
-   - 需要时钟同步假设
+ReadIndex、Pre-Vote、快照和 `IDEMP` 去重已经在当前代码里。`--lease_reads=true` 配合 `--linearizable_reads=true` 时，Leader 在本任期满 300 ms、且多数派 150 ms 内应答过，可以不再为这条 GET 发探针。新任期的前 300 ms，以及联系变旧时，仍走 ReadIndex。Follower 不提供租约读。
 
 ### 长期
 
@@ -240,10 +236,14 @@ redis-cli -p 8080 GET user:1
 - 行为与默认模式相同
 - Leader-Only **不能**防止分区场景的过期读
 
-**缓解措施：**
-- 减小选举超时时间（当前 150-300ms）
-- 客户端侧读取验证（比如版本号）
-- 等待线性一致读实现
+**`--linearizable_reads=true` 时：**
+- 旧 Leader 在 150 ms 内得不到多数派应答就卸任
+- 卸任前的线性一致 GET 因探针超时失败，或在读本地值之前发现已经不是 Leader 而返回 `MOVED`
+- 不会把这次 GET 当成成功的线性一致读
+
+**默认模式和 Leader-Only：**
+- 减小选举超时不能把本地读变成线性一致读
+- Leader-Only 在卸任前的窗口里仍返回本地值
 
 ### 场景 2：Leader 崩溃
 
@@ -296,7 +296,7 @@ A: 因为 Leader 在处理读请求时不验证自己是否仍然被多数派承
 
 ### Q: 如何实现强一致性读取？
 
-A: 当前版本不支持。请等待 ReadIndex 协议实现，或者使用变通方案：通过 Raft 提交一个空操作并等待其应用后再读取。
+A: 启动时加上 `--linearizable_reads=true`。Leader 会走 ReadIndex（请求之后的探针 ACK 才计入多数派），Follower 返回 `MOVED`。默认模式和 `--leader_only_reads` 都不是线性一致读。
 
 ### Q: 同一连接的 SET 和 GET 顺序保证吗？
 
@@ -310,8 +310,8 @@ A: 不保证。不同连接的操作并发执行，可能以任意顺序完成�
 
 A: 在最坏情况下：
 - 默认模式：无上界（取决于网络分区持续时间）
-- Leader-Only：约 50ms（一个心跳间隔）
-- 线性一致读（未实现）：0（总是最新）
+- Leader-Only：卸任前的本地读窗口，下限是最短选举超时 150 ms
+- `--linearizable_reads=true`：多数派确认后的已提交前缀（仍受应用延迟约束，要等 `last_applied >= read_index`）
 
 ---
 
@@ -326,4 +326,5 @@ A: 在最坏情况下：
 
 ## 更新日志
 
-- 2026-09-21: 初始文档，描述当前读一致性行为和限制
+- 2026-09-28: 去掉「线性一致读尚未实现」和「Leader-Only 过期约 50 ms」。当前语义以本文前半部分为准。
+- 2026-09-21: 初始文档，描述当时的本地读和 Leader-Only。

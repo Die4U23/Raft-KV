@@ -142,21 +142,21 @@ void PeerManager::OnClientMessage(const muduo::net::TcpConnectionPtr& conn,
 // 发送
 // ================================================================
 
-void PeerManager::Send(int peer_id, RaftMsgType type,
+bool PeerManager::Send(int peer_id, RaftMsgType type,
                         const std::string& payload) {
     auto it = _connections.find(peer_id);
-    if (it == _connections.end() || !it->second || !it->second->connected()) {
-        return;  // 静默丢弃（心跳会重试）
-    }
+    if (it == _connections.end() || !it->second || !it->second->connected())
+        return false;
 
     // A paused follower must not accumulate an unlimited number of RPC retries.
     // Defer whole frames; the Raft retry timer will try again after TCP drains.
     constexpr size_t max_queued = 4 * 1024 * 1024;
     const size_t queued = it->second->outputBuffer()->readableBytes();
     if (queued > max_queued || payload.size() > max_queued - RaftCodec::kHeaderSize ||
-        payload.size() + RaftCodec::kHeaderSize > max_queued - queued) return;
+        payload.size() + RaftCodec::kHeaderSize > max_queued - queued) return false;
     std::string frame = RaftCodec::Encode(type, _self_id, payload);
     it->second->send(frame);
+    return true;
 }
 
 void PeerManager::Broadcast(RaftMsgType type, const std::string& payload) {

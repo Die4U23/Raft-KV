@@ -6,7 +6,7 @@ if [ ! -f CMakeLists.txt ]; then
     exit 1
 fi
 cmake -S . -B build-new-tests -G Ninja \
-    -DRAFTKV_BUILD_SERVER=OFF -DCMAKE_BUILD_TYPE=Debug
+    -DRAFTKV_BUILD_SERVER=OFF -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Debug
 cmake --build build-new-tests --parallel 2
 ctest --test-dir build-new-tests --output-on-failure
 python3 -m unittest discover -s tests -p '*_tests.py'

@@ -13,8 +13,11 @@ public:
     using Sink = std::function<void(int, int, RaftMsgType, const std::string&)>;
     PeerManager(int self, std::vector<PeerInfo> peers, Sink sink)
         : self_(self), peers_(std::move(peers)), sink_(std::move(sink)) {}
-    void Send(int peer, RaftMsgType type, const std::string& payload) {
+    void SetTransmit(bool enabled) { transmit_ = enabled; }
+    bool Send(int peer, RaftMsgType type, const std::string& payload) {
+        if (!transmit_) return false;
         sink_(self_, peer, type, payload);
+        return true;
     }
     void Broadcast(RaftMsgType type, const std::string& payload) {
         for (const auto& peer : peers_) if (peer.id != self_) Send(peer.id, type, payload);
@@ -23,4 +26,5 @@ private:
     int self_;
     std::vector<PeerInfo> peers_;
     Sink sink_;
+    bool transmit_ = true;
 };

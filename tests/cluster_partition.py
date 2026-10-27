@@ -15,7 +15,7 @@ import time
 import traceback
 
 from cluster_smoke import Cluster, RespError, encode_command, expect
-from raft_proxy import RaftProxyMesh
+from raft_proxy import RaftProxyMesh, flow_target
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -78,6 +78,22 @@ def assert_frozen(before, current):
         expect(current[field], before[field], 'isolated node {} {}'.format(current['node_id'], field))
 
 
+def both_directions(leader, others):
+    flows = []
+    for other in others:
+        flows.append((leader, other))
+        flows.append((other, leader))
+    return flows
+
+
+def replies_toward(leader, others):
+    return [(other, leader) for other in others]
+
+
+def outbound_from(leader, others):
+    return [(leader, other) for other in others]
+
+
 def check_reconnects(snapshot, limit):
     counts = [edge['refused'] for edge in snapshot['edges'].values()]
     if any(count < 0 for count in counts):
@@ -94,7 +110,8 @@ class PartitionCluster(Cluster):
         self.mesh = None
         self.window = window
         self.report.update(test='raft_tcp_partition', snapshots=[], probes=[], partitions=[],
-                           observation_seconds=window, scope='three local processes; TCP disconnect/refusal partition')
+                           observation_seconds=window,
+                           scope='three local processes; TCP cut, silent drop, one-way reply drop, one leader outbound link, one follower reply, one follower-follower direction, leader outbound drop, short delay, frame reorder, and leader-link stall')
 
     def capture(self, phase):
         self.running(range(3))
@@ -119,7 +136,306 @@ class PartitionCluster(Cluster):
 
     def cut(self, groups, phase):
         snapshot = self.mesh.partition(groups)
-        self.report['partitions'].append(dict(phase=phase, groups=groups, proxy_at_cut=snapshot))
+        self.report['partitions'].append(dict(phase=phase, kind='partition', groups=groups,
+                                              proxy_at_cut=snapshot))
+
+    def expect_flows(self, before, dropped, forwarded, required_dropped=None):
+        after = self.mesh.snapshot()
+        required = set(dropped if required_dropped is None else required_dropped)
+        if not required.issubset(set(dropped)):
+            raise ValueError('Required dropped traffic must be configured for suppression')
+        for writer, recipient in dropped:
+            edge, direction = flow_target(writer, recipient)
+            key = '{}->{}'.format(*edge)
+            field = 'dropped_{}_bytes'.format(direction)
+            if (writer, recipient) in required and after['edges'][key][field] <= before['edges'][key][field]:
+                raise AssertionError('{}->{} dropped no {} bytes'.format(writer, recipient, direction))
+            if required_dropped is not None and after['edges'][key][direction + '_bytes'] != before['edges'][key][direction + '_bytes']:
+                raise AssertionError('silent flow {}->{} forwarded bytes after suppression'.format(writer, recipient))
+            if after['edges'][key]['cut'] != before['edges'][key]['cut']:
+                raise AssertionError('silent flow {}->{} reset the connection'.format(writer, recipient))
+            if after['edges'][key]['refused'] != before['edges'][key]['refused']:
+                raise AssertionError('silent flow {}->{} refused a connection'.format(writer, recipient))
+        for writer, recipient in forwarded:
+            edge, direction = flow_target(writer, recipient)
+            key = '{}->{}'.format(*edge)
+            field = '{}_bytes'.format(direction)
+            if after['edges'][key][field] <= before['edges'][key][field]:
+                raise AssertionError('{}->{} forwarded no {}'.format(writer, recipient, direction))
+
+    def expect_held(self, before, flows):
+        # Election/probe completion does not guarantee every directed relay has
+        # received traffic yet. Observe the configured stall before declaring a
+        # coverage failure, without relaxing connection or traffic assertions.
+        until = min(self.deadline, time.monotonic() + self.window)
+        while True:
+            after = self.mesh.snapshot()
+            missing = []
+            for writer, recipient in flows:
+                edge, direction = flow_target(writer, recipient)
+                key = '{}->{}'.format(*edge)
+                field = 'delayed_{}_bytes'.format(direction)
+                if after['edges'][key]['cut'] != before['edges'][key]['cut']:
+                    raise AssertionError('stall {}->{} reset the connection'.format(writer, recipient))
+                if after['edges'][key]['refused'] != before['edges'][key]['refused']:
+                    raise AssertionError('stall {}->{} refused a connection'.format(writer, recipient))
+                if after['edges'][key][field] <= before['edges'][key][field]:
+                    missing.append('{}->{} held no {} bytes (before={}, after={})'.format(
+                        writer, recipient, direction, before['edges'][key][field], after['edges'][key][field]))
+            if not missing:
+                return
+            remaining = until - time.monotonic()
+            if remaining <= 0:
+                raise AssertionError('; '.join(missing) + ' before bounded observation deadline')
+            time.sleep(min(0.05, remaining))
+
+    def stall_leader(self, expected):
+        # 400 ms is past the 300 ms maximum election timeout. Only the leader's
+        # links are held, so the other two nodes can still elect. Held chunks
+        # are forwarded in order when the stall ends; the sockets stay open.
+        leader = self.wait_for('leader before stall', lambda: self.leader(range(3)))
+        majority = [node for node in range(3) if node != leader]
+        flows = both_directions(leader, majority)
+        baseline = self.capture('before_stall')
+        before_proxy = self.mesh.snapshot()
+        proxy = self.mesh.delay(0.40, flows)
+        self.report['partitions'].append(dict(phase='stall', kind='delay', seconds=0.40,
+                                              flows=flows, proxy_at_cut=proxy))
+        try:
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(probe_write, self, leader, 'stall-probe', 'uncertain-stall', self.window)
+                prior = baseline[str(leader)]['commit_index']
+                new_leader = self.wait_for('stall majority election and quorum',
+                                           lambda: self.leader_with_quorum(majority, prior))
+                self.report['stall_leader'] = new_leader
+                minimum = self.write(new_leader, 'stall-write', 'kept')
+                expected.append(('default', 'stall-write', b'kept'))
+                while not future.done():
+                    if time.monotonic() >= self.deadline:
+                        raise TimeoutError('Stalled leader probe did not finish')
+                    time.sleep(0.05)
+                # Held bytes are delivered after 400 ms, so the old leader can
+                # learn the new leader's entries during a long window. The probe
+                # itself must still not be acknowledged.
+                self.report['probes'].append(future.result())
+            self.expect_held(before_proxy, flows)
+        finally:
+            self.mesh.delay(0)
+        return minimum
+
+    def drop_one_leader_outbound(self, expected):
+        # One directed edge: the leader's bytes toward a single follower are
+        # discarded. The reverse direction and the other follower stay open, so
+        # a write can still commit. The lagging follower must not see that key
+        # until the direction is restored.
+        leader = self.wait_for('leader before directed drop', lambda: self.leader(range(3)))
+        others = [node for node in range(3) if node != leader]
+        lagging = others[0]
+        peer = others[1]
+        flows = [(leader, lagging)]
+        term = self.info(leader)['term']
+        before = self.mesh.snapshot()
+        proxy = self.mesh.silence(flows)
+        self.report['partitions'].append(dict(phase='directed_outbound', kind='silence', flows=flows,
+                                              proxy_at_cut=proxy))
+        minimum = self.write(leader, 'directed-write', 'kept')
+        expected.append(('default', 'directed-write', b'kept'))
+
+        def reachable():
+            state = self.info(leader)
+            if state['term'] != term or state['leader_id'] != leader or state['state'] != 'leader':
+                raise AssertionError('one directed drop changed leadership: {}'.format(state))
+            other = self.info(peer)
+            if other['term'] != term or other['leader_id'] != leader:
+                raise AssertionError('reachable follower changed leadership: {}'.format(other))
+            with self.client(peer) as client:
+                if client.command('GET', 'directed-write') != b'kept':
+                    return None
+            return state['commit_index']
+
+        self.wait_for('directed write on the reachable follower', reachable)
+        with self.client(lagging) as client:
+            if client.command('GET', 'directed-write') is not None:
+                raise AssertionError('lagging follower served the write while its inbound link was dropped')
+        self.expect_flows(before, flows, [])
+        self.report['directed_lagging'] = lagging
+        return minimum
+
+    def drop_one_follower_reply(self, expected):
+        # The other single directed edge: one follower's replies to the leader
+        # are discarded. The leader's bytes toward that follower, and the other
+        # follower, stay open. The write still commits. A retried AppendEntries
+        # keeps the commit index from the first send, so this follower does not
+        # serve the new key until the direction is restored.
+        leader = self.wait_for('leader before one reply drop', lambda: self.leader(range(3)))
+        others = [node for node in range(3) if node != leader]
+        quiet = others[0]
+        peer = others[1]
+        flows = [(quiet, leader)]
+        forwarded = [(leader, quiet)]
+        term = self.info(leader)['term']
+        before = self.mesh.snapshot()
+        proxy = self.mesh.silence(flows)
+        self.report['partitions'].append(dict(phase='one_reply', kind='silence', flows=flows,
+                                              proxy_at_cut=proxy))
+        minimum = self.write(leader, 'one-reply-write', 'kept')
+        expected.append(('default', 'one-reply-write', b'kept'))
+
+        def reachable():
+            state = self.info(leader)
+            if state['term'] != term or state['leader_id'] != leader or state['state'] != 'leader':
+                raise AssertionError('one reply drop changed leadership: {}'.format(state))
+            other = self.info(peer)
+            if other['term'] != term or other['leader_id'] != leader:
+                raise AssertionError('reachable follower changed leadership: {}'.format(other))
+            with self.client(peer) as client:
+                if client.command('GET', 'one-reply-write') != b'kept':
+                    return None
+            return state['commit_index']
+
+        self.wait_for('one-reply write on the reachable follower', reachable)
+        with self.client(quiet) as client:
+            if client.command('GET', 'one-reply-write') is not None:
+                raise AssertionError('follower served the write while its replies were dropped')
+        self.expect_flows(before, flows, forwarded)
+        self.report['one_reply_quiet'] = quiet
+        return minimum
+
+    def one_way_between_followers(self):
+        # A vote is a request plus its response. With both of the leader's
+        # links discarded and one direction between the followers discarded,
+        # neither follower can finish a vote. Commit stays put and TCP stays up.
+        leader = self.wait_for('leader before follower link', lambda: self.leader(range(3)))
+        followers = [node for node in range(3) if node != leader]
+        flows = both_directions(leader, followers)
+        flows.append((followers[0], followers[1]))
+        forwarded = [(followers[1], followers[0])]
+        baseline = self.capture('before_follower_link')
+        before = self.mesh.snapshot()
+        proxy = self.mesh.silence(flows)
+        self.report['partitions'].append(dict(phase='follower_link', kind='silence', flows=flows,
+                                              proxy_at_cut=proxy))
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            until = time.monotonic() + self.window
+            futures = [pool.submit(probe_write, self, node, 'follower-link-{}'.format(node),
+                                   'uncertain-link-{}'.format(node), self.window)
+                       for node in range(3)]
+            self.observe('follower_link', baseline, range(3), futures, until)
+        self.expect_flows(before, flows, forwarded)
+        self.report['follower_link_open'] = forwarded
+
+    def drop_leader_outbound(self, expected):
+        # The leader's bytes toward both followers are discarded. Their replies
+        # and the link between them stay open, so the two followers can elect.
+        # The new leader can still reach the old one, so that node's commit may
+        # advance. The probe itself must not be acknowledged.
+        leader = self.wait_for('leader before outbound drop', lambda: self.leader(range(3)))
+        majority = [node for node in range(3) if node != leader]
+        flows = outbound_from(leader, majority)
+        forwarded = both_directions(majority[0], majority[1:])
+        baseline = self.capture('before_outbound')
+        before = self.mesh.snapshot()
+        proxy = self.mesh.silence(flows)
+        self.report['partitions'].append(dict(phase='leader_outbound', kind='silence', flows=flows,
+                                              proxy_at_cut=proxy))
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(probe_write, self, leader, 'outbound-probe', 'uncertain-outbound', self.window)
+            prior = baseline[str(leader)]['commit_index']
+            new_leader = self.wait_for('outbound majority election and quorum',
+                                       lambda: self.leader_with_quorum(majority, prior))
+            self.report['outbound_leader'] = new_leader
+            minimum = self.write(new_leader, 'outbound-write', 'kept')
+            expected.append(('default', 'outbound-write', b'kept'))
+            while not future.done():
+                if time.monotonic() >= self.deadline:
+                    raise TimeoutError('Outbound-drop probe did not finish')
+                time.sleep(0.05)
+            self.report['probes'].append(future.result())
+        self.expect_flows(before, flows, forwarded)
+        return minimum
+
+    def survive_short_delay(self, expected):
+        # 40 ms is under the 150 ms CheckQuorum and election floors, so this
+        # checks that a late-but-ordered path still commits. It is not a stall
+        # long enough to force an election, and it does not reorder bytes.
+        leader = self.wait_for('leader before delay', lambda: self.leader(range(3)))
+        term = self.info(leader)['term']
+        before = self.mesh.snapshot()
+        self.mesh.delay(0.04)
+        try:
+            minimum = self.write(leader, 'delayed-write', 'kept')
+            expected.append(('default', 'delayed-write', b'kept'))
+            self.wait_for('delayed write converges', lambda: self.settled(expected, minimum))
+            for node in range(3):
+                state = self.info(node)
+                if state['term'] != term or state['leader_id'] != leader:
+                    raise AssertionError('40 ms delay changed leadership: {}'.format(state))
+            held = sum(edge['delayed_request_bytes'] + edge['delayed_reply_bytes']
+                       for edge in self.mesh.snapshot()['edges'].values())
+            earlier = sum(edge['delayed_request_bytes'] + edge['delayed_reply_bytes']
+                          for edge in before['edges'].values())
+            if held <= earlier:
+                raise AssertionError('delay held no bytes')
+        finally:
+            self.mesh.delay(0)
+        return minimum
+
+    def survive_reordered_frames(self, expected):
+        # Two complete frames already in one read are swapped. A lone frame is
+        # forwarded at once, so a peer with one AppendEntries in flight is not
+        # held until a second frame exists. This phase checks that the write
+        # still commits and leadership stays. The swap itself is covered by the
+        # helper test, which can put two frames in a single send.
+        leader = self.wait_for('leader before reorder', lambda: self.leader(range(3)))
+        term = self.info(leader)['term']
+        before = self.mesh.snapshot()
+        self.mesh.reorder()
+        try:
+            minimum = self.write(leader, 'reordered-write', 'kept')
+            expected.append(('default', 'reordered-write', b'kept'))
+            self.wait_for('reordered write converges', lambda: self.settled(expected, minimum))
+            for node in range(3):
+                state = self.info(node)
+                if state['term'] != term or state['leader_id'] != leader:
+                    raise AssertionError('frame reorder changed leadership: {}'.format(state))
+            after = self.mesh.snapshot()
+            for key, edge in after['edges'].items():
+                if edge['cut'] != before['edges'][key]['cut']:
+                    raise AssertionError('reorder reset {}'.format(key))
+        finally:
+            self.mesh.reorder([])
+        return minimum
+
+    def lose_leader(self, phase, flow_fn, forward_fn, probe_key, probe_value, expected, required_flow_fn=None):
+        leader = self.wait_for('leader before ' + phase, lambda: self.leader(range(3)))
+        majority = [node for node in range(3) if node != leader]
+        flows = flow_fn(leader, majority)
+        forwarded = forward_fn(leader, majority) if forward_fn else []
+        baseline = self.capture('before_' + phase)
+        before_proxy = self.mesh.snapshot()
+        proxy = self.mesh.silence(flows)
+        self.report['partitions'].append(dict(phase=phase, kind='silence', flows=flows,
+                                              old_leader=leader, proxy_before=before_proxy,
+                                              proxy_at_cut=proxy))
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            until = time.monotonic() + self.window
+            future = pool.submit(probe_write, self, leader, probe_key, probe_value, self.window)
+            prior = baseline[str(leader)]['commit_index']
+            new_leader = self.wait_for(phase + ' majority election and quorum',
+                                       lambda: self.leader_with_quorum(majority, prior))
+            self.report[phase + '_leader'] = new_leader
+            minimum = self.write(new_leader, phase + '-write', 'kept')
+            expected.append(('default', phase + '-write', b'kept'))
+            self.observe(phase, baseline, [leader], [future],
+                         max(until, time.monotonic() + self.window))
+        # Dropping a request can prevent its reply from ever existing. In the
+        # bidirectional case require active old-leader traffic to every peer,
+        # while still enforcing suppression and connection checks in BOTH directions.
+        required = required_flow_fn(leader, majority) if required_flow_fn else None
+        self.report['partitions'][-1]['required_dropped_flows'] = flows if required is None else required
+        self.expect_flows(proxy if required is not None else before_proxy,
+                          flows, forwarded, required_dropped=required)
+        return minimum
 
     def observe(self, phase, baseline, frozen_nodes, futures, until):
         samples = 0
@@ -190,7 +506,8 @@ class PartitionCluster(Cluster):
         with ThreadPoolExecutor(max_workers=1) as pool:
             until = time.monotonic() + self.window
             future = pool.submit(probe_write, self, leader, 'minority-probe', 'uncertain-one', self.window)
-            new_leader = self.wait_for('majority election', lambda: self.leader(majority))
+            new_leader = self.wait_for('majority election and quorum',
+                                       lambda: self.leader_with_quorum(majority, minimum))
             self.report['majority_leader'] = new_leader
             minimum = self.write(new_leader, 'majority-write', 'with-two-nodes')
             expected.append(('default', 'majority-write', b'with-two-nodes'))
@@ -201,6 +518,55 @@ class PartitionCluster(Cluster):
         uncertain = [('minority-probe', 'uncertain-one')]
         minimum = self.heal('first_heal', expected, minimum, uncertain)
         self.step('first heal preserves acknowledged data and converges on uncertain write outcome')
+
+        minimum = self.lose_leader('silent_drop', both_directions, None,
+                                   'silent-probe', 'uncertain-silent', expected, required_flow_fn=outbound_from)
+        self.step('silent drop keeps TCP open, isolates the old leader, and lets the majority write')
+        uncertain.append(('silent-probe', 'uncertain-silent'))
+        minimum = self.heal('silent_heal', expected, minimum, uncertain[-1:])
+        self.step('healing the silent drop restores a clean TCP stream and convergence')
+
+        minimum = self.lose_leader('asymmetric_replies', replies_toward, outbound_from,
+                                   'asymmetric-probe', 'uncertain-asymmetric', expected)
+        self.step('dropping only replies to the leader isolates it while its outbound bytes still flow')
+        uncertain.append(('asymmetric-probe', 'uncertain-asymmetric'))
+        minimum = self.heal('asymmetric_heal', expected, minimum, uncertain[-1:])
+        self.step('healing the one-way drop restores convergence')
+
+        minimum = self.drop_one_leader_outbound(expected)
+        self.step('dropping only the leader outbound link to one follower still commits on the other two')
+        minimum = self.heal('directed_heal', expected, minimum, [])
+        self.step('restoring that direction lets the lagging follower catch up')
+
+        minimum = self.drop_one_follower_reply(expected)
+        self.step('dropping one follower reply still commits on the other two')
+        minimum = self.heal('one_reply_heal', expected, minimum, [])
+        self.step('restoring that reply lets the quiet follower serve the write')
+
+        self.one_way_between_followers()
+        self.step('one follower-follower direction blocks a vote once the leader links are dropped')
+        uncertain.extend(('follower-link-{}'.format(node), 'uncertain-link-{}'.format(node))
+                         for node in range(3))
+        minimum = self.heal('follower_link_heal', expected, minimum, uncertain[-3:])
+        self.step('restoring the follower link elects a leader and converges')
+
+        minimum = self.drop_leader_outbound(expected)
+        self.step('dropping leader outbound to both followers elects a new majority leader')
+        uncertain.append(('outbound-probe', 'uncertain-outbound'))
+        minimum = self.heal('outbound_heal', expected, minimum, uncertain[-1:])
+        self.step('restoring leader outbound converges')
+
+        minimum = self.survive_short_delay(expected)
+        self.step('40 ms ordered delay still commits the write without changing leader')
+
+        minimum = self.survive_reordered_frames(expected)
+        self.step('swapping complete frames that share a read still commits without changing leader')
+
+        minimum = self.stall_leader(expected)
+        self.step('400 ms stall on the leader links elects a new majority leader without closing TCP')
+        uncertain.append(('stall-probe', 'uncertain-stall'))
+        minimum = self.heal('stall_heal', expected, minimum, uncertain[-1:])
+        self.step('releasing the stall restores convergence')
 
         baseline = self.capture('before_no_quorum')
         self.cut([[0], [1], [2]], 'no_quorum')
@@ -294,6 +660,9 @@ def main():
                                                    encoding='utf-8')
     print('{}: real Linux partition test; report: {}'.format(cluster.report['status'], artifacts / 'report.json'))
     if cluster.report['status'] != 'PASS':
+        print('PARTITION_DIAGNOSTICS=' + json.dumps(
+            {key: cluster.report.get(key) for key in ('partitions', 'silent_drop_leader', 'proxy')},
+            ensure_ascii=False, sort_keys=True))
         print(cluster.report.get('error', cluster.report.get('cleanup_error')), file=sys.stderr)
         return 1
     return 0

@@ -78,10 +78,12 @@ class BatchTests(unittest.TestCase):
             self.run_batch(Wire(b':1\r\n'), rows())
 
     def test_leadership_loss_error_is_unknown_not_rejection(self):
-        batch = rows()
+        batch = rows() + [dict(sequence=3, node=0, key='key-3', value='value-3')]
         self.run_batch(Wire(b'-ERR leadership lost; outcome unknown\r\n'
-                            b'-ERR server stopped; outcome unknown\r\n-ERR BUSY write queue full\r\n'), batch)
-        self.assertEqual([r['outcome'] for r in batch], ['unknown', 'unknown', 'rejected'])
+                            b'-ERR server stopped; outcome unknown\r\n'
+                            b'-ERR proposal timeout; outcome unknown\r\n'
+                            b'-ERR BUSY write queue full\r\n'), batch)
+        self.assertEqual([r['outcome'] for r in batch], ['unknown', 'unknown', 'unknown', 'rejected'])
         with self.assertRaises(AssertionError):
             self.run_batch(Wire(b'-ERR unknown command\r\n'), rows())
 

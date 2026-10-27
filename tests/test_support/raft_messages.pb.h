@@ -49,10 +49,12 @@ class RequestVote : public test_proto::Snapshot<RequestVote> {
     TEST_PROTO_FIELD(int32_t, candidate_id)
     TEST_PROTO_FIELD(int64_t, last_log_index)
     TEST_PROTO_FIELD(int64_t, last_log_term)
+    TEST_PROTO_FIELD(bool, prevote)
 };
 class RequestVoteResponse : public test_proto::Snapshot<RequestVoteResponse> {
     TEST_PROTO_FIELD(int32_t, term)
     TEST_PROTO_FIELD(bool, vote_granted)
+    TEST_PROTO_FIELD(bool, prevote)
 };
 class AppendEntries : public test_proto::Snapshot<AppendEntries> {
     TEST_PROTO_FIELD(int32_t, term)
@@ -72,6 +74,26 @@ class AppendEntriesResponse : public test_proto::Snapshot<AppendEntriesResponse>
     TEST_PROTO_FIELD(int32_t, term)
     TEST_PROTO_FIELD(bool, success)
     TEST_PROTO_FIELD(int64_t, last_log_index)
+    TEST_PROTO_FIELD(uint64_t, rpc_id)
+};
+class InstallSnapshot : public test_proto::Snapshot<InstallSnapshot> {
+    TEST_PROTO_FIELD(int32_t, term)
+    TEST_PROTO_FIELD(int32_t, leader_id)
+    TEST_PROTO_FIELD(int64_t, last_included_index)
+    TEST_PROTO_FIELD(int64_t, last_included_term)
+    TEST_PROTO_FIELD(int64_t, offset)
+    TEST_PROTO_FIELD(bool, done)
+    TEST_PROTO_FIELD(uint64_t, rpc_id)
+public:
+    const std::string& data() const { return data_; }
+    void set_data(const std::string& value) { data_ = value; }
+private:
+    std::string data_;
+};
+class InstallSnapshotResponse : public test_proto::Snapshot<InstallSnapshotResponse> {
+    TEST_PROTO_FIELD(int32_t, term)
+    TEST_PROTO_FIELD(bool, success)
+    TEST_PROTO_FIELD(bool, complete)
     TEST_PROTO_FIELD(uint64_t, rpc_id)
 };
 }

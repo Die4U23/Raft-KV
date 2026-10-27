@@ -1,160 +1,7 @@
 // These tests compile the production consensus and storage sources against
 // explicitly in-process test doubles. They do not exercise disk or TCP I/O.
-#include "raft/raft_node.h"
-#include "raft/apply_executor.h"
-#include <deque>
+#include "in_process_cluster.h"
 #include <iostream>
-#include <stdexcept>
-
-static void Check(bool ok, const char* message) {
-    if (!ok) throw std::runtime_error(message);
-}
-static uint64_t Metric(const RaftNode& node, const std::string& name) {
-    const auto info = node.MetricsInfo();
-    const auto start = info.find(name + ":");
-    Check(start != std::string::npos && (start == 0 || info[start - 1] == '\n'),
-          "missing metric field");
-    return std::stoull(info.substr(start + name.size() + 1));
-}
-template<class F> static void Throws(F call) {
-    bool threw = false;
-    try { call(); } catch (const std::runtime_error&) { threw = true; }
-    Check(threw, "expected storage/consistency failure");
-}
-static std::string Command(std::initializer_list<std::string> args) {
-    std::string out = "*" + std::to_string(args.size()) + "\r\n";
-    for (const auto& arg : args)
-        out += "$" + std::to_string(arg.size()) + "\r\n" + arg + "\r\n";
-    return out;
-}
-static raftcore::LogEntry Entry(int64_t index, int term, std::string command = {}) {
-    raftcore::LogEntry entry;
-    entry.set_index(index); entry.set_term(term); entry.set_command(command);
-    return entry;
-}
-struct Message { int from, to; RaftMsgType type; std::string payload; };
-struct Member {
-    std::unique_ptr<KVStateMachine> sm;
-    std::unique_ptr<PeerManager> transport;
-    std::unique_ptr<RaftNode> raft;
-};
-
-// Work and owner-thread completion are advanced independently. This exercises
-// ordering without making the deliberately in-process DB double thread-safe.
-class ManualApplyExecutor : public ApplyExecutor {
-public:
-    bool Submit(Work work, Completion completion) override {
-        Check(!busy, "more than one apply batch submitted before completion");
-        busy = true;
-        worked = false;
-        ++submissions;
-        work_ = std::move(work);
-        completion_ = std::move(completion);
-        return true;
-    }
-    void RunWork() {
-        Check(busy && !worked, "invalid manual apply work transition");
-        worked = true;
-        try { results_ = work_(); } catch (...) { error_ = std::current_exception(); }
-        work_ = {};
-    }
-    void Complete() {
-        Check(busy && worked, "completion arrived before apply work");
-        auto completion = std::move(completion_);
-        auto results = std::move(results_);
-        auto error = std::move(error_);
-        error_ = nullptr;
-        busy = false;
-        worked = false;
-        completion(std::move(results), error);
-    }
-    void Finish() { RunWork(); Complete(); }
-    bool busy = false;
-    bool worked = false;
-    int submissions = 0;
-private:
-    Work work_;
-    Completion completion_;
-    Results results_;
-    std::exception_ptr error_;
-};
-
-class Cluster {
-public:
-    explicit Cluster(std::vector<int> ids = {10, 30, 50}, ApplyExecutor* executor = nullptr) {
-        static int sequence = 0;
-        prefix = "cluster-" + std::to_string(++sequence) + "/";
-        if (executor) executors[ids.front()] = executor;
-        for (int id : ids) peers.push_back({id, "127.0.0.1", 9000 + id});
-        for (int id : ids) Restart(id);
-    }
-    std::string Path(int id, const char* suffix) const {
-        return prefix + std::to_string(id) + suffix;
-    }
-    void Restart(int id) {
-        members.erase(id);
-        auto member = std::make_unique<Member>();
-        member->sm = std::make_unique<KVStateMachine>(Path(id, "/kv"));
-        member->transport = std::make_unique<PeerManager>(id, peers,
-            [this](int from, int to, RaftMsgType type, const std::string& payload) {
-                messages.push_back({from, to, type, payload});
-            });
-        member->raft = std::make_unique<RaftNode>(id, peers, nullptr, Path(id, "/log"),
-            member->sm.get(), member->transport.get(),
-            executors.count(id) ? executors.at(id) : nullptr);
-        member->raft->Start();
-        members.emplace(id, std::move(member));
-    }
-    RaftNode& Node(int id) { return *members.at(id)->raft; }
-    KVStateMachine& State(int id) { return *members.at(id)->sm; }
-    void Candidate(int id) {
-        for (int ticks = 0; ticks < 31 && std::string(Node(id).StateName()) == "follower"; ++ticks)
-            Node(id).Tick();
-        Check(std::string(Node(id).StateName()) == "candidate" || Node(id).IsLeader(),
-              "election did not start within bounded ticks");
-    }
-    void Deliver(const Message& message) {
-        if (!members.count(message.to)) return;
-        auto& node = Node(message.to);
-        switch (message.type) {
-        case RaftMsgType::kRequestVote: {
-            raftcore::RequestVote rpc; Check(rpc.ParseFromString(message.payload), "vote decode");
-            node.HandleRequestVote(message.from, rpc); break;
-        }
-        case RaftMsgType::kRequestVoteResponse: {
-            raftcore::RequestVoteResponse rpc; Check(rpc.ParseFromString(message.payload), "vote reply decode");
-            node.HandleRequestVoteResponse(message.from, rpc); break;
-        }
-        case RaftMsgType::kAppendEntries: {
-            raftcore::AppendEntries rpc; Check(rpc.ParseFromString(message.payload), "append decode");
-            node.HandleAppendEntries(message.from, rpc); break;
-        }
-        case RaftMsgType::kAppendEntriesResponse: {
-            raftcore::AppendEntriesResponse rpc; Check(rpc.ParseFromString(message.payload), "append reply decode");
-            node.HandleAppendEntriesResponse(message.from, rpc); break;
-        }
-        }
-    }
-    void Pump() {
-        int remaining = 10000;
-        while (!messages.empty()) {
-            Check(--remaining > 0, "message processing did not settle");
-            auto message = messages.front(); messages.pop_front(); Deliver(message);
-        }
-    }
-    void Settle() {
-        for (int tick = 0; tick < 10; ++tick) {
-            for (auto& member : members) member.second->raft->Tick();
-            Pump();
-        }
-    }
-    void Elect(int id) { Candidate(id); Pump(); Settle(); Check(Node(id).IsLeader(), "leader election failed"); }
-    std::vector<PeerInfo> peers;
-    std::map<int, std::unique_ptr<Member>> members;
-    std::map<int, ApplyExecutor*> executors;
-    std::deque<Message> messages;
-    std::string prefix;
-};
 
 static void QuorumAndDuplicateVotes() {
     Cluster cluster({10, 30, 50, 70, 90});
@@ -202,9 +49,9 @@ static void ReplicationAndRecovery() {
     cluster.Pump(); cluster.Settle();
     Check(result == ":0\r\n", "missing DEL returned one");
     cluster.members.erase(10); cluster.messages.clear();
-    cluster.Elect(50);
+    const int successor = cluster.ElectAmong({30, 50});
     bool acknowledged = false;
-    cluster.Node(50).Propose(Command({"SET", "default:after", "restart"}),
+    cluster.Node(successor).Propose(Command({"SET", "default:after", "restart"}),
         [&](bool ok, const std::string&) { acknowledged = ok; });
     cluster.Pump(); cluster.Settle();
     Check(acknowledged, "survivors could not commit");
@@ -214,19 +61,6 @@ static void ReplicationAndRecovery() {
           "restarted former leader did not catch up");
 }
 
-static raftcore::AppendEntries Append(int term, uint64_t rpc, int64_t prev, int prev_term, int64_t commit) {
-    raftcore::AppendEntries request;
-    request.set_term(term); request.set_leader_id(30); request.set_rpc_id(rpc);
-    request.set_prev_log_index(prev); request.set_prev_log_term(prev_term); request.set_leader_commit(commit);
-    return request;
-}
-static raftcore::AppendEntriesResponse LastResponse(Cluster& cluster) {
-    Check(!cluster.messages.empty(), "missing follower response");
-    raftcore::AppendEntriesResponse response;
-    Check(cluster.messages.back().type == RaftMsgType::kAppendEntriesResponse &&
-          response.ParseFromString(cluster.messages.back().payload), "invalid follower response");
-    cluster.messages.clear(); return response;
-}
 static void PrefixConflictAndCommitBound() {
     Cluster cluster;
     auto request = Append(1, 1, 0, 0, 0);
@@ -237,7 +71,12 @@ static void PrefixConflictAndCommitBound() {
     request = Append(2, 2, 1, 2, 0);
     cluster.Node(10).HandleAppendEntries(30, request);
     auto response = LastResponse(cluster);
-    Check(!response.success() && response.last_log_index() == 2, "prefix rejection deleted log suffix");
+    Check(!response.success() && response.last_log_index() == 0,
+          "prefix rejection did not point at the conflicting term");
+    request = Append(2, 8, 2, 1, 0);
+    cluster.Node(10).HandleAppendEntries(30, request);
+    response = LastResponse(cluster);
+    Check(response.success() && response.last_log_index() == 2, "prefix rejection deleted log suffix");
     // A short heartbeat can confirm only index 1, despite a longer local tail.
     request = Append(2, 3, 1, 1, 2);
     cluster.Node(10).HandleAppendEntries(30, request);
@@ -597,111 +436,156 @@ static void AsyncFollowerCommitGuard() {
           value == "original", "committed guard did not preserve pending apply content");
 }
 
-static std::vector<Message> AppendsTo(const Cluster& cluster, int peer) {
-    std::vector<Message> found;
-    for (const auto& message : cluster.messages)
-        if (message.type == RaftMsgType::kAppendEntries && message.to == peer)
-            found.push_back(message);
-    return found;
-}
-static uint64_t AppendRpcId(const Message& message) {
-    raftcore::AppendEntries rpc;
-    Check(rpc.ParseFromString(message.payload), "append decode");
-    return rpc.rpc_id();
-}
-static Message ExchangeAppend(Cluster& cluster, const Message& request) {
-    cluster.messages.clear();
-    cluster.Deliver(request);
-    Check(cluster.messages.size() == 1, "follower did not answer with one response");
-    auto response = cluster.messages.front();
-    cluster.messages.clear();
-    return response;
-}
-static void ForceHeartbeat(Cluster& cluster, int leader) {
-    cluster.messages.clear();
-    for (int tick = 0; tick < 8 && cluster.messages.empty(); ++tick)
-        cluster.Node(leader).Tick();
-    Check(!cluster.messages.empty(), "leader did not send a heartbeat");
-}
-
-static void ReadIndexRejectsPreRequestAck() {
+static void ReadIndexQuorumWithDistinctRpcIds() {
     Cluster cluster;
     cluster.Elect(10);
-    ForceHeartbeat(cluster, 10);
-    const auto stale_requests = AppendsTo(cluster, 30);
-    Check(!stale_requests.empty(), "missing pre-read heartbeat");
-    const auto stale_rpc = AppendRpcId(stale_requests.front());
-    auto stale_response = ExchangeAppend(cluster, stale_requests.front());
-    int succeeded = 0;
-    Check(cluster.Node(10).RequestReadIndex([&](bool ok, int64_t, const std::string&) {
-        if (ok) ++succeeded;
-    }), "read rejected while leader");
-    Check(cluster.messages.empty(), "read barrier sent a probe while every peer was in flight");
-    cluster.Deliver(stale_response);
-    Check(succeeded == 0, "append response from before the read satisfied ReadIndex");
-    const auto probes = AppendsTo(cluster, 30);
-    Check(probes.size() == 1 && AppendRpcId(probes.front()) != stale_rpc,
-          "freed peer did not get a new post-read probe");
-    cluster.Deliver(ExchangeAppend(cluster, probes.front()));
-    Check(succeeded == 1 && Metric(cluster.Node(10), "read_index_pending") == 0,
-          "post-read probe did not confirm exactly the queued read");
+    cluster.Settle();
+    cluster.messages.clear();
+
+    bool done = false;
+    bool ok = false;
+    std::string error;
+    Check(cluster.Node(10).RequestReadIndex(
+        [&](bool success, int64_t, const std::string& err) {
+            done = true; ok = success; error = err;
+        }), "leader rejected ReadIndex after committing no-op");
+    Check(!done, "ReadIndex completed before any probe ACK");
+
+    auto probes = TakeAppendsFrom(cluster, 10);
+    Check(probes.size() >= 2, "ReadIndex did not probe both followers");
+    Check(AppendRpcId(probes[0]) != AppendRpcId(probes[1]),
+          "followers still share a single rpc_id; round_id matching would be coincidence");
+    for (const auto& probe : probes)
+        cluster.Deliver(probe);
+    cluster.Pump();
+    Check(done && ok, "ReadIndex failed after distinct post-request probe ACKs");
+    Check(error.empty(), "successful ReadIndex returned an error message");
 }
 
-static void ReadIndexReentrantReadNeedsItsOwnProbe() {
+static void ReadIndexIgnoresPreRequestAck() {
     Cluster cluster;
     cluster.Elect(10);
+    cluster.Settle();
     cluster.messages.clear();
-    int second = 0;
-    Check(cluster.Node(10).RequestReadIndex([&](bool ok, int64_t, const std::string&) {
-        Check(ok, "first read failed");
-        Check(cluster.Node(10).RequestReadIndex([&](bool nested, int64_t, const std::string&) {
-            Check(nested, "reentrant read failed");
-            ++second;
-        }), "reentrant read rejected");
-        Check(second == 0, "reentrant read reused the confirming probe");
-        Check(Metric(cluster.Node(10), "read_index_pending") == 1,
-              "reentrant read was dropped when its round was popped");
-    }), "read rejected while leader");
-    const auto probes = AppendsTo(cluster, 30);
-    Check(!probes.empty(), "first read did not probe a follower");
-    cluster.Deliver(ExchangeAppend(cluster, probes.front()));
-    Check(second == 0, "first probe confirmed the later read");
-    std::vector<Message> next;
-    for (const auto& message : cluster.messages)
-        if (message.type == RaftMsgType::kAppendEntries) next.push_back(message);
-    Check(!next.empty(), "reentrant read did not send its own probe");
-    cluster.Deliver(ExchangeAppend(cluster, next.front()));
-    Check(second == 1, "probe sent for the reentrant read did not confirm it");
+
+    int write_ok = 0;
+    Check(cluster.Node(10).Propose(Command({"SET", "default:k", "v"}),
+        [&](bool ok, const std::string&) { if (ok) ++write_ok; }) > 0,
+          "leader rejected write used to create a pre-request ACK");
+    auto stale_appends = TakeAppendsFrom(cluster, 10);
+    Check(stale_appends.size() >= 2, "write was not replicated to followers");
+    std::vector<Message> stale_acks;
+    std::set<uint64_t> stale_rpc_ids;
+    for (const auto& append : stale_appends) {
+        stale_rpc_ids.insert(AppendRpcId(append));
+        stale_acks.push_back(DeliverAppendAndTakeAck(cluster, append));
+    }
+    cluster.messages.clear();
+
+    bool read_done = false;
+    bool read_ok = false;
+    Check(cluster.Node(10).RequestReadIndex(
+        [&](bool success, int64_t, const std::string&) {
+            read_done = true; read_ok = success;
+        }), "leader rejected ReadIndex");
+    Check(Metric(cluster.Node(10), "read_index_pending") >= 1, "ReadIndex was not queued");
+
+    for (const auto& ack : stale_acks)
+        cluster.Deliver(ack);
+    Check(write_ok == 1, "pre-request ACKs did not commit the write");
+    Check(!read_ok, "ReadIndex succeeded using ACKs generated before the request");
+
+    auto probes = TakeAppendsFrom(cluster, 10);
+    Check(!probes.empty(), "leader did not send a post-request ReadIndex probe");
+    for (const auto& probe : probes)
+        Check(stale_rpc_ids.count(AppendRpcId(probe)) == 0,
+              "ReadIndex probe reused a pre-request rpc_id");
+    for (const auto& probe : probes)
+        cluster.Deliver(probe);
+    cluster.Pump();
+    Check(read_done && read_ok, "ReadIndex failed after live post-request probes");
 }
 
-static void ReadIndexFiveNodeQuorum() {
-    Cluster cluster({10, 30, 50, 70, 90});
+static void ReadIndexLateRequestStartsNewRound() {
+    Cluster cluster;
     cluster.Elect(10);
+    cluster.Settle();
     cluster.messages.clear();
-    int succeeded = 0;
-    Check(cluster.Node(10).RequestReadIndex([&](bool ok, int64_t, const std::string& error) {
-        Check(ok, error.empty() ? "read failed" : error.c_str());
-        ++succeeded;
-    }), "5-node read rejected");
-    const auto first = AppendsTo(cluster, 30);
-    const auto second = AppendsTo(cluster, 50);
-    Check(!first.empty() && !second.empty(), "5-node barrier contacted fewer than two followers");
-    cluster.Deliver(ExchangeAppend(cluster, first.front()));
-    Check(succeeded == 0, "one follower ack confirmed a 5-node read");
-    cluster.Deliver(ExchangeAppend(cluster, second.front()));
-    Check(succeeded == 1, "two post-read follower acks did not confirm the read");
+
+    bool first_done = false, first_ok = false;
+    bool second_done = false, second_ok = false;
+    Check(cluster.Node(10).RequestReadIndex(
+        [&](bool success, int64_t, const std::string&) {
+            first_done = true; first_ok = success;
+        }), "first ReadIndex rejected");
+    auto first_probes = TakeAppendsFrom(cluster, 10);
+    Check(first_probes.size() >= 2, "first ReadIndex sent no probes");
+
+    Check(cluster.Node(10).RequestReadIndex(
+        [&](bool success, int64_t, const std::string&) {
+            second_done = true; second_ok = success;
+        }), "second ReadIndex rejected");
+    Check(TakeAppendsFrom(cluster, 10).empty(),
+          "later ReadIndex sent probes on a round that was already in flight");
+
+    std::set<uint64_t> first_rpc_ids;
+    std::vector<Message> first_acks;
+    for (const auto& probe : first_probes) {
+        first_rpc_ids.insert(AppendRpcId(probe));
+        first_acks.push_back(DeliverAppendAndTakeAck(cluster, probe));
+    }
+    cluster.Deliver(first_acks.front());
+    Check(first_done && first_ok, "first ReadIndex did not complete on its own probe ACK");
+    Check(!second_ok, "later ReadIndex completed on the earlier round's ACK");
+
+    auto second_probes = TakeAppendsFrom(cluster, 10);
+    Check(!second_probes.empty(), "later ReadIndex never started a new probe round");
+    for (const auto& probe : second_probes)
+        Check(first_rpc_ids.count(AppendRpcId(probe)) == 0,
+              "later ReadIndex reused the previous round's rpc_id");
+    for (const auto& probe : second_probes)
+        cluster.Deliver(probe);
+    cluster.Pump();
+    Check(second_done && second_ok, "later ReadIndex failed after its own probes");
 }
 
-static void ReadIndexSingleNode() {
-    Cluster cluster({10});
+static void ReadIndexSingleNodeAndStepDown() {
+    Cluster solo({10});
+    solo.Elect(10);
+    solo.Settle();
+    bool solo_done = false;
+    bool solo_ok = false;
+    Check(solo.Node(10).RequestReadIndex(
+        [&](bool success, int64_t, const std::string&) {
+            solo_done = true; solo_ok = success;
+        }), "single-node ReadIndex rejected");
+    Check(solo_done && solo_ok, "single-node quorum did not confirm ReadIndex immediately");
+
+    Cluster cluster;
     cluster.Elect(10);
-    int succeeded = 0;
-    Check(cluster.Node(10).RequestReadIndex([&](bool ok, int64_t index, const std::string& error) {
-        Check(ok && index == cluster.Node(10).GetCommitIndex(),
-              error.empty() ? "single-node read failed" : error.c_str());
-        ++succeeded;
-    }), "single-node read rejected");
-    Check(succeeded == 1, "single-node quorum did not confirm the read locally");
+    cluster.Settle();
+    cluster.messages.clear();
+    bool done = false;
+    bool ok = true;
+    std::string error;
+    Check(cluster.Node(10).RequestReadIndex(
+        [&](bool success, int64_t, const std::string& err) {
+            done = true; ok = success; error = err;
+        }), "ReadIndex rejected before step-down");
+    Check(std::string(cluster.Node(30).StateName()) != "leader", "follower unexpectedly leading");
+    bool follower_called = false;
+    Check(!cluster.Node(30).RequestReadIndex(
+        [&](bool success, int64_t, const std::string&) {
+            follower_called = true;
+            Check(!success, "follower ReadIndex reported success");
+        }), "follower ReadIndex should be rejected");
+    Check(follower_called, "follower ReadIndex skipped the failure callback");
+
+    cluster.Node(10).Stop();
+    Check(done && !ok, "step-down left the pending ReadIndex hanging");
+    Check(error.find("stopped") != std::string::npos ||
+          error.find("leadership") != std::string::npos,
+          "step-down ReadIndex used an unexpected error");
 }
 
 int main() {
@@ -718,11 +602,11 @@ int main() {
             {"async term change and destroyed node completion", AsyncTermChangeAndDestruction},
             {"async owner-thread storage failure", AsyncStorageFailure},
             {"async follower durable ack and committed conflict guard", AsyncFollowerCommitGuard},
+            {"ReadIndex quorum with distinct per-peer rpc ids", ReadIndexQuorumWithDistinctRpcIds},
+            {"ReadIndex ignores ACKs generated before the request", ReadIndexIgnoresPreRequestAck},
+            {"later ReadIndex starts a new probe round", ReadIndexLateRequestStartsNewRound},
+            {"single-node ReadIndex, follower reject and step-down", ReadIndexSingleNodeAndStepDown},
             {"metric arithmetic and failed leader write", MetricArithmeticAndLeaderFailure},
-            {"read index rejects an ack generated before the read", ReadIndexRejectsPreRequestAck},
-            {"reentrant read index waits for a new probe", ReadIndexReentrantReadNeedsItsOwnProbe},
-            {"read index five-node quorum", ReadIndexFiveNodeQuorum},
-            {"read index single-node quorum", ReadIndexSingleNode},
         };
         for (const auto& test : tests) { test.second(); std::cout << "PASS: " << test.first << '\n'; }
         std::cout << "PASS: " << sizeof(tests) / sizeof(tests[0])

@@ -3,8 +3,10 @@
 #include <rocksdb/write_batch.h>
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 class RocksDBStore {
@@ -14,6 +16,8 @@ public:
         int64_t index;
         Kind kind;
         std::string key, value;
+        // Written in the same batch as the user mutation. Empty means no session update.
+        std::string session_key, session_value;
     };
     explicit RocksDBStore(const std::string& db_path);
     ~RocksDBStore();
@@ -27,6 +31,11 @@ public:
     // Delete results observe earlier mutations in the same atomic batch.
     std::vector<bool> ApplyBatch(const std::vector<Mutation>& mutations);
     int64_t LastApplied() const { return _last_applied.load(std::memory_order_acquire); }
+    // User keys only. The lastApplied marker is not included.
+    std::vector<std::pair<std::string, std::string>> ExportEntries() const;
+    // Replace user keys and set lastApplied. index must not move backwards.
+    void ReplaceAll(int64_t index, const std::vector<std::pair<std::string, std::string>>& entries,
+                    const std::function<void()>& after_validation = {});
 private:
     static std::string AppliedKey();
     std::unique_ptr<rocksdb::DB> _db;

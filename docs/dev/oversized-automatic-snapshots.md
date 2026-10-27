@@ -1,0 +1,9 @@
+# Oversized automatic snapshots
+
+Automatic snapshot payloads retain the existing 32 MiB limit. If an exported applied state exceeds it, RaftNode logs a warning, increments `snapshot_oversize_skips`, and preserves the entire log instead of throwing after an acknowledged write. Snapshot persistence and storage/consistency exceptions still fail-stop; this change does not broadly suppress failures. Remote snapshot validation is unchanged.
+
+After a size-limit skip, the next automatic attempt waits for another configured threshold of applied entries. Idle heartbeats do not continuously re-export the same oversized state. A restart or an explicit threshold change resets the attempt interval; this can produce one new warning but does not reintroduce the crash loop. If deletes shrink the state below the limit, a later attempt can compact normally.
+
+This is an availability repair, not streaming checkpoint support or a capacity guarantee. Export still materializes the full state in memory, and retained log/storage use can grow without bound while snapshots are too large. Operators must monitor disk and the new INFO counter, and reduce state size or plan a streaming snapshot design. The counter is process-local and resets on restart. Increasing the payload cap silently is deliberately avoided.
+
+The production-source portable regression uses 513 distinct 64 KiB values, verifies successful writes, the nonfatal skip and idle retry suppression, catch-up of a partitioned follower using retained logs, restart recovery of every value, another safe skip after election, and resumed small snapshots after deletes. Transport and RocksDB are test doubles, not proof of real crash/power-loss durability. The same new regression against the original production source must fail at the oversized snapshot before the fix. Linux server integration CI remains required separately.

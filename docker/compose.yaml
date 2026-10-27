@@ -1,0 +1,48 @@
+# Three processes on one Docker network. Each node has its own volume.
+# This is not a multi-host failover drill.
+services:
+  node0:
+    build:
+      context: ..
+      dockerfile: docker/runtime.Dockerfile
+    image: raft-kv:local
+    hostname: node0
+    restart: unless-stopped
+    environment:
+      NODE_ID: "0"
+    volumes:
+      - node0:/data
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+  node1:
+    image: raft-kv:local
+    hostname: node1
+    restart: unless-stopped
+    environment:
+      NODE_ID: "1"
+    volumes:
+      - node1:/data
+    ports:
+      - "8081:8080"
+      - "9091:9090"
+    depends_on:
+      - node0
+  node2:
+    image: raft-kv:local
+    hostname: node2
+    restart: unless-stopped
+    environment:
+      NODE_ID: "2"
+    volumes:
+      - node2:/data
+    ports:
+      - "8082:8080"
+      - "9092:9090"
+    depends_on:
+      - node0
+
+volumes:
+  node0:
+  node1:
+  node2:

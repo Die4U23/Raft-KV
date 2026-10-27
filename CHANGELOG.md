@@ -2,19 +2,182 @@
 
 记录行为改动、验证状态与取舍。每次优化保留原始基线、实现和验收证据；没有实测对比时不填写性能提升比例。
 
-截至 **2026-09-22**，仓库 HEAD 为 `cb1b3f8`（`main`，已合并 PR #1–#10）。09-13 之后的条目此前未写入本文件；下文按提交与代码核对补录，不以合并说明或未归档压测数字作为收益证明。
+截至 **2026-09-23**，下文按提交与代码核对记录。09-13 之后的条目曾漏记，已补录；不以合并说明或未归档压测数字作为收益证明。
 
-## 2026-09-22 — 读屏障关联与连接队列记账
+## 2026-10-06 — 已应用日志的保留量有阈值
 
-- ReadIndex 不再用独立的 `round_id` 去对某个 peer 的 `rpc_id`。读先进入尚未发出探测的批次；只有该批入队之后新分配的 AppendEntries 响应才算确认。已有在途 RPC 的响应不能给这批读过障。后到的读进入下一批，确认回调在轮次弹出之后才执行。
-- 单节点由 Leader 自己的一票立即确认。五节点需要两名 Follower 对本次探测的响应，一名不够。
-- 服务端把 ReadIndex 完成投递回 EventLoop，避免在 `HandleAppendEntriesResponse` 栈上开始下一条命令。
-- 每条已解析命令按入队时的 RESP 字节记账，完成或断连时释放同一数值。全局已解析命令上限 16 MiB；达到每连接或全局上限时暂停读取，有空位后恢复。
-- `core_tests` 增加四项生产 `RaftNode` 回归：请求前 ACK、回调里的下一次读、五节点多数派、单节点。未重跑 Linux 三进程分区。
+- `--snapshot_threshold`（默认 1024，0 表示关闭）达到之后，已应用前缀换成 KV 快照。截断之后，已应用但还留在日志里的条数小于这个阈值。其后的新条目会再积累，到下一次阈值再截。
+- 三节点进程内测试用阈值 4 写入 20 条，Leader 和两个 Follower 都满足这个上限，并且第一条和最后一条都还在。
+
+## 2026-10-06 — 打开日志时核对快照之后的每一条
+
+- 尾记录仍然标出日志终点。打开时会把快照之后的每一条读出来，索引要连续，任期不能回退。中间某条损坏或缺失，进程在打开时失败，而不是等到以后读到那一条。
+- 没有尾记录的旧库还是整库扫描一次，并补上尾记录。
+
+## 2026-10-06 — 一条命令走通三节点演示
+
+- `scripts/demo.py` 用已有的 Linux 服务起三个进程。选出 Leader 后写入，三个节点都能读到。Follower 上的 `SET` 返回 `MOVED`。杀掉 Leader 后，新 Leader 仍能读到旧数据并继续写。旧进程用原来的数据目录重启，三个节点再一致。
+- `--hold` 在结束前留下进程和客户端端口。这是同一台机器上的三个进程。
+
+## 2026-10-02 — 分区脚本覆盖 Leader 出站全部丢掉
+
+- 丢掉 Leader 发往两个 Follower 的字节。两个 Follower 的回复，以及它们之间的链路，继续转发。TCP 不关。
+- 旧 Leader 不能确认探测写入。两个 Follower 选出新 Leader 并完成写入。新 Leader 仍能把条目送到旧 Leader，所以不把旧 Leader 的提交位置冻结整段观察时间。恢复后三个节点收敛。
+
+## 2026-10-02 — 分区脚本覆盖 Follower 之间的一个方向
+
+- 丢掉 Leader 与两个 Follower 之间的全部方向，再丢掉两个 Follower 之间的一个方向。另一个方向仍转发，TCP 不关。
+- 投票要请求和回复都送到。这一对完成不了投票，三个节点的提交和应用位置都不前进，探测写入也不能确认。恢复后三个节点收敛。
+
+## 2026-10-02 — 分区脚本覆盖一个 Follower 回复的单向丢弃
+
+- 在只丢掉 Leader 出站的一条链路之外，再只丢掉一个 Follower 发往 Leader 的字节。Leader 发往这个 Follower 的字节和其他链路继续转发，TCP 不关。
+- 写入仍由另一个 Follower 形成多数派并提交，任期和 Leader 不变。回复被丢掉的 Follower 在恢复前读不到这个键。恢复后三个节点收敛。
+
+## 2026-10-02 — 分区脚本覆盖 Leader 到一个 Follower 的单向丢弃
+
+- 在丢掉全部回 Leader 方向之外，再只丢掉 Leader 发往其中一个 Follower 的字节。反方向和另一条链路继续转发，TCP 不关。
+- 写入在 Leader 和可达的 Follower 上可读。被丢掉的那一侧读不到这个键。任期和 Leader 不变。恢复这条方向后三个节点收敛。
+
+## 2026-10-02 — 分区脚本覆盖同一次读里的完整帧交换
+
+- `reorder()` 把同一次读里已经完整的相邻 Raft 帧对调后再转发。只到一帧就立刻送出，避免把单条在途 AppendEntries 扣到下一帧出现。空列表关掉交换。
+- Linux 分区测试在 40 ms 延迟之后打开交换，写入仍提交到三个节点，任期和 Leader 不变，连接不关。两帧对调由转发器单元测试在一次发送里钉住。进程内测试把一条较旧的 AppendEntries 在更新的后缀之后重新投递，较新的键仍在。
+
+## 2026-10-02 — 分区脚本覆盖长过选举上限的停顿
+
+- `delay()` 可以只按住指定方向。400 ms 只加在旧 Leader 与另外两节点之间，多数派之间的链路不按住。
+- 这段时间长过 300 ms 的选举上限。旧 Leader 不能确认探测写入，另外两节点选出新 Leader 并完成写入。TCP 不关，停顿取消后按住的字节仍按原顺序送出，三节点再收敛。乱序不在这组里。
+
+## 2026-10-02 — 分区脚本覆盖按顺序的短延迟
+
+- `tests/raft_proxy.py` 的 `delay()` 把下一块字节先按原顺序多等一段时间再转发，不交换前后块。
+- Linux 分区测试在静默丢弃之后加一段 40 ms 延迟。这段时间短于 150 ms 的选举下限。写入仍提交到三个节点，任期和 Leader 不变。乱序，以及长到会触发选举的停顿，不在这组里。
+
+## 2026-10-02 — 分区脚本覆盖静默丢字节
+
+- `tests/raft_proxy.py` 的 `silence()` 保持 TCP 连接，丢掉指定方向的字节。恢复转发之前先关掉已经丢过字节的连接，避免把后面的字节接到缺了前缀的流上。
+- Linux 分区测试在原来的断连场景之外，增加双向静默丢弃，以及只丢掉 Follower 发往 Leader 的方向。这两种情况下旧 Leader 都不能确认探测写入，多数派仍能写入，恢复后收敛。延迟和乱序不在这组里。
+
+## 2026-09-30 — 同步与异步应用的同机对照
+
+- `tests/async_apply_compare.py` 一次只起一组三节点，先跑完 `pipeline=1` 的三次重复，再跑 `pipeline=16`。每一轮交替哪一种 `--async_apply` 先启动。落盘仍是 `sync=true`。
+- 2026-09-30 在 2 CPU、ext4（`/dev/sda2`）上跑完 12 个单元。11 个单元零错误；`pipeline=1`、`async_apply=true` 的一次重复里 Leader 因 CheckQuorum 卸任，6176 次 `MOVED`。原始数字在 `docs/benchmarks/async-apply-compare-2026-09-30.json`。两种模式的吞吐区间重叠，这次结果不是稳定收益。
+
+## 2026-09-30 — 冒烟会请求每个节点的 /health
+
+- `tests/cluster_smoke.py` 给三个节点各分配一个指标端口。选出 Leader 之后，以及旧 Leader 重启并追上之后，对每个节点发 `GET /health`。三个响应都要是 200，并且其中恰好一个角色是 leader。
+- 分区、写入重启和过载脚本不打开这个端口。运行镜像仍然不在 GitHub Actions 里。
+
+## 2026-09-30 — 补上快照半段重启的回归覆盖
+
+- 分块 `InstallSnapshot` 的已接收半段只存在内存里，副本重启即丢。这个行为在 `raft_node.cc` 里早已成立：副本发现 Leader 的 offset 对不上内存半段时回 `success=false`，Leader 把偏移清回 0 再发整份快照；装完之后新日志条目仍复制到这个副本。之前没有测试覆盖这一路径，这次补上。
+- `snapshot_tests` 新增 `InterruptedInstallRestartsAndReplicates`：半段之后重启、快照装完、随后的 `SET` 在落后副本上可读。
+
+## 2026-09-29 — 运行镜像和进程健康检查
+
+- `--metrics_port` 上的 `GET /health` 在进程仍在跑且存储没有失败时返回 200，正文带本节点角色、任期和 Leader。存储失败或已经停止时返回 503。Follower 也可以是 200。这不表示当前有多数派。
+- `docker/runtime.Dockerfile` 用 Ubuntu 26.04 和与 Linux 构建说明相同的软件包名编出服务。`docker/compose.yaml` 起三个容器，各自挂独立的 `/data` 卷，里面是配对的 KV 目录和 Raft 日志目录。三个容器在同一台机器的一个 Docker 网络里，不是多机容灾。
+
+## 2026-09-29 — 过载 soak 跟随 Leader 变更，不再因卸任失败
+
+- 过载脚本的 soak 客户端连到固定 Leader 后不处理卸任。CI runner 上心跳抖动触发 CheckQuorum 卸任时，SET 返回 `ERR leadership lost; outcome unknown`，soak 直接断言失败。现在遇到 leadership lost / MOVED / 断连时重新发现当前 Leader 并重试同一个 key/value，不算客户端错误。
+
+## 2026-09-29 — INFO 数字可以从 HTTP 抓取
+
+- `--metrics_port` 默认 0，不额外监听。设成与客户端端口、Raft 端口都不同的值后，`GET /metrics` 返回 Prometheus 文本 0.0.4。
+- 字段与 `INFO` 相同。角色是 `raftkv_role`，任期、提交位置、应用位置和应用积压是 gauge，过载拒绝和阶段样本累计是 counter。`namespace` 属于当前 RESP 连接，抓取结果里没有。阶段耗时仍是累计微秒，没有直方图。
+
+## 2026-09-29 — CheckQuorum 的宽限从心跳发出后起算
+
+- Leader 当选后先同步写下任期 no-op，再把第一条 AppendEntries 放进发送缓冲。CheckQuorum 的 150 ms 从这之后开始，不再把这次落盘时间算进“没有多数派应答”。
+- 复制帧没有进入连接发送缓冲时，不占用该 peer 的在途 RPC。下一个 Tick 会再试，而不是干等 50 ms 重试间隔。
+- `scripts/build_linux.py` 在步骤失败时把该步骤日志的末尾打到标准错误，GitHub Actions 能直接看到冒烟断言。
+
+## 2026-09-29 — Linux CI 跑分区、写入重启和过载
+
+- `linux-cluster.yml` 在冒烟和线性一致读之后，用同一次构建的服务跑 `cluster_partition.py`、`cluster_write_restart.py` 和 `cluster_overload.py`。
+- 写入重启把 `outcome unknown` 都记为结果未知，包括 proposal timeout。过载在隔离 Leader 时接受 CheckQuorum 卸任后的 leadership lost / MOVED，这些回复不算写入成功。
+- 本机用当前服务跑过这三份脚本。09-08 至 09-13 的性能对照没有重做。
+
+## 2026-09-29 — 未提交的写在 1000 ms 后告知结果未知
+
+- 提案被受理之后，如果这条日志在 1000 ms 内还没有提交，回调 `-ERR proposal timeout; outcome unknown`，并把该请求移出待完成表。日志本身不删除，多数派稍后确认时仍会提交并应用，而且不会再回调一次。
+- 已经提交、只差应用完成的写不走这个期限。失去多数派时仍由 CheckQuorum 在 150 ms 后卸任，回调仍是 leadership lost。
+- 进程内测试覆盖：期限前不失败、到期后 Leader 还在且条目随后能应用、已提交但应用滞后的写不会被提前失败。
+
+## 2026-09-28 — 租约读：线性一致 GET 在租约有效时不再发探针
+
+- `--lease_reads` 默认关闭，只改变 `--linearizable_reads` 的 Leader GET。本任期已满最长选举超时（300 ms），并且多数派在最短选举超时（150 ms）内应答过，就用当前 `commit_index` 本地确认。`last_applied` 还没追上时仍然等待应用。
+- 新任期的前 300 ms 不使用租约，避免和上一任 Leader 的选举窗口重叠。多数派联系变旧时退回 ReadIndex。Follower 仍然返回 `MOVED`。
+- `read_index_lease` 计本地确认的次数。进程内测试覆盖：新任期发探针、租约新鲜时不发探针、联系变旧时退回探针、未应用的提交不会提前完成读。
+
+## 2026-09-28 — IDEMP：同一个客户端请求号只执行一次
+
+- 新写命令是 `IDEMP <client-id> <request-id> SET <key> <value>` 和 `IDEMP <client-id> <request-id> DEL <key>`。`request-id` 从 1 起，十进制且不能有前导 0。`client-id` 为 1 到 128 字节。状态机为每个 client id 保存最近一次请求号和回复，与用户写入放在同一次 KV 批里，并随快照安装到其他副本。
+- 相同请求号再次提交时返回第一次的回复，不改数据。更小的请求号返回 `-ERR stale request`，也不改数据。更大的请求号会执行。因此超时后用同一个号重试不会把 `DEL` 的回复从 1 变成 0，也不会覆盖第一次的值。
+- 普通 `SET` / `DEL` 仍然不去重。每个 client id 的记录不会过期。客户端换一个更大的请求号之后，更早的号不能再取回当时的回复。
+
+## 2026-09-23 — Pre-Vote：没有多数派同意就不要抬任期
+
+- 选举超时进入 pre-candidate。`RequestVote.prevote` 为真，`term` 是当前任期加一。接收方不改自己的任期，也不把这一票写入 `votedFor`。Leader，以及选举截止时间还没到、并且认识 Leader 的 Follower，拒绝预投票。
+- 预投票达到多数派之后，才走原来的 `BecomeCandidate()`：任期加一，发出真正的 `RequestVote`。预投票没凑齐，或者 Candidate 再次超时，回到 pre-candidate，任期不变。单节点集群仍然在同一次超时里成为 Leader。
+- 应答带上同样的 `prevote`，避免过期的正式投票被当成预投票。同意预投票时，应答里的任期是接收方自己的当前任期；比自己更高的任期仍然会让预候选卸任。当前 Leader 的心跳也会把 pre-candidate 拉回 Follower。落后节点会从拒绝应答里学到更高任期，分区恢复后仍能完成选举。
+- 进程内回归覆盖：隔离节点多次超时不抬任期、恢复后原 Leader 任期不变且写入仍能在三副本提交、错过一轮任期的节点在 Leader 消失后能和存活节点选出行的 Leader。
+
+## 2026-09-23 — 选举时钟与 ReadIndex 租约对齐，并补上检查日志
+
+- 选举超时改成 `steady_clock` 上的绝对截止时间。`Tick` 只观察截止时间，不再每次扣 10 ms。定时器提前触发时，Follower 不能提前开始竞选。ReadIndex 在探针年龄 **大于等于** 最短选举超时（150 ms）时拒绝 ACK，并在应答到达时失败该轮。两条路径用同一把钟，原先大约一个 Tick 的窗口里，延迟 ACK 不能再确认读。
+- 补上 CheckQuorum。Leader 在最短选举超时之后，如果这段时间里没有多数派的 AppendEntries 应答，就在当前任期卸任，并失败未完成的读。单节点集群只计自己。没有 PreVote。
+- 单节点 ReadIndex 确认后如果回调里又排了下一条，用循环开下一轮，避免按队列深度递归。
+- 角色变化、拒票、读屏障超时、过期 ACK、CheckQuorum 卸任、队列打满和存储失败写到 stderr，前缀是 `INFO` / `WARNING` / `ERROR`。非法 RESP 帧和线性一致 GET 的失败或重定向也记一条。成功的读不逐条打日志。
+
+## 2026-09-23 — 收紧读路径检查：坏帧、记账、过期探针与隔离 GET
+
+- 非法 RESP 帧在已有执行中、等待 Raft 或队列非空时只关连接，不再插入一条错误回复，避免客户端把它当成前面 SET/GET 的应答。空闲连接仍回复该帧错误。断连或 `closing` 时丢掉在途回复并清掉 `executing`，不再把会话留在执行中。
+- 线性一致 GET 在多数派确认之后、读状态机之前再看一次 `IsLeader()`。已经卸任则 `MOVED`，不再返回本地值。仍是 Leader 时的 `read index timeout` / 队列满保持本地错误。判定在 `DecideLinearizableGet`，由 `connection_order_tests` 覆盖。
+- 每连接队列按线帧与参数中较大者记一次字节。此前线帧和参数相加，value 被算进 4 MiB 两次。`DrainCommands` 用真实 RESP 打到上限。
+- 过期探针 ACK 到达时立刻失败该轮，不再等到下一次 `Tick`。
+- Linux 隔离旧 Leader 的 GET 必须在 1 秒内收到 `read index timeout` / `MOVED` / 卸任错误。套接字超时不再算通过。
+
+## 2026-09-23 — ReadIndex：刚听过心跳的 Follower 不得给其他候选投票
+
+- Follower 在选举时钟尚未到期、且已知当前 Leader 时，对其他节点的 `RequestVote` **既不抬任期也不给票**（Raft thesis §4.2.3）。否则同一节点可以先给探针 ACK，再在更高任期投票；延迟 ACK 仍落在 150 ms 窗口内时，旧 Leader 会确认读，新 Leader 已经提交新值。
+- `readindex_tests` 覆盖：探针之后的 disruptive vote 被拒绝、延迟 ACK 仍由原 Leader 合法确认。隔离旧 Leader 的多数派选举改为先让 Follower 超时再选（`ElectAmong`）。
+- 这不是完整 CheckQuorum：隔离旧 Leader 仍保持 `IsLeader()`，线性一致 GET 靠探针超时失败，不会因失去多数派而卸任。没有 PreVote。
+
+## 2026-09-23 — ReadIndex 剩余缺口：过期探针 ACK 与 GET 重定向
+
+- 探针轮次只在最短选举超时（150 ms）内接受 ACK。超过该窗口的同任期 ACK 不能确认读，避免多数派已经另选 Leader 并提交新值之后，旧 Leader 仍凭延迟回复返回过期 GET。应用落后与未发送队列仍用 1000 ms。
+- 请求之前已在途的 AppendEntries 在超时后重试同一 `rpc_id` 时仍然不能绑定为探针；`readindex_tests` 覆盖这条路径。
+- `--linearizable_reads=true` 时，`leadership lost` / `server stopped` 与 `not leader` 一样映射为 `MOVED`。`IsReadIndexRedirectError` 与 `ClassifyCommand` 一样由 CTest 驱动。
+- 应用追上后若回调里又排队了下一条 ReadIndex，立即开启下一轮，不再等到下一次 Tick。
+- Linux `cluster_linearizable.py` 的读断言在上一轮 CI 已通过；job 失败是 `RaftProxyMesh.close()` 在 Raft 仍连着时 `wait_closed` 超时，随后关掉 event loop，残留 `_relay` 再 `Task.cancel()` 报 `Event loop is closed`。关闭改为 `abort` 传输、取消任务，loop 已关闭时不再 cancel；脚本在拆代理前先停服务进程。
+
+## 2026-09-23 — F6 剩余缺口：生产连接调度器与 Linux 三节点 CI
+
+- 每连接 DrainClient 解析/准入/记账抽到 `src/common/session_queue.h` 的 `SessionCommandQueue` / `DrainCommands`，`main.cpp` 共用。弹出时减去入队时的完整记账字节，不再只减参数长度（此前已完成命令的 RESP 帧会残留在 `queued_bytes`）。
+- `connection_order_tests` 直接驱动该生产调度器：FIFO ERROR、小写动词、128 条/轮、1000 条与 4 MiB 停读、非法 RESP 不入队。
+- 新增独立 CI 工作流 `.github/workflows/linux-cluster.yml`：安装系统依赖，`scripts/build_linux.py --smoke` 构建真实 Muduo/RocksDB 服务并跑三节点冒烟，再跑 `tests/cluster_linearizable.py`（Follower `MOVED`、Leader 写后读、隔离旧 Leader 不得成功返回过期 GET）。
+- `cluster_linearizable_tests.py` 只检查判定器，不启动服务；`test_linearizable_read.py` 仍是手工脚本，不进入 `*_tests.py`。
+
+## 2026-09-23 — 可移植全面回归（生产路径，非自制模型）
+
+- 新增 CTest 目标：`kv_state_machine_tests`（SET/DEL/GET、空命令 no-op、大小写、非法已提交命令、旧库无 lastApplied 拒绝）、`raft_log_tests`（追加/截断/硬状态往返、非连续日志拒绝）、`raft_node_coverage_tests`（Follower/停机/不健康/超限提案、选举日志新旧、非法 RequestVote、Candidate 见更高任期心跳）。
+- `readindex_tests` 增加 10000 条排队过载与隔离旧 Leader：少数派自确认不能完成 ReadIndex，多数派可继续写入。
+- `connection_order_tests` 覆盖全部命令 arity、大小写分类，以及 F3 的 1000 条 / 4 MiB 队列上限。每连接限额抽到 `src/common/session_queue.h`，与 `main.cpp` 共用。
+- `protocol_tests` 补命名空间长度、连接隔离。`cluster_smoke_tests.py` 把 RESP 自检纳入 `*_tests.py`，可移植 CI 会跑。
+- 仍不把 `replication_ack_tests.cpp`（FakeRaftNode）加入 CTest；未新增 Linux 三进程 CI。
+
+## 2026-09-22 — ReadIndex 探针关联与生产路径回归
+
+- **F1**：读屏障不再把 `round_id` 和每个 peer 各自递增的 `rpc_id` 直接比较。读请求先进入未发送队列；一轮冻结后再发送的新 AppendEntries 才记入 `probe_rpc_ids`。只有这些 RPC 的 ACK 计入多数派。请求之前已在途的复制/心跳及其重试不能确认该读。后来的读进入下一轮。
+- `Stop()` 会拒绝未完成的 ReadIndex，与卸任路径一致。
+- **F6**：CTest 里原先用自制 tracker / ReadIndexManager / 空断言的目标改为链接生产 `RaftNode` 或生产 `ClassifyCommand`。`connection_order_tests` 断言真实分类规则；`readindex_tests` / `replication_*` 用进程内集群复现旧 ACK、分区、五节点多数派等路径。`replication_ack_tests.cpp` 仍是 FakeRaftNode，不加入 CTest。未新增 Linux 三进程 CI。
 
 ## 2026-09-22 — 架构检查与 P1/P2 修补（生产路径仍有残留）
 
-- 对提交 `831a91c` 做了架构检查，结论写入 [architecture-review-2026-09-22.md](docs/architecture-review-2026-09-22.md)。检查指出 ReadIndex 与连接队列存在正确性和资源边界缺陷，当时不能按 README 认定线性一致读已可靠完成。
+- 对提交 `831a91c` 做了架构检查。检查指出 ReadIndex 与连接队列存在正确性和资源边界缺陷，当时不能按 README 认定线性一致读已可靠完成。该检查记录的缺陷后来已修，见本节后续条目；原始检查稿不再作为当前状态。
 - PR #9（`60ddf84`）修补审查中的 P1：
   - **F1**：AppendEntries 响应用 `rpc_id` 关联读轮次，不再把任意当前任期回复计入所有未确认 round。
   - **F2**：`--linearizable_reads=true` 时 Follower 的 GET 返回 `MOVED`，不再静默走本地读。
@@ -23,10 +186,10 @@
 - PR #10（`673fbb6`）修补 P2：
   - **F5**：非法命令以 `ERROR` 类型入队，按 RESP 顺序回复，避免错误响应越过尚未完成的写。
   - **F7**：`replication_edge_cases_unit.cpp` 使用 `std::max<int64_t>`，消除 MinGW 上 `long` / `int64_t` 推导失败。
-- 本轮核对生产代码后，**F1 仍未真正关闭**：读轮次 `round_id` 来自独立计数器 `_next_round_id`，匹配条件是 `round.round_id == flight.id`，而 `flight.id` 是每个 peer 各自递增的 `_rpc_sequence`。三节点一次 `BroadcastAppendEntries` 会给两个 Follower 分配连续 rpc_id，通常只有其中一个可能对上 round。新读请求在已有 in-flight 轮次时仍会挂到已经发出的 round 上。审查里“只用请求之前产生的旧 ACK 就通过读屏障”的场景不能视为已关闭。
-- **F6 仍未关闭**：`tests/readindex_tests.cpp` 自实现 `ReadIndexManager`，不链接生产 `RaftNode`；`tests/connection_order_tests.cpp` 主要打印说明，`Check` 未被调用，CTest 仍计为通过。CI 只跑 `RAFTKV_BUILD_SERVER=OFF` 的可移植目标与 `*_tests.py`，不含真实三节点 Linux 服务。
+- 随后核对生产代码时 **F1 仍未真正关闭**（见本条当时记录）：`round_id` 来自 `_next_round_id`，匹配条件却是 `round.round_id == flight.id`，而 `flight.id` 是每个 peer 的 `_rpc_sequence`。该缺口由上一节关闭。
+- 当时 **F6 仍未关闭**：`readindex_tests.cpp` 不链接生产 `RaftNode`；`connection_order_tests` 的 `Check` 未被调用。上一节补了生产 `RaftNode` 回归和真实断言。2026-09-23 又把 DrainClient 调度器抽到 `session_queue.h` 并由 CTest 驱动，且增加独立 Linux 三节点 CI（冒烟 + 隔离旧 Leader 线性一致读）。
 - 提交说明称单测与冒烟通过。本轮未重新执行历史 Linux 分区 / 崩溃重启 / 过载归档，也没有针对修补后的 ReadIndex 做隔离旧 Leader 的真实集群核验。
-- 取舍：默认 `--linearizable_reads=false`，未开开关时 GET 仍是本地读。README 已把 ReadIndex 标为完成；[read-consistency.md](docs/read-consistency.md) 与 [review-status.md](docs/review-status.md) 仍写“线性一致读未实现”，文档与代码不一致。
+- 取舍：默认 `--linearizable_reads=false`，未开开关时 GET 仍是本地读。
 
 ## 2026-09-21 / 09-22 — ReadIndex 线性一致读（默认关闭；未做 Linux 证据归档）
 

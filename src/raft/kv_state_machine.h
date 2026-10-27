@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -15,6 +16,10 @@ public:
                                       const std::vector<std::string>& commands);
     bool Get(const std::string& key, std::string* value) const;
     int64_t LastApplied() const { return _store->LastApplied(); }
+    // Encoded user keys at LastApplied(). Does not include the applied marker.
+    std::string ExportSnapshot() const;
+    void InstallSnapshot(int64_t index, const std::string& bytes,
+                         const std::function<void()>& after_validation = {});
 private:
     std::unique_ptr<RocksDBStore> _store;
 };

@@ -51,7 +51,7 @@ Follower 的成功复制回复仍要求对应 Raft 日志已同步持久化；�
 
 这些是应用层待处理字节上限，**不是进程 RSS 上限**。输出统计可能暂时保守高估尚未收到写完成通知的字节。较大的空输入/输出缓冲会回收；小缓冲、系统 socket 缓冲、对象开销和 RocksDB 缓存仍占内存。
 
-每轮最多解析 128 条客户端命令，再交回事件循环。断连不撤销已复制的日志，客户端未收到回复时结果可能未知；目前仍没有请求去重。
+每轮最多解析 128 条客户端命令，再交回事件循环。断连不撤销已复制的日志，客户端未收到回复时结果可能未知。普通 `SET` / `DEL` 的重试仍可能再执行一次；`IDEMP` 用客户端和请求号记住最近一次回复。
 
 ## INFO 指标
 
@@ -88,10 +88,12 @@ Follower 的成功复制回复仍要求对应 Raft 日志已同步持久化；�
 
 同一进程未重启时，两次快照间的阶段均值为 `Δtotal_us / Δcount`，平均批大小为 `Δentries / Δcount`；分母为 0 时该区间没有样本。累计 `_max_us` 不能通过相减得到区间最大值。客户端 p50/p95/p99 仍需从压测工具获取。
 
+`--metrics_port` 默认 0。设成一个与 `client_port`、`raft_port` 都不同的端口后，该端口接受 `GET /metrics` 和 `GET /health`。`/metrics` 返回 Prometheus 文本 0.0.4。数值字段与上面的 `INFO` 一一对应，名称前缀是 `raftkv_`。自进程启动累计的字段类型是 counter，当前值是 gauge。`state` 展开成 `raftkv_role{role="leader|follower|candidate|pre-candidate|stopped"}`。`namespace` 是当前 RESP 连接的状态，抓取结果里没有这一行。没有请求延迟直方图。抓取和 `INFO` 一样在事件循环上完成。
+
 ## 验证边界
 
-可移植测试分为五个目标。协议测试使用实际协议与缓冲代码；核心和存储批量测试通过进程内存储/网络替身检查批量顺序、配额、失败及恢复，并检查阶段指标的成功计数、批大小、整数均值及应用通知时机。核心异步场景使用手动执行器，控制应用与 owner 完成通知的先后。`async_executor_tests` 执行真实 `std::thread`，检查串行执行、owner 通知、异常传递及停止时 join；`batch_flush_tests` 使用实际调度策略和显式假事件队列，检查满批升格、旧 token 失效、不重置窗口、分轮处理及尾批期限，不调用 Muduo 定时器。
+可移植 CTest 的当前目标见 [项目状态](review-status.md)。协议测试使用实际协议与缓冲代码；核心和存储批量测试通过进程内存储/网络替身检查批量顺序、配额、失败及恢复，并检查阶段指标的成功计数、批大小、整数均值及应用通知时机。核心异步场景使用手动执行器，控制应用与 owner 完成通知的先后。`async_executor_tests` 执行真实 `std::thread`，检查串行执行、owner 通知、异常传递及停止时 join；`batch_flush_tests` 使用实际调度策略和显式假事件队列，检查满批升格、旧 token 失效、不重置窗口、分轮处理及尾批期限，不调用 Muduo 定时器。
 
-这些测试不验证真实 RocksDB fsync、TCP 缓冲、Muduo EventLoop 调度或掉电恢复。Linux 集成脚本包含并发连接的 SET/GET 检查，命令见 [测试说明](../tests/README.md)；同步与异步模式的公平比较见 [压测说明](benchmark.md)。真实 Linux 构建、Muduo 调度、TCP、fsync 和压测均尚未运行。
+这些测试不验证真实 RocksDB fsync、TCP 缓冲、Muduo EventLoop 调度或掉电恢复。Linux 冒烟和线性一致读脚本见 [测试说明](../tests/README.md)；同步与异步模式的对照见 [压测说明](benchmark.md)。2026-09 的压测和故障包是当时提交的归档。
 
-KV 应用移出 owner 后，Raft 日志同步写和本地 GET 仍可能占用 EventLoop；是否减少心跳延迟、任期抖动或请求尾延迟，需要在 Linux 实测。GET 仍是本地读，没有 ReadIndex；线程安全和吞吐结果都不能证明线性一致性。
+KV 应用移出 owner 后，Raft 日志同步写和默认的本地 GET 仍可能占用 EventLoop。`--linearizable_reads=true` 时 Leader 的 GET 先做 ReadIndex，再读本地状态机；线程安全和吞吐数字都不能单独证明线性一致性。读语义见 [读一致性](read-consistency.md)。

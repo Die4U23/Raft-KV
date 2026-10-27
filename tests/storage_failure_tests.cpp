@@ -2,6 +2,7 @@
 // Uses the test double RocksDB with fault injection capabilities.
 #include "raft/raft_node.h"
 #include "raft/apply_executor.h"
+#include <chrono>
 #include <iostream>
 #include <stdexcept>
 
@@ -24,6 +25,23 @@ static std::string Command(std::initializer_list<std::string> args) {
 
 struct Message { int from, to; RaftMsgType type; std::string payload; };
 
+struct ManualClock {
+    SteadyClock::time_point now = SteadyClock::now();
+    void Advance(int ms) { now += std::chrono::milliseconds(ms); }
+};
+
+static void Arm(RaftNode& node, ManualClock& clock) {
+    node.SetClockForTest([&clock] { return clock.now; });
+    node.Start();
+}
+
+static void ElectSingle(RaftNode& node, ManualClock& clock) {
+    for (int i = 0; i < 40 && !node.IsLeader(); ++i) {
+        clock.Advance(RaftNode::kTickIntervalMs);
+        node.Tick();
+    }
+}
+
 // Test that log append failure marks node as unhealthy
 static void LogAppendFailureMarksUnhealthy() {
     const std::vector<PeerInfo> peers = {{10, "127.0.0.1", 9010}};
@@ -36,10 +54,11 @@ static void LogAppendFailureMarksUnhealthy() {
 
     auto raft = std::make_unique<RaftNode>(10, peers, nullptr, log_path,
                                           sm.get(), transport.get());
-    raft->Start();
+    ManualClock clock;
+    Arm(*raft, clock);
 
     // Become leader (single-node cluster)
-    for (int i = 0; i < 50; ++i) raft->Tick();
+    ElectSingle(*raft, clock);
     Check(raft->IsLeader(), "failed to become leader");
     Check(raft->IsHealthy(), "node should start healthy");
 
@@ -75,10 +94,11 @@ static void StateMachineApplyFailureMarksUnhealthy() {
 
     auto raft = std::make_unique<RaftNode>(10, peers, nullptr, log_path,
                                           sm.get(), transport.get());
-    raft->Start();
+    ManualClock clock;
+    Arm(*raft, clock);
 
     // Become leader
-    for (int i = 0; i < 50; ++i) raft->Tick();
+    ElectSingle(*raft, clock);
     Check(raft->IsLeader(), "failed to become leader");
     Check(raft->IsHealthy(), "node should start healthy");
 
@@ -111,7 +131,8 @@ static void FollowerLogAppendFailureMarksUnhealthy() {
 
     auto raft = std::make_unique<RaftNode>(20, peers, nullptr, log_path,
                                           sm.get(), transport.get());
-    raft->Start();
+    ManualClock clock;
+    Arm(*raft, clock);
     Check(raft->IsHealthy(), "follower should start healthy");
 
     // First, receive an empty AppendEntries to become follower of term 1
@@ -162,10 +183,11 @@ static void HealthyStatusPreservedOnSuccess() {
 
     auto raft = std::make_unique<RaftNode>(10, peers, nullptr, log_path,
                                           sm.get(), transport.get());
-    raft->Start();
+    ManualClock clock;
+    Arm(*raft, clock);
 
     // Become leader
-    for (int i = 0; i < 50; ++i) raft->Tick();
+    ElectSingle(*raft, clock);
     Check(raft->IsLeader(), "failed to become leader");
     Check(raft->IsHealthy(), "node should be healthy");
 

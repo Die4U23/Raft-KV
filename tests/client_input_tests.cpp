@@ -1,5 +1,6 @@
 // Production input buffer and drain eligibility, with no sockets or mock parser.
 #include "common/command_buffer.h"
+#include "common/session_queue.h"
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -53,11 +54,36 @@ static void InvalidInputMustRemainObservable() {
     Check(input.Next().state == RespParser::State::Invalid, "malformed frame accepted");
 }
 
+static void ProductionDrainResumesAfterCapacityRelease() {
+    CommandBuffer input;
+    SessionCommandQueue queue;
+    for (size_t i = 0; i < SessionQueueLimits::kMaxCommands; ++i)
+        Check(queue.Enqueue({"PING"}, ping.size()), "queue setup failed");
+    Check(input.Append(ping + ping.substr(0, 8)), "buffered pipeline append failed");
+    auto drained = DrainCommands(input, queue, SessionQueueLimits::kMaxCommandsPerTurn, true);
+    Check(drained.stop_read && drained.enqueued == 0 && input.CanParse(),
+          "full queue must preserve buffered commands for later progress");
+    queue.PopFront();
+    queue.PopFront();
+    drained = DrainCommands(input, queue, SessionQueueLimits::kMaxCommandsPerTurn, true);
+    Check(drained.enqueued == 1 && drained.consumed_bytes == ping.size(),
+          "capacity release must resume a buffered command without new input");
+    Check(!input.CanParse(), "production drain must put the partial tail to sleep");
+    drained = DrainCommands(input, queue, SessionQueueLimits::kMaxCommandsPerTurn, true);
+    Check(drained.enqueued == 0 && !drained.invalid && !drained.stop_read,
+          "idle partial tail must make no progress and keep reads enabled");
+    Check(input.Append(ping.substr(8)), "tail completion append failed");
+    drained = DrainCommands(input, queue, SessionQueueLimits::kMaxCommandsPerTurn, true);
+    Check(drained.enqueued == 1 && !input.CanParse(),
+          "production drain must resume once after the tail arrives");
+}
+
 int main() {
     try {
         FragmentedInputWaitsForNewBytes();
         PipelineContinuesButPartialTailSleeps();
         InvalidInputMustRemainObservable();
+        ProductionDrainResumesAfterCapacityRelease();
         Check(checks > 0, "no assertions executed");
         std::cout << "PASS: client input (" << checks << " checks)\n";
         return 0;

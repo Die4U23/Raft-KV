@@ -85,7 +85,12 @@ def main():
         entry.update(returncode=result.returncode, finished_at=now())
         save()
         if result.returncode:
-            raise RuntimeError(label + " failed; see " + str(report_dir / entry["log"]))
+            log_path = report_dir / entry["log"]
+            tail = log_path.read_bytes()[-32768:]
+            sys.stderr.buffer.write(tail)
+            if not tail.endswith(b"\n"):
+                sys.stderr.buffer.write(b"\n")
+            raise RuntimeError(label + " failed; see " + str(log_path))
 
     try:
         record["source_manifest_before"] = source_manifest()

@@ -1,4 +1,5 @@
 """Cross-platform helper tests with real loopback TCP; does not validate the Raft service."""
+import asyncio
 import socket
 import socketserver
 import json
@@ -7,12 +8,13 @@ import tempfile
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import cluster_partition
 from cluster_partition import assert_frozen, classify_reply, file_hash, probe_write, validate_build
 from cluster_smoke import RespClient, RespError
-from raft_proxy import RaftProxyMesh
+from raft_proxy import RaftProxyMesh, flow_target, reorder_complete_frames
 
 
 class Echo(socketserver.BaseRequestHandler):
@@ -30,6 +32,145 @@ class Echo(socketserver.BaseRequestHandler):
 
 class EchoServer(socketserver.ThreadingTCPServer):
     daemon_threads = True
+
+
+class SilentTrafficTests(unittest.TestCase):
+    def fixture(self):
+        # Leader 2 sends toward peers 0 and 1. A dropped request need not
+        # produce passive peer traffic in the opposite TCP direction.
+        fields = dict(request_bytes=10, reply_bytes=20, dropped_request_bytes=0,
+                      dropped_reply_bytes=0, cut=0, refused=0)
+        before = {'edges': {key: dict(fields) for key in ('0->2', '1->2')}}
+        after = {'edges': {key: dict(fields, dropped_reply_bytes=5)
+                           for key in before['edges']}}
+        cluster = cluster_partition.PartitionCluster.__new__(cluster_partition.PartitionCluster)
+        cluster.mesh = SimpleNamespace(snapshot=lambda: after)
+        return cluster, before, after
+
+    def check(self, cluster, before):
+        cluster.expect_flows(before, [(2, 0), (0, 2), (2, 1), (1, 2)], [],
+                             required_dropped=[(2, 0), (2, 1)])
+
+    def test_passive_peer_need_not_reply_to_dropped_request(self):
+        cluster, before, after = self.fixture()
+        self.check(cluster, before)
+
+    def test_all_leader_ids_use_physical_tcp_direction(self):
+        for leader in range(3):
+            with self.subTest(leader=leader):
+                others = [node for node in range(3) if node != leader]
+                flows = cluster_partition.both_directions(leader, others)
+                required = cluster_partition.outbound_from(leader, others)
+                before = {'edges': {}}
+                for src, dst in required:
+                    edge, direction = flow_target(src, dst)
+                    before['edges']['{}->{}'.format(*edge)] = dict(
+                        request_bytes=0, reply_bytes=0, dropped_request_bytes=0,
+                        dropped_reply_bytes=0, cut=0, refused=0)
+                after = {'edges': {key: dict(value) for key, value in before['edges'].items()}}
+                for src, dst in required:
+                    edge, direction = flow_target(src, dst)
+                    after['edges']['{}->{}'.format(*edge)]['dropped_' + direction + '_bytes'] = 1
+                cluster = cluster_partition.PartitionCluster.__new__(cluster_partition.PartitionCluster)
+                cluster.mesh = SimpleNamespace(snapshot=lambda: after)
+                cluster.expect_flows(before, flows, [], required_dropped=required)
+
+    def test_each_old_leader_outbound_must_be_exercised(self):
+        for key in ('0->2', '1->2'):
+            with self.subTest(key=key):
+                cluster, before, after = self.fixture()
+                after['edges'][key]['dropped_reply_bytes'] = 0
+                with self.assertRaisesRegex(AssertionError, 'dropped no'):
+                    self.check(cluster, before)
+
+    def test_passive_direction_cannot_leak_or_reset(self):
+        for field in ('request_bytes', 'cut', 'refused'):
+            with self.subTest(field=field):
+                cluster, before, after = self.fixture()
+                after['edges']['1->2'][field] += 1
+                with self.assertRaises(AssertionError):
+                    self.check(cluster, before)
+
+    def test_active_direction_cannot_leak(self):
+        cluster, before, after = self.fixture()
+        after['edges']['1->2']['reply_bytes'] += 1
+        with self.assertRaisesRegex(AssertionError, 'forwarded bytes'):
+            self.check(cluster, before)
+
+    def test_default_direction_checks_remain_strict(self):
+        cluster, before, after = self.fixture()
+        with self.assertRaisesRegex(AssertionError, '1->2 dropped no request'):
+            cluster.expect_flows(before, [(1, 2)], [])
+
+    def test_required_direction_must_be_suppressed(self):
+        cluster, before, after = self.fixture()
+        with self.assertRaises(ValueError):
+            cluster.expect_flows(before, [(2, 1)], [], required_dropped=[(0, 2)])
+
+    def test_forwarded_traffic_checks_remain_strict(self):
+        cluster, before, after = self.fixture()
+        with self.assertRaisesRegex(AssertionError, 'forwarded no'):
+            cluster.expect_flows(before, [(2, 1)], [(1, 2)])
+
+
+class HeldObservationTests(unittest.TestCase):
+    def fixture(self, ready_at=0.4, broken=None, deadline=10.0):
+        clock = [0.0]
+        baseline = {'edges': {'0->1': {'delayed_request_bytes': 0,
+                    'delayed_reply_bytes': 0, 'cut': 0, 'refused': 0}}}
+
+        def snapshot():
+            edge = dict(baseline['edges']['0->1'])
+            edge['delayed_request_bytes'] = 1
+            edge['delayed_reply_bytes'] = int(clock[0] >= ready_at)
+            if broken:
+                edge[broken] = 1
+            return {'edges': {'0->1': edge}}
+
+        cluster = cluster_partition.PartitionCluster.__new__(cluster_partition.PartitionCluster)
+        cluster.mesh = SimpleNamespace(snapshot=snapshot)
+        cluster.window = 1.0
+        cluster.deadline = deadline
+        return cluster, baseline, clock
+
+    def observe(self, cluster, baseline, clock):
+        def sleep(seconds):
+            self.assertGreater(seconds, 0)
+            clock[0] += seconds
+        with patch('cluster_partition.time.monotonic', side_effect=lambda: clock[0]), \
+                patch('cluster_partition.time.sleep', side_effect=sleep):
+            cluster.expect_held(baseline, [(0, 1), (1, 0)])
+
+    def test_waits_for_both_directions_without_requiring_slow_election(self):
+        cluster, baseline, clock = self.fixture()
+        self.observe(cluster, baseline, clock)
+        self.assertGreaterEqual(clock[0], 0.4)
+        self.assertLess(clock[0], 1.0)
+
+    def test_observed_traffic_returns_without_sleep(self):
+        cluster, baseline, clock = self.fixture(ready_at=0)
+        self.observe(cluster, baseline, clock)
+        self.assertEqual(clock[0], 0)
+
+    def test_missing_direction_still_fails_at_observation_deadline(self):
+        cluster, baseline, clock = self.fixture(ready_at=10)
+        with self.assertRaisesRegex(AssertionError, '1->0 held no reply bytes'):
+            self.observe(cluster, baseline, clock)
+        self.assertAlmostEqual(clock[0], 1.0)
+
+    def test_connection_cut_or_refusal_fails_immediately(self):
+        for field in ('cut', 'refused'):
+            with self.subTest(field=field):
+                cluster, baseline, clock = self.fixture(broken=field)
+                with self.assertRaises(AssertionError):
+                    self.observe(cluster, baseline, clock)
+                self.assertEqual(clock[0], 0)
+
+    def test_global_deadline_bounds_observation(self):
+        cluster, baseline, clock = self.fixture(ready_at=10, deadline=0.15)
+        with self.assertRaisesRegex(AssertionError, 'bounded observation deadline'):
+            self.observe(cluster, baseline, clock)
+        self.assertAlmostEqual(clock[0], 0.15)
 
 
 class RelayTests(unittest.TestCase):
@@ -95,6 +236,175 @@ class RelayTests(unittest.TestCase):
                 self.echo(recovered)
             self.assertEqual(self.mesh.snapshot()['errors'], [])
 
+    def test_flow_target_follows_the_lower_id_dialer(self):
+        self.assertEqual(flow_target(0, 1), ((0, 1), 'request'))
+        self.assertEqual(flow_target(1, 0), ((0, 1), 'reply'))
+        with self.assertRaises(ValueError):
+            flow_target(2, 2)
+
+    def test_silence_drops_one_direction_and_keeps_the_socket_open(self):
+        self.mesh.silence([(1, 0)])
+        with self.connect(0, 1) as dial:
+            dial.sendall(b'abc')
+            dial.settimeout(0.4)
+            with self.assertRaises(socket.timeout):
+                dial.recv(1)
+            dial.sendall(b'more')
+            edge = self.mesh.snapshot()['edges']['0->1']
+            self.assertGreater(edge['request_bytes'], 0)
+            self.assertGreater(edge['dropped_reply_bytes'], 0)
+            self.assertEqual(edge['dropped_request_bytes'], 0)
+            self.assertEqual(edge['cut'], 0)
+            self.assertEqual(edge['refused'], 0)
+            self.mesh.partition([[0, 1, 2]])
+            self.assert_closed(dial)
+        with self.connect(0, 1) as recovered:
+            self.echo(recovered)
+        self.assertEqual(self.mesh.snapshot()['errors'], [])
+
+    def test_resuming_a_dropped_direction_resets_the_socket(self):
+        with self.connect(0, 1) as dial:
+            dial.settimeout(1)
+            dial.sendall(b'abc')
+            self.assertEqual(dial.recv(3), b'abc')
+            self.mesh.silence([(1, 0)])
+            dial.sendall(b'def')
+            dial.settimeout(0.4)
+            with self.assertRaises(socket.timeout):
+                dial.recv(1)
+            self.mesh.silence([])
+            self.assert_closed(dial)
+        with self.connect(0, 1) as recovered:
+            recovered.settimeout(1)
+            recovered.sendall(b'xyz')
+            self.assertEqual(recovered.recv(3), b'xyz')
+
+    def test_delay_holds_each_chunk_then_forwards_it_in_order(self):
+        self.mesh.delay(0.2)
+        with self.connect(0, 1) as dial:
+            dial.settimeout(2)
+            started = time.monotonic()
+            dial.sendall(b'xyz')
+            self.assertEqual(dial.recv(3), b'xyz')
+            self.assertGreaterEqual(time.monotonic() - started, 0.35)
+            edge = self.mesh.snapshot()['edges']['0->1']
+            self.assertGreater(edge['delayed_request_bytes'], 0)
+            self.assertGreater(edge['delayed_reply_bytes'], 0)
+            self.mesh.delay(0)
+            started = time.monotonic()
+            dial.sendall(b'ok')
+            self.assertEqual(dial.recv(2), b'ok')
+            self.assertLess(time.monotonic() - started, 0.2)
+        with self.assertRaises(ValueError):
+            self.mesh.delay(-0.1)
+        with self.assertRaises(ValueError):
+            self.mesh.delay(1.5)
+
+    def test_two_complete_frames_in_one_read_swap_and_a_lone_frame_does_not(self):
+        def frame(body):
+            payload = bytes([2, 0, 0, 0, 1]) + body
+            return len(payload).to_bytes(4, 'big') + payload
+
+        first, second, third = frame(b'one'), frame(b'two'), frame(b'three')
+        swapped, moved = reorder_complete_frames(first + second + third)
+        self.assertEqual(swapped, second + first + third)
+        self.assertEqual(moved, len(first) + len(second))
+        unchanged, idle = reorder_complete_frames(first)
+        self.assertEqual(unchanged, first)
+        self.assertEqual(idle, 0)
+        self.assertEqual(reorder_complete_frames(first[:4])[0], first[:4])
+        self.assertEqual(reorder_complete_frames(b'\xff\xff\xff\xffxxxx')[1], 0)
+
+        self.mesh.reorder([(0, 1)])
+        blob = first + second + third
+        with self.connect(0, 1) as dial:
+            dial.settimeout(1)
+            dial.sendall(blob)
+            received = b''
+            while len(received) < len(blob):
+                received += dial.recv(len(blob) - len(received))
+            self.assertEqual(received, second + first + third)
+            edge = self.mesh.snapshot()['edges']['0->1']
+            self.assertGreater(edge['reordered_request_bytes'], 0)
+            self.assertEqual(edge['reordered_reply_bytes'], 0)
+            self.assertEqual(edge['cut'], 0)
+            started = time.monotonic()
+            dial.sendall(first)
+            alone = b''
+            while len(alone) < len(first):
+                alone += dial.recv(len(first) - len(alone))
+            self.assertEqual(alone, first)
+            self.assertLess(time.monotonic() - started, 0.2)
+        self.mesh.reorder([])
+        with self.connect(0, 1) as dial:
+            dial.settimeout(1)
+            dial.sendall(blob)
+            received = b''
+            while len(received) < len(blob):
+                received += dial.recv(len(blob) - len(received))
+            self.assertEqual(received, blob)
+
+    def test_delay_can_hold_one_direction(self):
+        self.mesh.delay(0.25, [(1, 0)])
+        with self.connect(0, 1) as dial:
+            dial.settimeout(2)
+            started = time.monotonic()
+            dial.sendall(b'abc')
+            self.assertEqual(dial.recv(3), b'abc')
+            self.assertGreaterEqual(time.monotonic() - started, 0.2)
+            edge = self.mesh.snapshot()['edges']['0->1']
+            self.assertEqual(edge['delayed_request_bytes'], 0)
+            self.assertGreater(edge['delayed_reply_bytes'], 0)
+            self.assertEqual(edge['cut'], 0)
+
+    def test_forward_counter_precedes_a_delayed_drain_and_silence_snapshot(self):
+        entered = threading.Event()
+        release = threading.Event()
+        original_drain = asyncio.StreamWriter.drain
+
+        async def delayed_drain(writer):
+            entered.set()
+            while not release.is_set():
+                await asyncio.sleep(0.01)
+            await original_drain(writer)
+
+        with patch('asyncio.StreamWriter.drain', new=delayed_drain):
+            try:
+                with self.connect(0, 1) as dial:
+                    dial.sendall(b'ping')
+                    self.assertTrue(entered.wait(2), 'proxy never reached drain')
+                    at_cut = self.mesh.silence([(0, 1), (1, 0)])
+                    self.assertEqual(at_cut['edges']['0->1']['request_bytes'], 4)
+                    release.set()
+                    dial.sendall(b'post-cut')
+                    deadline = time.monotonic() + 2
+                    while True:
+                        edge = self.mesh.snapshot()['edges']['0->1']
+                        if edge['dropped_request_bytes'] >= 8 or time.monotonic() >= deadline:
+                            break
+                        time.sleep(0.01)
+                    self.assertEqual(edge['request_bytes'], 4)
+                    self.assertEqual(edge['dropped_request_bytes'], 8)
+            finally:
+                release.set()
+
+    def test_silence_both_directions_discards_the_request_without_refusing(self):
+        self.mesh.silence([(0, 1), (1, 0)])
+        with self.connect(0, 1) as dial:
+            dial.sendall(b'ping')
+            dial.settimeout(0.4)
+            with self.assertRaises(socket.timeout):
+                dial.recv(1)
+            edge = self.mesh.snapshot()['edges']['0->1']
+            self.assertGreater(edge['dropped_request_bytes'], 0)
+            self.assertEqual(edge['request_bytes'], 0)
+            self.assertEqual(edge['cut'], 0)
+            self.assertEqual(edge['refused'], 0)
+        with self.assertRaises(ValueError):
+            self.mesh.silence([(0, 0)])
+        with self.assertRaises(ValueError):
+            self.mesh.silence([(0, 9)])
+
     def test_all_isolated_blocks_every_directed_edge(self):
         self.mesh.partition([[0], [1], [2]])
         for src, dst in self.mesh.ports:
@@ -109,6 +419,18 @@ class RelayTests(unittest.TestCase):
                 self.mesh.partition(groups)
         with self.connect(0, 1) as stream:
             self.echo(stream)
+
+    def test_close_returns_while_relays_are_still_reading(self):
+        held = [self.connect(src, dst) for src, dst in self.mesh.ports]
+        try:
+            started = time.monotonic()
+            self.mesh.close()
+            self.assertLess(time.monotonic() - started, 4)
+            self.assertFalse(self.mesh.thread.is_alive())
+            self.assertTrue(self.mesh.loop.is_closed())
+        finally:
+            for stream in held:
+                stream.close()
 
 
 class SafetyOracleTests(unittest.TestCase):

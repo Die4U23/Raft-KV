@@ -1,479 +1,548 @@
-// ReadIndex 单元测试
-// 测试 ReadIndex 机制的核心逻辑
-
-#include <iostream>
-#include <cassert>
-#include <cstdint>
-#include <string>
+// Production RaftNode ReadIndex tests. A homemade manager is not enough:
+// these fail if probe rpc_ids, stale ACKs, apply lag, or timeout are wrong.
+#include "in_process_cluster.h"
 #include <functional>
-#include <vector>
-#include <set>
-#include <deque>
+#include <iostream>
 
-static int test_count = 0;
-
-static void Check(bool condition, const char* message) {
-    ++test_count;
-    if (!condition) {
-        std::cerr << "FAIL: " << message << std::endl;
-        throw std::runtime_error(message);
-    }
+static void DistinctRpcIdsReachQuorum() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    cluster.messages.clear();
+    bool done = false, ok = false;
+    Check(cluster.Node(10).RequestReadIndex(
+        [&](bool success, int64_t, const std::string&) { done = true; ok = success; }),
+          "leader rejected ReadIndex");
+    Check(!done, "ReadIndex completed before probe ACKs");
+    auto probes = TakeAppendsFrom(cluster, 10);
+    Check(probes.size() >= 2, "did not probe both followers");
+    Check(AppendRpcId(probes[0]) != AppendRpcId(probes[1]),
+          "followers shared one rpc_id");
+    for (const auto& probe : probes) cluster.Deliver(probe);
+    cluster.Pump();
+    Check(done && ok, "ReadIndex failed after distinct post-request ACKs");
 }
 
-// 模拟 ReadIndex 状态管理
-class ReadIndexManager {
-public:
-    ReadIndexManager(int node_id, int quorum_size)
-        : node_id_(node_id), quorum_size_(quorum_size) {}
-
-    struct ReadRequest {
-        int64_t read_index;
-        std::function<void(bool, int64_t, std::string)> callback;
-        bool completed = false;
-    };
-
-    struct HeartbeatRound {
-        uint64_t round_id;
-        std::set<int> acks;
-        std::vector<ReadRequest> requests;
-    };
-
-    // 请求 ReadIndex
-    bool RequestReadIndex(int64_t current_commit, std::function<void(bool, int64_t, std::string)> cb) {
-        if (!can_serve_read_) {
-            cb(false, -1, "no-op not committed");
-            return false;
-        }
-
-        ReadRequest req;
-        req.read_index = current_commit;
-        req.callback = cb;
-
-        // 如果没有 in-flight 心跳，启动新一轮
-        if (!heartbeat_in_flight_) {
-            StartHeartbeatRound();
-        }
-
-        // 将请求加入当前轮
-        heartbeat_rounds_.back().requests.push_back(req);
-        return true;
+static void StaleAckDoesNotConfirm() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    cluster.messages.clear();
+    int write_ok = 0;
+    Check(cluster.Node(10).Propose(Command({"SET", "default:k", "v"}),
+        [&](bool success, const std::string&) { if (success) ++write_ok; }) > 0,
+          "write rejected");
+    auto stale = TakeAppendsFrom(cluster, 10);
+    Check(stale.size() >= 2, "write was not replicated");
+    std::vector<Message> acks;
+    std::set<uint64_t> stale_ids;
+    for (const auto& append : stale) {
+        stale_ids.insert(AppendRpcId(append));
+        acks.push_back(DeliverAppendAndTakeAck(cluster, append));
     }
+    bool read_ok = false;
+    Check(cluster.Node(10).RequestReadIndex(
+        [&](bool success, int64_t, const std::string&) { read_ok = success; }),
+          "ReadIndex rejected");
+    for (const auto& ack : acks) cluster.Deliver(ack);
+    Check(write_ok == 1, "stale ACKs should still commit the write");
+    Check(!read_ok, "ReadIndex succeeded on pre-request ACKs");
+    auto probes = TakeAppendsFrom(cluster, 10);
+    Check(!probes.empty(), "no post-request probe");
+    for (const auto& probe : probes)
+        Check(stale_ids.count(AppendRpcId(probe)) == 0, "probe reused pre-request rpc_id");
+    for (const auto& probe : probes) cluster.Deliver(probe);
+    cluster.Pump();
+    Check(read_ok, "ReadIndex failed after live probes");
+}
 
-    // 启动心跳轮次
-    void StartHeartbeatRound() {
-        HeartbeatRound round;
-        round.round_id = ++next_round_id_;
-        round.acks.insert(node_id_);  // Leader 自己
-        heartbeat_rounds_.push_back(round);
-        heartbeat_in_flight_ = true;
-    }
+static void ApplyLagWaitsForLastApplied() {
+    ManualApplyExecutor executor;
+    Cluster cluster({10, 30, 50}, &executor);
+    cluster.Elect(10);
+    while (executor.busy) executor.Finish();
+    cluster.Settle();
+    cluster.messages.clear();
+    Check(cluster.Node(10).Propose(Command({"SET", "default:k", "v"}), {}) > 0, "write rejected");
+    cluster.Pump();
+    Check(executor.busy, "committed write was applied too early");
+    const int64_t commit = cluster.Node(10).GetCommitIndex();
+    Check(cluster.Node(10).GetLastApplied() < commit, "lastApplied already caught commit");
+    bool done = false, ok = false;
+    int64_t read_index = -1;
+    Check(cluster.Node(10).RequestReadIndex(
+        [&](bool success, int64_t index, const std::string&) {
+            done = true; ok = success; read_index = index;
+        }), "ReadIndex rejected during apply lag");
+    auto probes = TakeAppendsFrom(cluster, 10);
+    for (const auto& probe : probes) cluster.Deliver(probe);
+    cluster.Pump();
+    Check(!done, "ReadIndex completed before lastApplied caught the barrier");
+    executor.Finish();
+    Check(done && ok && read_index <= cluster.Node(10).GetLastApplied(),
+          "ReadIndex did not wait for apply");
+}
 
-    // 处理心跳响应
-    void HandleHeartbeatAck(int peer_id, uint64_t round_id) {
-        if (heartbeat_rounds_.empty()) return;
-
-        auto& current_round = heartbeat_rounds_.front();
-        if (current_round.round_id != round_id) return;
-
-        current_round.acks.insert(peer_id);
-
-        // 检查是否达到多数派
-        if (static_cast<int>(current_round.acks.size()) >= quorum_size_) {
-            ProcessConfirmedRound(current_round);
-            heartbeat_rounds_.pop_front();
-
-            if (heartbeat_rounds_.empty()) {
-                heartbeat_in_flight_ = false;
-            }
-        }
-    }
-
-    // 处理已确认的轮次
-    void ProcessConfirmedRound(const HeartbeatRound& round) {
-        for (auto& req : round.requests) {
-            if (last_applied_ >= req.read_index) {
-                req.callback(true, req.read_index, "");
-            } else {
-                pending_reads_.push_back(req);
-            }
-        }
-    }
-
-    // 更新 lastApplied
-    void AdvanceLastApplied(int64_t new_last_applied) {
-        last_applied_ = new_last_applied;
-        ProcessPendingReads();
-    }
-
-    // 处理等待的读请求
-    void ProcessPendingReads() {
-        while (!pending_reads_.empty()) {
-            auto& req = pending_reads_.front();
-            if (last_applied_ >= req.read_index) {
-                req.callback(true, req.read_index, "");
-                pending_reads_.pop_front();
-            } else {
-                break;
-            }
-        }
-    }
-
-    // Step down 清空队列
-    void StepDown() {
-        for (auto& round : heartbeat_rounds_) {
-            for (auto& req : round.requests) {
-                req.callback(false, -1, "stepped down");
-            }
-        }
-        heartbeat_rounds_.clear();
-        heartbeat_in_flight_ = false;
-
-        for (auto& req : pending_reads_) {
-            req.callback(false, -1, "stepped down");
-        }
-        pending_reads_.clear();
-
-        can_serve_read_ = false;
-    }
-
-    void SetCanServeRead(bool can) { can_serve_read_ = can; }
-    bool CanServeRead() const { return can_serve_read_; }
-    size_t PendingCount() const {
-        size_t count = pending_reads_.size();
-        for (const auto& round : heartbeat_rounds_) {
-            count += round.requests.size();
-        }
-        return count;
-    }
-
-private:
-    int node_id_;
-    int quorum_size_;
-    bool can_serve_read_ = false;
-    uint64_t next_round_id_ = 0;
-    std::deque<HeartbeatRound> heartbeat_rounds_;
-    bool heartbeat_in_flight_ = false;
-    std::deque<ReadRequest> pending_reads_;
-    int64_t last_applied_ = 0;
-};
-
-// 测试 1: No-op 前置条件
-static void TestNoOpPrerequisite() {
-    std::cout << "Test 1: No-op prerequisite" << std::endl;
-
-    ReadIndexManager mgr(0, 2);  // 3 节点，quorum=2
-
-    bool callback_invoked = false;
-    bool success = false;
+static void TimeoutWithoutMajority() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    cluster.messages.clear();
+    bool done = false, ok = true;
     std::string error;
-
-    // 未提交 no-op，应该拒绝
-    mgr.RequestReadIndex(10, [&](bool s, int64_t idx, std::string err) {
-        callback_invoked = true;
-        success = s;
-        error = err;
-    });
-
-    Check(callback_invoked, "callback should be invoked immediately");
-    Check(!success, "should fail before no-op committed");
-    Check(error == "no-op not committed", "error message should match");
-
-    // 提交 no-op 后
-    mgr.SetCanServeRead(true);
-    mgr.AdvanceLastApplied(10);  // 设置 lastApplied >= read_index
-
-    callback_invoked = false;
-    mgr.RequestReadIndex(10, [&](bool s, int64_t idx, std::string err) {
-        callback_invoked = true;
-        success = s;
-    });
-
-    Check(!callback_invoked, "callback should wait for heartbeat");
-
-    // 模拟心跳响应
-    mgr.HandleHeartbeatAck(1, 1);  // 达到多数派
-
-    Check(callback_invoked, "callback should be invoked after quorum");
-    Check(success, "should succeed after no-op committed");
+    Check(cluster.Node(10).RequestReadIndex(
+        [&](bool success, int64_t, const std::string& err) {
+            done = true; ok = success; error = err;
+        }), "ReadIndex rejected");
+    cluster.messages.clear();
+    cluster.Advance(10, RaftNode::kMinElectionTimeoutMs);
+    cluster.Node(10).Tick();
+    Check(done && !ok, "ReadIndex did not time out without majority");
+    Check(error.find("timeout") != std::string::npos, "timeout used unexpected error");
+    Check(!cluster.Node(10).IsLeader(), "leader without a quorum did not step down");
 }
 
-// 测试 2: 心跳 ack 统计
-static void TestHeartbeatAcks() {
-    std::cout << "Test 2: Heartbeat ack counting" << std::endl;
-
-    ReadIndexManager mgr(0, 2);  // 3 节点，quorum=2
-    mgr.SetCanServeRead(true);
-    mgr.AdvanceLastApplied(10);  // 设置 lastApplied >= read_index
-
-    bool callback_invoked = false;
-    mgr.RequestReadIndex(10, [&](bool s, int64_t idx, std::string err) {
-        callback_invoked = true;
-    });
-
-    // Leader 自己算一票，还需要一票
-    Check(!callback_invoked, "should wait for more acks");
-
-    // 收到一个 peer 的 ack
-    mgr.HandleHeartbeatAck(1, 1);
-
-    Check(callback_invoked, "should invoke after quorum (2/3)");
-}
-
-// 测试 3: 等待 lastApplied
-static void TestWaitForApply() {
-    std::cout << "Test 3: Wait for lastApplied" << std::endl;
-
-    ReadIndexManager mgr(0, 2);
-    mgr.SetCanServeRead(true);
-
-    bool callback_invoked = false;
-    int64_t result_index = -1;
-
-    // 请求 read_index = 10，但 lastApplied = 0
-    mgr.RequestReadIndex(10, [&](bool s, int64_t idx, std::string err) {
-        callback_invoked = true;
-        result_index = idx;
-    });
-
-    // 心跳达到多数派
-    mgr.HandleHeartbeatAck(1, 1);
-
-    // 此时还未应用到 10，应该等待
-    Check(!callback_invoked, "should wait for apply");
-
-    // 推进 lastApplied 到 5
-    mgr.AdvanceLastApplied(5);
-    Check(!callback_invoked, "should still wait (5 < 10)");
-
-    // 推进到 10
-    mgr.AdvanceLastApplied(10);
-    Check(callback_invoked, "should invoke when lastApplied >= read_index");
-    Check(result_index == 10, "should return correct read_index");
-}
-
-// 测试 4: Step down 清空队列
-static void TestStepDownClearsQueues() {
-    std::cout << "Test 4: Step down clears queues" << std::endl;
-
-    ReadIndexManager mgr(0, 2);
-    mgr.SetCanServeRead(true);
-
-    int callback_count = 0;
-    bool any_success = false;
-
-    // 创建 3 个请求
-    for (int i = 0; i < 3; ++i) {
-        mgr.RequestReadIndex(10 + i, [&](bool s, int64_t idx, std::string err) {
-            ++callback_count;
-            if (s) any_success = true;
-        });
+static void OverloadRejectsAfterTenThousandPending() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    cluster.messages.clear();
+    int accepted = 0;
+    int overloaded = 0;
+    int completed = 0;
+    for (int i = 0; i < 10001; ++i) {
+        const bool ok = cluster.Node(10).RequestReadIndex(
+            [&](bool, int64_t, const std::string&) { ++completed; });
+        if (ok) ++accepted;
+        else ++overloaded;
     }
-
-    Check(mgr.PendingCount() == 3, "should have 3 pending requests");
-
-    // Step down
-    mgr.StepDown();
-
-    Check(callback_count == 3, "all callbacks should be invoked");
-    Check(!any_success, "all should fail");
-    Check(mgr.PendingCount() == 0, "queue should be empty");
-    Check(!mgr.CanServeRead(), "can_serve_read should be reset");
+    Check(accepted == 10000 && overloaded == 1,
+          "ReadIndex overload did not reject the 10001st request");
+    Check(Metric(cluster.Node(10), "read_index_overload") == 1,
+          "overload counter was not incremented");
+    Check(Metric(cluster.Node(10), "read_index_pending") == 10000,
+          "pending ReadIndex count drifted from the admitted queue");
+    Check(completed == 1, "overload path must invoke the failure callback once");
+    cluster.Node(10).Stop();
+    Check(completed == 10001, "Stop did not fail the queued ReadIndex requests");
 }
 
-// 测试 5: 心跳合并（批量请求）
-static void TestHeartbeatBatching() {
-    std::cout << "Test 5: Heartbeat batching" << std::endl;
+static void IsolatedOldLeaderCannotConfirmRead() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    Check(cluster.Node(10).Propose(Command({"SET", "default:k", "old"}), {}) > 0, "seed");
+    cluster.Pump();
+    cluster.Settle();
+    cluster.Partition(10);
+    cluster.messages.clear();
 
-    ReadIndexManager mgr(0, 2);
-    mgr.SetCanServeRead(true);
-    mgr.AdvanceLastApplied(10);  // 设置 lastApplied >= read_index
+    bool done = false, ok = true;
+    Check(cluster.Node(10).RequestReadIndex(
+        [&](bool success, int64_t, const std::string&) { done = true; ok = success; }),
+          "isolated leader rejected ReadIndex");
+    cluster.Pump();
+    Check(!done && cluster.Node(10).IsLeader(),
+          "isolated leader confirmed a read with only its self-ack");
 
-    int callback_count = 0;
+    const int majority_leader = cluster.ElectAmong({30, 50});
+    Check(cluster.Node(majority_leader).Propose(Command({"SET", "default:k", "new"}), {}) > 0,
+          "majority could not write while the old leader was isolated");
+    cluster.Pump();
+    cluster.Settle();
+    std::string majority, isolated;
+    Check(cluster.State(majority_leader).Get("default:k", &majority) && majority == "new",
+          "new leader missing the post-partition write");
+    Check(cluster.State(10).Get("default:k", &isolated) && isolated == "old",
+          "isolated leader applied a majority write");
 
-    // 连续发送 5 个请求（应该共享同一轮心跳）
-    for (int i = 0; i < 5; ++i) {
-        mgr.RequestReadIndex(10, [&](bool s, int64_t idx, std::string err) {
-            ++callback_count;
-        });
+    cluster.Advance(10, RaftNode::kMinElectionTimeoutMs);
+    cluster.Node(10).Tick();
+    Check(done && !ok, "isolated leader ReadIndex succeeded or hung past the timeout");
+    Check(!cluster.Node(10).IsLeader(), "isolated leader stayed leader after the election timeout");
+}
+
+static void InflightRetryDoesNotConfirm() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    cluster.messages.clear();
+    int write_ok = 0;
+    Check(cluster.Node(10).Propose(Command({"SET", "default:k", "v"}),
+        [&](bool success, const std::string&) { if (success) ++write_ok; }) > 0,
+          "write rejected");
+    auto stale = TakeAppendsFrom(cluster, 10);
+    Check(stale.size() >= 2, "write was not replicated");
+    std::set<uint64_t> stale_ids;
+    for (const auto& append : stale) stale_ids.insert(AppendRpcId(append));
+
+    bool read_ok = false;
+    Check(cluster.Node(10).RequestReadIndex(
+        [&](bool success, int64_t, const std::string&) { read_ok = success; }),
+          "ReadIndex rejected");
+    Check(TakeAppendsFrom(cluster, 10).empty(),
+          "blocked inflight still allocated a new probe rpc_id");
+
+    for (int tick = 0; tick < 5; ++tick)
+        cluster.Node(10).Tick();
+    auto retries = TakeAppendsFrom(cluster, 10);
+    Check(!retries.empty(), "inflight was not retried");
+    for (const auto& retry : retries)
+        Check(stale_ids.count(AppendRpcId(retry)) != 0,
+              "retry allocated a new rpc_id and bound it as a ReadIndex probe");
+    std::vector<Message> retry_acks;
+    for (const auto& retry : retries)
+        retry_acks.push_back(DeliverAppendAndTakeAck(cluster, retry));
+    for (const auto& ack : retry_acks)
+        cluster.Deliver(ack);
+    Check(write_ok == 1, "retried pre-request RPC should still commit the write");
+    Check(!read_ok, "ReadIndex succeeded on a retried pre-request rpc_id");
+
+    auto probes = TakeAppendsFrom(cluster, 10);
+    Check(!probes.empty(), "no post-retry probe");
+    for (const auto& probe : probes)
+        Check(stale_ids.count(AppendRpcId(probe)) == 0, "probe reused pre-request rpc_id");
+    for (const auto& probe : probes) cluster.Deliver(probe);
+    cluster.Pump();
+    Check(read_ok, "ReadIndex failed after live probes replaced the inflight");
+}
+
+static void LateProbeAckPastElectionTimeoutDoesNotConfirm() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    cluster.messages.clear();
+    bool done = false, ok = true;
+    Check(cluster.Node(10).RequestReadIndex(
+        [&](bool success, int64_t, const std::string&) { done = true; ok = success; }),
+          "ReadIndex rejected");
+    auto probes = TakeAppendsFrom(cluster, 10);
+    Check(probes.size() >= 2, "did not probe both followers");
+    std::vector<Message> acks;
+    for (const auto& probe : probes)
+        acks.push_back(DeliverAppendAndTakeAck(cluster, probe));
+
+    cluster.Advance(10, RaftNode::kMinElectionTimeoutMs);
+    for (const auto& ack : acks) cluster.Deliver(ack);
+    Check(done && !ok, "late probe ACK left the round pending until a later tick");
+}
+
+// A probe ACK held in the network must not be paired with a later vote from
+// the same follower: that intersection would let a new leader commit while
+// the old leader still confirms the read. Followers that just heard a
+// heartbeat therefore reject RequestVote without bumping term.
+static void FreshHeartbeatBlocksVoteSoDelayedProbeAckStaysWithLiveLeader() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    cluster.messages.clear();
+
+    bool done = false, ok = false;
+    Check(cluster.Node(10).RequestReadIndex(
+        [&](bool success, int64_t, const std::string&) { done = true; ok = success; }),
+          "ReadIndex rejected");
+    auto probes = TakeAppendsFrom(cluster, 10);
+    Check(probes.size() >= 2, "did not probe both followers");
+    Message probe_30;
+    for (const auto& probe : probes)
+        if (probe.to == 30) probe_30 = probe;
+    Check(probe_30.to == 30, "missing probe to follower 30");
+    auto ack_30 = DeliverAppendAndTakeAck(cluster, probe_30);
+    const int term_before = cluster.Node(10).GetCurrentTerm();
+
+    cluster.messages.clear();
+    cluster.Campaign(50);
+    Check(std::string(cluster.Node(50).StateName()) == "pre-candidate",
+          "node 50 started a real election instead of pre-vote");
+    Check(cluster.Node(50).GetCurrentTerm() == term_before,
+          "pre-vote raised the term before a majority agreed");
+    std::vector<Message> votes;
+    for (const auto& message : cluster.messages) {
+        if (message.type == RaftMsgType::kRequestVote && message.from == 50)
+            votes.push_back(message);
     }
-
-    // 一次心跳应该处理所有 5 个请求
-    mgr.HandleHeartbeatAck(1, 1);
-
-    Check(callback_count == 5, "all requests should be processed in one round");
-}
-
-// 测试 6: 多轮心跳
-static void TestMultipleRounds() {
-    std::cout << "Test 6: Multiple heartbeat rounds" << std::endl;
-
-    ReadIndexManager mgr(0, 2);
-    mgr.SetCanServeRead(true);
-    mgr.AdvanceLastApplied(15);  // 设置 lastApplied 足够大
-
-    int round1_count = 0;
-    int round2_count = 0;
-
-    // Round 1: 2 个请求
-    mgr.RequestReadIndex(10, [&](bool s, int64_t idx, std::string err) {
-        ++round1_count;
-    });
-    mgr.RequestReadIndex(10, [&](bool s, int64_t idx, std::string err) {
-        ++round1_count;
-    });
-
-    // 完成 Round 1
-    mgr.HandleHeartbeatAck(1, 1);
-    Check(round1_count == 2, "round 1 should complete");
-
-    // Round 2: 3 个请求
-    mgr.RequestReadIndex(15, [&](bool s, int64_t idx, std::string err) {
-        ++round2_count;
-    });
-    mgr.RequestReadIndex(15, [&](bool s, int64_t idx, std::string err) {
-        ++round2_count;
-    });
-    mgr.RequestReadIndex(15, [&](bool s, int64_t idx, std::string err) {
-        ++round2_count;
-    });
-
-    // 完成 Round 2
-    mgr.HandleHeartbeatAck(1, 2);
-    Check(round2_count == 3, "round 2 should complete");
-}
-
-// 测试 7: 旧 term 响应处理
-static void TestOldTermResponse() {
-    std::cout << "Test 7: Old term response handling" << std::endl;
-
-    ReadIndexManager mgr(0, 2);
-    mgr.SetCanServeRead(true);
-    mgr.AdvanceLastApplied(10);
-
-    int callback_count = 0;
-
-    mgr.RequestReadIndex(10, [&](bool s, int64_t idx, std::string err) {
-        ++callback_count;
-    });
-
-    // 模拟收到旧 round_id 的响应（应该被忽略）
-    mgr.HandleHeartbeatAck(1, 999);  // 不存在的 round_id
-    Check(callback_count == 0, "old round_id should be ignored");
-
-    // 正确的 round_id
-    mgr.HandleHeartbeatAck(1, 1);
-    Check(callback_count == 1, "correct round_id should work");
-}
-
-// 测试 8: success=false 也计数
-static void TestFailedHeartbeatStillCounts() {
-    std::cout << "Test 8: Failed heartbeat still counts as ack" << std::endl;
-
-    ReadIndexManager mgr(0, 2);
-    mgr.SetCanServeRead(true);
-    mgr.AdvanceLastApplied(10);
-
-    int callback_count = 0;
-
-    mgr.RequestReadIndex(10, [&](bool s, int64_t idx, std::string err) {
-        ++callback_count;
-    });
-
-    // 即使 success=false，只要是当前 term 的响应就应该计数
-    // （在实际实现中，HandleAppendEntriesResponse 会处理这个）
-    // 这里我们直接调用 HandleHeartbeatAck 模拟
-    mgr.HandleHeartbeatAck(1, 1);
-    Check(callback_count == 1, "ack should count regardless of success");
-}
-
-// 测试 9: 队列深度限制
-static void TestQueueDepthLimit() {
-    std::cout << "Test 9: Queue depth limit" << std::endl;
-
-    ReadIndexManager mgr(0, 2);
-    mgr.SetCanServeRead(true);
-
-    // 添加大量请求
-    int callback_count = 0;
-    const int MAX_REQUESTS = 15;
-
-    for (int i = 0; i < MAX_REQUESTS; ++i) {
-        mgr.RequestReadIndex(10, [&](bool s, int64_t idx, std::string err) {
-            ++callback_count;
-        });
+    Check(!votes.empty(), "pre-candidate did not send RequestVote");
+    for (const auto& vote : votes) {
+        raftcore::RequestVote rpc;
+        Check(rpc.ParseFromString(vote.payload) && rpc.prevote() &&
+              rpc.term() == term_before + 1,
+              "disruptive campaign sent a real vote or the wrong term");
     }
+    cluster.messages.clear();
+    for (const auto& vote : votes) {
+        if (vote.to == 30) cluster.Deliver(vote);
+    }
+    Check(cluster.Node(30).GetCurrentTerm() == term_before,
+          "follower 30 bumped term despite a fresh leader heartbeat");
+    Check(!cluster.messages.empty() &&
+          cluster.messages.back().type == RaftMsgType::kRequestVoteResponse,
+          "follower 30 did not answer the disruptive pre-vote");
+    raftcore::RequestVoteResponse reply;
+    Check(reply.ParseFromString(cluster.messages.back().payload), "vote reply decode");
+    Check(reply.prevote() && !reply.vote_granted() && reply.term() == term_before,
+          "follower 30 granted a pre-vote or advertised a newer term");
+    cluster.Deliver(cluster.messages.back());
+    Check(!cluster.Node(50).IsLeader() && cluster.Node(50).GetCurrentTerm() == term_before,
+          "rejected pre-vote raised the term or elected a leader");
+    Check(cluster.Node(10).IsLeader() && cluster.Node(10).GetCurrentTerm() == term_before,
+          "old leader stepped down without seeing a higher term");
 
-    Check(mgr.PendingCount() == MAX_REQUESTS, "all requests should be queued");
-
-    // 完成心跳
-    mgr.HandleHeartbeatAck(1, 1);
-
-    // 推进 lastApplied
-    mgr.AdvanceLastApplied(10);
-
-    Check(callback_count == MAX_REQUESTS, "all requests should complete");
+    cluster.Deliver(ack_30);
+    Check(done && ok, "live leader ReadIndex failed after a blocked disruptive vote");
 }
 
-// 测试 10: 超时处理
-static void TestTimeout() {
-    std::cout << "Test 10: Timeout handling" << std::endl;
+static raftcore::RequestVote Vote(int term, int candidate, int64_t last_index, int64_t last_term) {
+    raftcore::RequestVote request;
+    request.set_term(term);
+    request.set_candidate_id(candidate);
+    request.set_last_log_index(last_index);
+    request.set_last_log_term(last_term);
+    return request;
+}
 
-    // 注意：这个测试只是验证超时逻辑的存在性
-    // 实际的超时需要在真实 Raft 实现中测试
-    ReadIndexManager mgr(0, 2);
-    mgr.SetCanServeRead(true);
+// Election eligibility and the ReadIndex lease share one steady clock.
+// Bursting Tick used to spend 10 ms of election budget per call, so a follower
+// could vote about one tick before the leader rejected the probe ACK.
+static void ElectionClockMatchesReadIndexLease() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    const int term = cluster.Node(30).GetCurrentTerm();
+    const int64_t last = cluster.Node(30).GetCommitIndex();
 
-    int timeout_count = 0;
-    int success_count = 0;
+    cluster.Advance(30, RaftNode::kMinElectionTimeoutMs - 1);
+    cluster.messages.clear();
+    cluster.Node(30).HandleRequestVote(50, Vote(term + 1, 50, last, term));
+    auto early = LastVoteResponse(cluster);
+    Check(!early.vote_granted() && early.term() == term,
+          "follower voted before the minimum election timeout");
+    auto early_prevote = Vote(term + 1, 50, last, term);
+    early_prevote.set_prevote(true);
+    cluster.messages.clear();
+    cluster.Node(30).HandleRequestVote(50, early_prevote);
+    auto early_pre = LastVoteResponse(cluster);
+    Check(early_pre.prevote() && !early_pre.vote_granted() && early_pre.term() == term &&
+          cluster.Node(30).GetCurrentTerm() == term,
+          "follower granted a pre-vote or bumped term inside the election lease");
 
-    // 请求但不完成心跳（模拟超时场景）
-    mgr.RequestReadIndex(10, [&](bool s, int64_t idx, std::string err) {
-        if (s) {
-            ++success_count;
-        } else {
-            ++timeout_count;
-        }
-    });
+    cluster.messages.clear();
+    bool done = false, ok = false;
+    Check(cluster.Node(10).RequestReadIndex(
+        [&](bool success, int64_t, const std::string&) { done = true; ok = success; }),
+          "ReadIndex rejected inside the lease");
+    auto probes = TakeAppendsFrom(cluster, 10);
+    Check(!probes.empty(), "missing probe");
+    std::vector<Message> acks;
+    for (const auto& probe : probes)
+        acks.push_back(DeliverAppendAndTakeAck(cluster, probe));
+    for (int tick = 0; tick < 15; ++tick)
+        cluster.Node(10).Tick();
+    cluster.Advance(10, RaftNode::kMinElectionTimeoutMs - 1);
+    cluster.Deliver(acks.front());
+    Check(done && ok, "probe ack inside the election timeout was rejected");
 
-    // Step down 会清空队列（模拟超时后的处理）
-    mgr.StepDown();
+    done = false;
+    ok = true;
+    cluster.messages.clear();
+    Check(cluster.Node(10).RequestReadIndex(
+        [&](bool success, int64_t, const std::string&) { done = true; ok = success; }),
+          "ReadIndex rejected at the lease boundary");
+    probes = TakeAppendsFrom(cluster, 10);
+    acks.clear();
+    for (const auto& probe : probes)
+        acks.push_back(DeliverAppendAndTakeAck(cluster, probe));
+    cluster.Advance(10, RaftNode::kMinElectionTimeoutMs);
+    cluster.Deliver(acks.front());
+    Check(done && !ok, "probe ack at the election timeout still confirmed the read");
 
-    Check(timeout_count == 1, "request should timeout");
-    Check(success_count == 0, "no successful requests");
+    // Probes above reset follower 30's deadline. Another full election timeout
+    // must make the disruptive vote eligible again.
+    cluster.Advance(30, RaftNode::kMaxElectionTimeoutMs);
+    cluster.messages.clear();
+    cluster.Node(30).HandleRequestVote(50, Vote(term + 1, 50, last, term));
+    auto later = LastVoteResponse(cluster);
+    Check(later.vote_granted(), "follower refused a vote after its election deadline");
+}
+
+static void KeepLeaderLeaseFresh(Cluster& cluster, int leader) {
+    for (int step = 0; step < RaftNode::kMaxElectionTimeoutMs / RaftNode::kTickIntervalMs; ++step) {
+        cluster.Advance(leader, RaftNode::kTickIntervalMs);
+        cluster.Node(leader).Tick();
+        cluster.Pump();
+    }
+    Check(cluster.Node(leader).IsLeader(), "leader lost the lease while quorum was answering");
+}
+
+static void NewTermDoesNotUseLease() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    cluster.Node(10).SetLeaseReads(true);
+    cluster.messages.clear();
+    bool done = false;
+    Check(cluster.Node(10).RequestReadIndex(
+        [&](bool, int64_t, const std::string&) { done = true; }), "read rejected");
+    Check(!done, "new term served a lease read");
+    Check(!TakeAppendsFrom(cluster, 10).empty(), "new term did not fall back to ReadIndex");
+}
+
+static void FreshLeaseSkipsProbe() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    cluster.Node(10).SetLeaseReads(true);
+    KeepLeaderLeaseFresh(cluster, 10);
+    cluster.messages.clear();
+    bool done = false, ok = false;
+    Check(cluster.Node(10).RequestReadIndex(
+        [&](bool success, int64_t, const std::string&) { done = true; ok = success; }),
+          "lease read rejected");
+    Check(done && ok, "fresh lease did not serve locally");
+    Check(cluster.messages.empty(), "fresh lease sent a probe");
+    Check(Metric(cluster.Node(10), "read_index_lease") == 1, "lease read was not counted");
+}
+
+static void StaleQuorumDoesNotUseLease() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    cluster.Node(10).SetLeaseReads(true);
+    cluster.Advance(10, RaftNode::kMaxElectionTimeoutMs);
+    cluster.messages.clear();
+    bool done = false;
+    Check(cluster.Node(10).RequestReadIndex(
+        [&](bool, int64_t, const std::string&) { done = true; }), "read rejected");
+    Check(!done, "stale quorum served a lease read");
+    Check(!TakeAppendsFrom(cluster, 10).empty(), "stale quorum did not fall back to ReadIndex");
+}
+
+static void LeaseReadWaitsForApply() {
+    ManualApplyExecutor executor;
+    Cluster cluster({10, 30, 50}, &executor);
+    cluster.Elect(10);
+    while (executor.busy) executor.Finish();
+    cluster.Settle();
+    cluster.Node(10).SetLeaseReads(true);
+    KeepLeaderLeaseFresh(cluster, 10);
+    while (executor.busy) executor.Finish();
+    Check(cluster.Node(10).Propose(Command({"SET", "default:k", "v"}), {}) > 0, "write rejected");
+    cluster.Pump();
+    Check(executor.busy, "write applied before the lease read");
+    bool done = false;
+    Check(cluster.Node(10).RequestReadIndex(
+        [&](bool success, int64_t, const std::string&) { done = success; }), "lease read rejected");
+    Check(!done, "lease read finished before the write was applied");
+    executor.Finish();
+    Check(done, "lease read did not complete after apply");
+    std::string value;
+    Check(cluster.State(10).Get("default:k", &value) && value == "v", "applied value missing");
+}
+
+static void DelayedHeartbeatCannotRenewLease() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    cluster.Node(10).SetLeaseReads(true);
+    Check(cluster.Node(10).Propose(Command({"SET", "default:k", "old"}), {}) > 0, "seed");
+    cluster.Pump();
+    KeepLeaderLeaseFresh(cluster, 10);
+    cluster.messages.clear();
+    cluster.Advance(10, RaftNode::kHeartbeatIntervalMs);
+    cluster.Node(10).Tick();
+    const auto appends = TakeAppendsFrom(cluster, 10);
+    Check(appends.size() >= 2, "missing heartbeat for delayed lease test");
+    std::vector<Message> acks;
+    for (const auto& append : appends)
+        acks.push_back(DeliverAppendAndTakeAck(cluster, append));
+    cluster.Deliver(acks.back());
+    cluster.Partition(10);
+    cluster.messages.clear();
+    cluster.Advance(10, 140);
+    // This reply was generated before the partition and buffered in transit.
+    // Inject it directly because the cluster transport drops partitioned traffic.
+    raftcore::AppendEntriesResponse delayed;
+    Check(delayed.ParseFromString(acks.front().payload), "delayed ack decode");
+    cluster.Node(10).HandleAppendEntriesResponse(acks.front().from, delayed);
+    const int leader = cluster.ElectAmong({30, 50});
+    Check(cluster.Node(leader).Propose(Command({"SET", "default:k", "new"}), {}) > 0,
+          "new majority write rejected");
+    cluster.Pump();
+    cluster.Settle();
+    cluster.Advance(10, 70);
+    std::string value;
+    Check(cluster.State(leader).Get("default:k", &value) && value == "new", "new value missing");
+    Check(cluster.State(10).Get("default:k", &value) && value == "old", "old leader caught up");
+    bool done = false, ok = true;
+    Check(cluster.Node(10).RequestReadIndex(
+        [&](bool success, int64_t, const std::string&) { done = true; ok = success; }),
+          "read was not admitted for quorum confirmation");
+    Check(!done, "delayed pre-partition heartbeat renewed the old leader's lease");
+    Check(Metric(cluster.Node(10), "read_index_lease") == 0, "stale read counted as lease");
+    cluster.Pump();
+    cluster.Advance(10, RaftNode::kMinElectionTimeoutMs);
+    cluster.Node(10).Tick();
+    Check(done && !ok, "isolated old leader confirmed a read or failed to time out");
+}
+
+static void UncorrelatedAckCannotRenewLease() {
+    Cluster cluster;
+    cluster.Elect(10);
+    cluster.Settle();
+    cluster.Node(10).SetLeaseReads(true);
+    KeepLeaderLeaseFresh(cluster, 10);
+    cluster.Advance(10, RaftNode::kMinElectionTimeoutMs);
+    cluster.messages.clear();
+    raftcore::AppendEntriesResponse response;
+    response.set_term(cluster.Node(10).GetCurrentTerm());
+    response.set_rpc_id(0);  // Never a valid in-flight RPC.
+    response.set_success(true);
+    response.set_last_log_index(cluster.Node(10).GetCommitIndex());
+    cluster.Node(10).HandleAppendEntriesResponse(30, response);
+    bool done = false;
+    Check(cluster.Node(10).RequestReadIndex(
+        [&](bool, int64_t, const std::string&) { done = true; }), "read rejected");
+    Check(!done, "uncorrelated reply renewed the read lease");
+    Check(!TakeAppendsFrom(cluster, 10).empty(), "missing fresh quorum probe");
+}
+
+static void SingleNodeReadPipelineDoesNotGrowTheStack() {
+    Cluster cluster({10});
+    cluster.Elect(10);
+    constexpr int kReads = 2000;
+    int completed = 0;
+    std::function<void(bool, int64_t, const std::string&)> next;
+    next = [&](bool success, int64_t, const std::string& error) {
+        Check(success, error.empty() ? "single-node read failed" : error.c_str());
+        if (++completed >= kReads) return;
+        Check(cluster.Node(10).RequestReadIndex(next), "chained ReadIndex rejected");
+    };
+    Check(cluster.Node(10).RequestReadIndex(next), "first ReadIndex rejected");
+    Check(completed == kReads, "single-node ReadIndex pipeline did not finish");
 }
 
 int main() {
     try {
-        std::cout << "=== ReadIndex Unit Tests ===" << std::endl;
-        std::cout << "Testing core ReadIndex logic\n" << std::endl;
-
-        TestNoOpPrerequisite();
-        TestHeartbeatAcks();
-        TestWaitForApply();
-        TestStepDownClearsQueues();
-        TestHeartbeatBatching();
-        TestMultipleRounds();
-        TestOldTermResponse();
-        TestFailedHeartbeatStillCounts();
-        TestQueueDepthLimit();
-        TestTimeout();
-
-        std::cout << "\n=== All tests passed! (" << test_count << " checks) ===" << std::endl;
-        std::cout << "\nThese tests verify:" << std::endl;
-        std::cout << "  ✓ No-op prerequisite" << std::endl;
-        std::cout << "  ✓ Heartbeat ack counting and quorum" << std::endl;
-        std::cout << "  ✓ Wait for lastApplied mechanism" << std::endl;
-        std::cout << "  ✓ Step down clears all queues" << std::endl;
-        std::cout << "  ✓ Heartbeat batching (multiple requests share round)" << std::endl;
-        std::cout << "  ✓ Multiple independent rounds" << std::endl;
-        std::cout << "  ✓ Old term response handling" << std::endl;
-        std::cout << "  ✓ Failed heartbeat still counts as ack" << std::endl;
-        std::cout << "  ✓ Queue depth limit" << std::endl;
-        std::cout << "  ✓ Timeout handling" << std::endl;
-
+        DistinctRpcIdsReachQuorum();
+        StaleAckDoesNotConfirm();
+        ApplyLagWaitsForLastApplied();
+        TimeoutWithoutMajority();
+        OverloadRejectsAfterTenThousandPending();
+        IsolatedOldLeaderCannotConfirmRead();
+        InflightRetryDoesNotConfirm();
+        LateProbeAckPastElectionTimeoutDoesNotConfirm();
+        FreshHeartbeatBlocksVoteSoDelayedProbeAckStaysWithLiveLeader();
+        ElectionClockMatchesReadIndexLease();
+        NewTermDoesNotUseLease();
+        FreshLeaseSkipsProbe();
+        DelayedHeartbeatCannotRenewLease();
+        UncorrelatedAckCannotRenewLease();
+        StaleQuorumDoesNotUseLease();
+        LeaseReadWaitsForApply();
+        SingleNodeReadPipelineDoesNotGrowTheStack();
+        std::cout << "PASS: production RaftNode ReadIndex\n";
         return 0;
     } catch (const std::exception& e) {
-        std::cerr << "\n=== Test failed: " << e.what() << " ===" << std::endl;
+        std::cerr << "FAIL: " << e.what() << '\n';
         return 1;
     }
 }

@@ -36,7 +36,9 @@ def write_batch(cluster, target, rows, after_send):
                 if reply == 'OK':
                     row['outcome'] = 'acknowledged'
                 elif isinstance(reply, RespError):
-                    if reply.message in ('ERR leadership lost; outcome unknown', 'ERR server stopped; outcome unknown'):
+                    # leadership lost, server stopped, and proposal timeout all
+                    # leave the log entry's commit decision unknown.
+                    if reply.message.endswith('outcome unknown'):
                         row.update(outcome='unknown', reply=reply.message)
                     elif reply.message.startswith(('ERR MOVED ', 'ERR BUSY ')):
                         row.update(outcome='rejected', reply=reply.message)

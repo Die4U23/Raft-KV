@@ -1,0 +1,90 @@
+<!-- Values match docs/benchmarks/async-apply-compare-2026-10-10.json, rounded to 2 decimals. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="960" viewBox="0 0 640 960" role="img" aria-labelledby="title desc">
+<title id="title">Goodput</title>
+<desc id="desc">One run on 2026-10-10. pipeline=1 goodput 2428.82 sync and 2654.65 async ops/s; p50 12.53 and 11.37 ms; p99 28.46 and 29.61 ms. pipeline=16 goodput 5360.11 sync and 5731.63 async ops/s; batch p50 87.67 and 83.47 ms; batch p99 177.91 and 146.30 ms.</desc>
+<rect width="640" height="960" fill="#ffffff"/>
+<rect x="0.5" y="0.5" width="639" height="959" fill="none" stroke="#e6e8eb"/>
+<text x="24.0" y="30.0" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="18" font-weight="650" fill="#1c2834" text-anchor="start">Goodput</text>
+<text x="616.0" y="30.0" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="13" font-weight="400" fill="#5c6b7a" text-anchor="end">ops/s</text>
+<rect x="24.0" y="43.0" width="12" height="12" rx="2" fill="#D55E00"/>
+<text x="42.0" y="54.0" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="13" font-weight="400" fill="#1c2834" text-anchor="start">sync</text>
+<rect x="110.0" y="43.0" width="12" height="12" rx="2" fill="#0072B2"/>
+<text x="128.0" y="54.0" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="13" font-weight="400" fill="#1c2834" text-anchor="start">async</text>
+<rect x="72.0" y="70.0" width="544.0" height="188.0" fill="#f6f8fa"/>
+<line x1="72.0" y1="258.0" x2="616.0" y2="258.0" stroke="#c5ced6" stroke-width="1"/>
+<text x="64.0" y="262.0" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="12" font-weight="400" fill="#5c6b7a" text-anchor="end">0</text>
+<line x1="72.0" y1="204.3" x2="616.0" y2="204.3" stroke="#e6ebf0" stroke-width="1"/>
+<text x="64.0" y="208.3" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="12" font-weight="400" fill="#5c6b7a" text-anchor="end">2,000</text>
+<line x1="72.0" y1="150.6" x2="616.0" y2="150.6" stroke="#e6ebf0" stroke-width="1"/>
+<text x="64.0" y="154.6" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="12" font-weight="400" fill="#5c6b7a" text-anchor="end">4,000</text>
+<line x1="72.0" y1="96.9" x2="616.0" y2="96.9" stroke="#e6ebf0" stroke-width="1"/>
+<text x="64.0" y="100.9" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="12" font-weight="400" fill="#5c6b7a" text-anchor="end">6,000</text>
+<rect x="155.0" y="192.8" width="44.0" height="65.2" rx="3" fill="#D55E00"/>
+<text x="177.0" y="184.8" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="12" font-weight="650" fill="#1c2834" text-anchor="middle">2428.82</text>
+<rect x="217.0" y="186.7" width="44.0" height="71.3" rx="3" fill="#0072B2"/>
+<text x="239.0" y="178.7" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="12" font-weight="650" fill="#1c2834" text-anchor="middle">2654.65</text>
+<text x="208.0" y="280.0" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="13" font-weight="650" fill="#1c2834" text-anchor="middle">pipeline 1</text>
+<rect x="427.0" y="114.0" width="44.0" height="144.0" rx="3" fill="#D55E00"/>
+<text x="449.0" y="106.0" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="12" font-weight="650" fill="#1c2834" text-anchor="middle">5360.11</text>
+<rect x="489.0" y="104.1" width="44.0" height="153.9" rx="3" fill="#0072B2"/>
+<text x="511.0" y="96.1" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="12" font-weight="650" fill="#1c2834" text-anchor="middle">5731.63</text>
+<text x="480.0" y="280.0" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="13" font-weight="650" fill="#1c2834" text-anchor="middle">pipeline 16</text>
+<line x1="24" y1="298.0" x2="616" y2="298.0" stroke="#e6ebf0" stroke-width="1"/>
+<text x="24.0" y="332.0" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="18" font-weight="650" fill="#1c2834" text-anchor="start">pipeline=1 latency</text>
+<text x="616.0" y="332.0" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="13" font-weight="400" fill="#5c6b7a" text-anchor="end">ms</text>
+<rect x="24.0" y="345.0" width="12" height="12" rx="2" fill="#0072B2"/>
+<text x="42.0" y="356.0" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="13" font-weight="400" fill="#1c2834" text-anchor="start">p50</text>
+<rect x="97.0" y="345.0" width="12" height="12" rx="2" fill="#D55E00"/>
+<text x="115.0" y="356.0" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="13" font-weight="400" fill="#1c2834" text-anchor="start">p99</text>
+<rect x="72.0" y="372.0" width="544.0" height="188.0" fill="#f6f8fa"/>
+<line x1="72.0" y1="560.0" x2="616.0" y2="560.0" stroke="#c5ced6" stroke-width="1"/>
+<text x="64.0" y="564.0" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="12" font-weight="400" fill="#5c6b7a" text-anchor="end">0</text>
+<line x1="72.0" y1="513.0" x2="616.0" y2="513.0" stroke="#e6ebf0" stroke-width="1"/>
+<text x="64.0" y="517.0" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="12" font-weight="400" fill="#5c6b7a" text-anchor="end">10</text>
+<line x1="72.0" y1="466.0" x2="616.0" y2="466.0" stroke="#e6ebf0" stroke-width="1"/>
+<text x="64.0" y="470.0" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="12" font-weight="400" fill="#5c6b7a" text-anchor="end">20</text>
+<line x1="72.0" y1="419.0" x2="616.0" y2="419.0" stroke="#e6ebf0" stroke-width="1"/>
+<text x="64.0" y="423.0" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="12" font-weight="400" fill="#5c6b7a" text-anchor="end">30</text>
+<line x1="72.0" y1="372.0" x2="616.0" y2="372.0" stroke="#e6ebf0" stroke-width="1"/>
+<text x="64.0" y="376.0" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="12" font-weight="400" fill="#5c6b7a" text-anchor="end">40</text>
+<rect x="155.0" y="501.1" width="44.0" height="58.9" rx="3" fill="#0072B2"/>
+<text x="177.0" y="493.1" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="12" font-weight="650" fill="#1c2834" text-anchor="middle">12.53</text>
+<rect x="217.0" y="426.2" width="44.0" height="133.8" rx="3" fill="#D55E00"/>
+<text x="239.0" y="418.2" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="12" font-weight="650" fill="#1c2834" text-anchor="middle">28.46</text>
+<text x="208.0" y="582.0" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="13" font-weight="650" fill="#1c2834" text-anchor="middle">sync</text>
+<rect x="427.0" y="506.6" width="44.0" height="53.4" rx="3" fill="#0072B2"/>
+<text x="449.0" y="498.6" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="12" font-weight="650" fill="#1c2834" text-anchor="middle">11.37</text>
+<rect x="489.0" y="420.8" width="44.0" height="139.2" rx="3" fill="#D55E00"/>
+<text x="511.0" y="412.8" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="12" font-weight="650" fill="#1c2834" text-anchor="middle">29.61</text>
+<text x="480.0" y="582.0" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="13" font-weight="650" fill="#1c2834" text-anchor="middle">async</text>
+<line x1="24" y1="600.0" x2="616" y2="600.0" stroke="#e6ebf0" stroke-width="1"/>
+<text x="24.0" y="634.0" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="18" font-weight="650" fill="#1c2834" text-anchor="start">pipeline=16 batch latency</text>
+<text x="616.0" y="634.0" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="13" font-weight="400" fill="#5c6b7a" text-anchor="end">ms</text>
+<rect x="24.0" y="647.0" width="12" height="12" rx="2" fill="#0072B2"/>
+<text x="42.0" y="658.0" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="13" font-weight="400" fill="#1c2834" text-anchor="start">p50</text>
+<rect x="97.0" y="647.0" width="12" height="12" rx="2" fill="#D55E00"/>
+<text x="115.0" y="658.0" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="13" font-weight="400" fill="#1c2834" text-anchor="start">p99</text>
+<rect x="72.0" y="674.0" width="544.0" height="188.0" fill="#f6f8fa"/>
+<line x1="72.0" y1="862.0" x2="616.0" y2="862.0" stroke="#c5ced6" stroke-width="1"/>
+<text x="64.0" y="866.0" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="12" font-weight="400" fill="#5c6b7a" text-anchor="end">0</text>
+<line x1="72.0" y1="819.3" x2="616.0" y2="819.3" stroke="#e6ebf0" stroke-width="1"/>
+<text x="64.0" y="823.3" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="12" font-weight="400" fill="#5c6b7a" text-anchor="end">50</text>
+<line x1="72.0" y1="776.5" x2="616.0" y2="776.5" stroke="#e6ebf0" stroke-width="1"/>
+<text x="64.0" y="780.5" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="12" font-weight="400" fill="#5c6b7a" text-anchor="end">100</text>
+<line x1="72.0" y1="733.8" x2="616.0" y2="733.8" stroke="#e6ebf0" stroke-width="1"/>
+<text x="64.0" y="737.8" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="12" font-weight="400" fill="#5c6b7a" text-anchor="end">150</text>
+<line x1="72.0" y1="691.1" x2="616.0" y2="691.1" stroke="#e6ebf0" stroke-width="1"/>
+<text x="64.0" y="695.1" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="12" font-weight="400" fill="#5c6b7a" text-anchor="end">200</text>
+<rect x="155.0" y="787.1" width="44.0" height="74.9" rx="3" fill="#0072B2"/>
+<text x="177.0" y="779.1" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="12" font-weight="650" fill="#1c2834" text-anchor="middle">87.67</text>
+<rect x="217.0" y="710.0" width="44.0" height="152.0" rx="3" fill="#D55E00"/>
+<text x="239.0" y="702.0" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="12" font-weight="650" fill="#1c2834" text-anchor="middle">177.91</text>
+<text x="208.0" y="884.0" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="13" font-weight="650" fill="#1c2834" text-anchor="middle">sync</text>
+<rect x="427.0" y="790.7" width="44.0" height="71.3" rx="3" fill="#0072B2"/>
+<text x="449.0" y="782.7" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="12" font-weight="650" fill="#1c2834" text-anchor="middle">83.47</text>
+<rect x="489.0" y="737.0" width="44.0" height="125.0" rx="3" fill="#D55E00"/>
+<text x="511.0" y="729.0" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="12" font-weight="650" fill="#1c2834" text-anchor="middle">146.30</text>
+<text x="480.0" y="884.0" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="13" font-weight="650" fill="#1c2834" text-anchor="middle">async</text>
+<text x="320.0" y="924.0" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="12" font-weight="400" fill="#5c6b7a" text-anchor="middle">2026-10-10 · 2 vCPU · three nodes and the client on one machine · one repeat</text>
+<text x="320.0" y="942.0" font-family="Noto Sans CJK SC, Noto Sans, sans-serif" font-size="12" font-weight="400" fill="#5c6b7a" text-anchor="middle">20,000 measured requests · warmup 5,000 · 32 connections · 128-byte values · 50% GET / 50% SET · 0 errors</text>
+</svg>

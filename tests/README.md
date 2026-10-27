@@ -1,10 +1,18 @@
 # 测试
 
+## 半包调度与测试结果判定回归
+
+- `client_input_tests` 检查生产 `CommandBuffer` / `DrainCommands` 的半包等待、补齐恢复、跨解析预算 pipeline，以及队列容量释放后处理已缓冲命令；保留现有 `connection_order_tests` 的队列断言。
+- 完整 Linux 服务构建的 CTest 还会运行 `connection_order_integration`，检查真实 TCP 回复顺序、分片恢复和空闲半包 CPU 消耗。CPU 阈值用于发现忙循环，不代表吞吐性能。
+- `readindex_integration_tests.py` 随 Python helper suite 运行，验证测试脚本的 PASS/FAIL/SKIP 判定；替身检查不证明 Raft 一致性。
+- `python3 tests/test_readindex_integration.py --binary build/raft_kv_server` 运行四个真实集群场景。退出码 `0` 表示全部实际执行并通过，`1` 表示失败，`2` 表示存在跳过或零执行。重启后 Follower 拒绝读的场景不代表持续网络分区验证。
+- `bash scripts/run_new_tests.sh` 运行可移植 CTest 与 Python helper suite；真实服务回归需启用 `RAFTKV_BUILD_SERVER=ON`。
+
 正常性能诊断的[真实 Linux 证据](../docs/benchmarks/profile-validation.md)和[客户端头部读取四轮对照](../docs/benchmarks/client-header-validation.md)均已核验。后者 40 万次正式请求零错误，但未观察到优化收益；继续保留 classic 默认，无需重跑本组。
 
 ## 可移植协议与核心测试
 
-不构建 Linux 服务端时，可运行六个独立的 C++ 测试目标：
+不构建 Linux 服务端时，可运行下列独立的 C++ 测试目标：
 
 ```sh
 cmake -S . -B build-protocol -DRAFTKV_BUILD_SERVER=OFF -DBUILD_TESTING=ON
@@ -12,9 +20,15 @@ cmake --build build-protocol
 ctest --test-dir build-protocol --output-on-failure
 ```
 
-- `protocol_tests` 使用实际解析器、输入缓冲区、帧编解码器和命名空间实现。
+- `protocol_tests` 使用实际解析器、输入缓冲区、帧编解码器和命名空间实现；命名空间检查含长度边界与连接隔离。
 - `peer_retry_tests` 使用实际重连策略，检查反复断线退避、稳定重置、旧定时任务及 peer 独立状态；不运行 Muduo。
 - `core_tests` 编译实际 RaftNode、RaftLog、KVStateMachine 与 RocksDBStore 源码，通过可控消息队列测试多数派、重复投票、复制、重启、日志冲突、丢失回复与存储失败。
+- `kv_state_machine_tests` 检查 SET/覆盖/DEL 回复、空命令 no-op、已提交命令大小写、非法日志命令拒绝，以及缺少 lastApplied 标记的旧库拒绝启动。
+- `raft_log_tests` 检查追加、截断、硬状态往返、GetTerm 边界、非连续日志在打开时失败，以及中间条目损坏在打开时失败。
+- `raft_node_coverage_tests` 检查 Follower/停机/不健康/超限提案返回值、选举日志新旧与一任一次性投票、非法 RequestVote 忽略、Candidate 收到更高任期心跳后转为 Follower，以及 Pre-Vote：隔离节点不抬任期、恢复后不打断原 Leader、落后节点仍能完成选举、预投票不落盘、Leader 拒绝预投票、落选后回到预投票。
+- `readindex_tests` 用生产 RaftNode 检查探针 rpc_id、请求前 ACK 及其重试无效、超过最短选举超时的探针 ACK 在投递时即失败、应用落后等待、超时、10000 条过载，以及隔离旧 Leader 不能仅凭自身确认完成线性一致读。
+- `replication_logic_tests` / `replication_partition_tests` / `replication_edge_cases_unit` 用生产 RaftNode 检查复制 ACK、分区多数派与日志冲突边界。
+- `connection_order_tests` 使用生产 `DrainCommands` / `SessionCommandQueue`（与 `main.cpp` 共用），检查非法命令 FIFO 回复、小写动词、每轮 128 条、真实 RESP 打到 4 MiB 且每条只记一次线帧、坏帧在有未完成命令时不回复、线性一致 GET 卸任后改为重定向，以及弹出后 `queued_bytes` 归零。
 - `storage_batch_tests` 检查批量同步写调用次数、批内删除语义、整批校验、故障和恢复；核心测试还检查批量复制顺序与条数/字节配额。
 - `async_executor_tests` 使用实际 `SerialApplyExecutor` 与真实 `std::thread`，检查串行任务、owner 线程完成通知、异常传递和停止时 join；没有数据库或真实网络。
 - `batch_flush_tests` 使用实际 `BatchFlushPolicy` 和显式假事件队列，检查满条数/字节数或已到期时升格、保留初始窗口、取消竞态下的旧 token 与重复回调、多批分轮处理、尾批剩余期限及零延迟；不调用 Muduo 定时器。
@@ -25,7 +39,7 @@ ctest --test-dir build-protocol --output-on-failure
 
 `tests/test_support/` 仅在核心和批量存储测试中使用。其 RocksDB 替身是支持故障注入的内存映射，Protobuf 替身使用进程内对象快照，PeerManager 替身使用消息队列。因此核心测试能检查状态转换、调用顺序及错误传播，不能验证 Protobuf 真实编码、磁盘 fsync、掉电恢复、文件锁、实际连接重连或网络调度。服务端目标不包含这些替身头文件。执行器测试虽使用真实线程，也不验证 RocksDB 并发 GET/Write 或 Muduo 调度。
 
-Python 测试客户端仅使用标准库，兼容 Python 3.8+。以下命令检查 RESP 编解码、碎片回复、粘连回复、数组、二进制 bulk、错误、整数和 EOF；不会启动集群：
+Python 测试客户端仅使用标准库，兼容 Python 3.8+。以下命令检查 RESP 编解码、碎片回复、粘连回复、数组、二进制 bulk、错误、整数和 EOF；不会启动集群。可移植 CI 通过 `tests/cluster_smoke_tests.py` 运行同一组自检：
 
 ```sh
 python3 tests/cluster_smoke.py --self-test
@@ -33,7 +47,9 @@ python3 tests/cluster_smoke.py --self-test
 
 ## Linux 真实三节点 smoke test
 
-当前重连优化另增加真实 `peer_manager_transport_tests`，仅在服务依赖可用的构建中启用。新版 Linux 构建、CTest 7/7（含该测试）、冒烟 10 项与分区 5 个阶段已完成并[归档核验](../docs/benchmarks/reconnect-validation.md)；见[优化验收说明](../docs/optimizations/peer-reconnect-backoff.md)。下述归档结果属于优化前版本。
+GitHub Actions 工作流 `.github/workflows/linux-cluster.yml` 在独立 job 中安装系统依赖、构建真实 Muduo/RocksDB 服务、运行 CTest 与 `cluster_smoke.py`，再运行 `tests/cluster_linearizable.py`：Leader 写后读、Follower `MOVED`、隔离旧 Leader 必须在 1 秒内返回读超时或 `MOVED`。套接字超时不算通过。该 job 不替代下面已归档的分区/重启/过载证据包。
+
+服务依赖可用时还会编译 `peer_manager_transport_tests`。2026-09-09 的重连归档记录的是当时的 CTest 7/7、冒烟 10 项和分区 5 个阶段，见[重连报告](../docs/benchmarks/reconnect-validation.md)。下面三组故障报告也是那一段时期的归档，不是当前套件的通过计数。
 
 第三组[过载与有界持续运行](../docs/overload-soak-test.md)脚本已提供，检查连接准入、写入积压 BUSY、卸载恢复及 60 秒资源窗口。本地辅助检查通过，[真实 Linux 原始证据](../docs/benchmarks/overload-validation.md)已核验，4 个阶段 PASS；本轮三组收尾测试完成。7,897 次重连仍是已知问题，60 秒观察不证明长期稳定性。
 
@@ -78,6 +94,6 @@ docker run --rm -v "$PWD":/workspace -w /workspace raft-kv-dev sh -c 'cmake -S .
 
 Docker 镜像构建依赖 `third_party/` 中的压缩包及网络；其耗时不计入 smoke test 期限。上述命令使用 Linux shell 语法。该脚本是有限场景的集成验收，不等于线性一致性、网络分区、磁盘故障或完整 Raft 正确性证明。
 
-**当前证据状态：Ubuntu 三节点冒烟原始报告确认 10 项检查 PASS，四轮同步/异步负载共 40 万次正式请求、0 错误，两批原始材料与事后构建快照均已归档核验。** 详见 [性能基线与证据边界](../docs/benchmarks/ubuntu-2cpu-abba.md)及 [构建与冒烟核验](../docs/benchmarks/ubuntu-build-and-smoke.md)。测试时二进制身份不能由事后快照独立证明；该结果不代表掉电、磁盘故障、网络分区或完整并发行为已验证。Windows 可移植测试、本地客户端自测与用户提供的真实 Linux 结果分别记录；对照流程见 [压测说明](../docs/benchmark.md)，尚无稳定性能提升结论。
+2026-09-08 至 09-13 的 Ubuntu 归档确认过当时二进制上的冒烟 10 项，以及四轮同步/异步负载共 40 万次正式请求、0 错误。详见 [性能基线](../docs/benchmarks/ubuntu-2cpu-abba.md) 和 [构建与冒烟核验](../docs/benchmarks/ubuntu-build-and-smoke.md)。这些材料不能证明掉电、磁盘故障或后来加入的 ReadIndex。对照方法见 [压测说明](../docs/benchmark.md)。
 
-新增自动流程见 [Ubuntu 构建与验证](../docs/linux-build.md)。`python tests/build_workflow_tests.py` 在本地检查固定 Muduo 归档的自动修补、重复运行、编辑保护、身份记录与失败状态；不需要安装 Linux 依赖。自动流程默认构建后执行 CTest，带 `--smoke` 时再执行真实三节点测试。[2026-09-08 原始证据](../docs/benchmarks/linux-workflow-validation.md)确认新流程在用户 VM 的已有构建目录上通过，包含 CTest 5/5、真实三节点冒烟 10 项及测试时身份记录；后续[空目录全量构建](../docs/benchmarks/linux-fresh-validation.md)也已核验通过，含重新编译、链接及上述两类测试。干净系统依赖安装复现仍待验证。
+构建流程见 [Ubuntu 构建与验证](../docs/linux-build.md)。`python tests/build_workflow_tests.py` 只检查 Muduo 准备脚本，不安装 Linux 依赖，也不启动集群。[2026-09-08 的增量](../docs/benchmarks/linux-workflow-validation.md)和[空目录](../docs/benchmarks/linux-fresh-validation.md)记录写的是 CTest 5/5，那是提交 `35a348d` 的目标数。
