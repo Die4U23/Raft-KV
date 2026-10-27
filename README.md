@@ -1,4 +1,4 @@
-English | [简体中文](README_CN.md)
+**English** | [简体中文](README_CN.md)
 
 # Raft-KV
 
@@ -11,36 +11,58 @@ Longer project write-up: [From a three-node store to fault tests and performance
 
 ## What it does
 
-- **Raft write path**: leader election, log replication, majority commit, and ordered state-machine apply.
-- **ReadIndex linearizable reads**: a heartbeat majority confirms the read barrier, then the read waits until the local apply index catches up. The read itself is not written to the log.
+- **Raft write path**: Pre-Vote, leader election, CheckQuorum, log replication, majority commit, and ordered state-machine apply.
+- **ReadIndex linearizable reads**: opt-in reads require a majority of post-request probes and wait for local apply to catch up. Optional lease reads reuse recent quorum evidence under clock assumptions; both options are off by default.
 - **Persistence**: the Raft log and hard state are synced to disk. KV data and `lastApplied` commit in the same RocksDB WriteBatch.
+- **Snapshots and retry identity**: chunked `InstallSnapshot` catches up lagging replicas; a durable install intent supports recovery across the two databases. `IDEMP` writes retain the latest request and reply per client.
 - **Bounded service**: connection count, input and output buffers, the write queue, and proposal count and bytes are capped. Overload is rejected instead of queued without limit.
-- **Batching and async apply**: commands are grouped inside one event-loop turn. A committed KV batch goes to a serial worker, and the completion callback returns to the owner thread.
-- **RESP access**: TCP splits and coalesced packets, pipelined commands, binary values, and hostile length fields.
+- **Batching and async apply**: partial write batches collect for 1 ms by default; full batches are scheduled without waiting for that timer. Committed KV batches run on a serial worker and notify the owner thread on completion.
+- **RESP access**: per-connection FIFO replies, pipelined commands, binary values, and bounded parsing. An incomplete frame waits for new bytes instead of repeatedly scheduling the same input.
 - **Traceable checks**: partition, leader crash and restart, overload, and comparison runs keep reports, node logs, source and binary fingerprints, and separate verification scripts.
 
 ## Architecture
 
 ```text
-Client (RESP)
-      │
-      ▼
-Muduo client server ── GET ──► KVStateMachine ──► RocksDB
-      │                          ▲
-      └─ SET / DEL ─► RaftNode ──┘
-                         │
-              ┌──────────┴──────────┐
-              ▼                     ▼
-        RaftLog / RocksDB      PeerManager / Muduo
-                                    │
-                              other Raft nodes
+Client (RESP) → CommandBuffer → per-connection command queue
+                                  │
+                ┌─────────────────┴──────────────────┐
+                ▼                                    ▼
+         SET / DEL / IDEMP                          GET
+                │                                    │
+             RaftNode                    local read / ReadIndex / lease
+                │                                    │
+     RaftLog + PeerManager                           │
+        │              │                             │
+    RocksDB       other nodes                        │
+                       │                             │
+               majority commit                       │
+                       ▼                             ▼
+               serial KV apply ──────────────► KVStateMachine
+                       │                             │
+                       └──────────► RocksDB ◄─────────┘
 ```
 
-A write is appended on the leader, replicated through PeerManager to a majority, advances `commit_index`, and is then applied to the KV state machine in order. Timing, thread ownership, and callback lifetime are in the [concurrency notes](docs/concurrency.md).
+A write reply follows majority commit and state-machine apply. A linearizable GET on the leader waits for ReadIndex confirmation (or a valid opt-in lease) and the required apply position; a follower redirects it. Default GET reads local state and can be stale. Timing, thread ownership, and callback lifetime are in the [concurrency notes](docs/concurrency.md).
 
-## Recorded results
+## Current validation
 
-The table below is the archive from 2026-09-08 through 09-13, when the portable CTest suite had 5 or 7 targets. The current suite and the ReadIndex / Pre-Vote scope are in the [project status](docs/review-status.md). Those archives were not rerun on later binaries.
+Local Linux verification on **2026-10-27**, for code at [`30d29ef`](https://github.com/Die4U23/Raft-KV/commit/30d29ef174e304fc81ea28ceae50596e6175f858), used a Debian Docker environment with real Muduo, Protobuf, and RocksDB:
+
+| Check | Result | Scope |
+| --- | --- | --- |
+| Full build and CTest | **20/20** | 18 portable targets, real peer transport, and TCP ordering / fragmented-input regression |
+| Python helper suite | **80/80** | Test orchestration, clients, and PASS/FAIL/SKIP verdicts; not a consensus proof |
+| Three-node smoke | **PASS** | Reads/writes, leader crash, restart, convergence, and health endpoints |
+| ReadIndex integration script | **4 passed, 0 failed, 0 skipped** | Restarted follower rejection, write-then-read, concurrent reads, and leader replacement |
+| Missing server binary | **Exit 2** | Incomplete validation cannot report success |
+
+The four-scenario ReadIndex script does not simulate a persistent minority partition. Linux CI separately runs `cluster_linearizable.py`, partition, write/restart, and overload scenarios. The badges link to live CI status; this local snapshot does not certify every CI scenario. Commands and boundaries are in [tests/README.md](tests/README.md).
+
+“Portable” refers to the C++ targets built without real server dependencies. The full Python suite currently has one Linux mount-path test that fails on Windows (79/80 in the same verification); use Linux for the full suite and server tests.
+
+## Historical fault and performance results
+
+The following archives belong to their recorded binaries and environments. Their CTest counts of 5 or 7 are historical, and their performance numbers have not been remeasured for the current code.
 
 | Scenario | Result | Evidence |
 | --- | --- | --- |
@@ -73,7 +95,7 @@ These numbers belong to that machine and that load. Each mode was measured once,
 
 ### 1. Build
 
-On Ubuntu, the reproducible flow records source, dependency, and binary identity:
+Run from the repository root on Linux. Install the system packages listed in the [Ubuntu build notes](docs/linux-build.md#1-安装系统依赖) first; the build script does not install them. The flow records source, dependency, and binary identity:
 
 ```bash
 python3 scripts/build_linux.py --jobs 2 --smoke
@@ -81,15 +103,16 @@ python3 scripts/build_linux.py --jobs 2 --smoke
 
 The server binary is then at `build-linux-repro/server/raft_kv_server`. System packages, the Muduo prepare step, and the report layout are in the [Ubuntu build notes](docs/linux-build.md).
 
-Portable regression, without the real Muduo and RocksDB libraries:
+Portable C++ regression, without the real Muduo and RocksDB libraries:
 
 ```bash
-cmake -S . -B build-portable -G Ninja \
-  -DRAFTKV_BUILD_SERVER=OFF -DCMAKE_BUILD_TYPE=Debug
+cmake -S . -B build-portable \
+  -DRAFTKV_BUILD_SERVER=OFF -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Debug
 cmake --build build-portable --parallel 2
 ctest --test-dir build-portable --output-on-failure
-python3 -m unittest discover -s tests -p '*_tests.py'
 ```
+
+Run the Python helper suite on Linux with `python3 -m unittest discover -s tests -p '*_tests.py'`. With Ninja installed, `bash scripts/run_new_tests.sh` combines the portable build and helper suite; it does not run a real cluster. List registered C++ tests with `ctest --test-dir build-portable -N`.
 
 ### 2. One-command demo
 
@@ -104,21 +127,20 @@ python3 scripts/demo.py \
 
 ### 3. Start three nodes by hand
 
-Give each node its own KV directory and Raft log directory:
+In three terminals at the repository root, run this block with `NODE_ID` set to **0**, **1**, and **2** respectively. The default peer list is the three loopback Raft ports 9080–9082. Each node needs its own paired KV and Raft log directories:
 
 ```bash
-$BIN --node_id=0 --client_port=8080 --raft_port=9080 \
-  --db_path=/tmp/kv_db_0 --raft_log_path=/tmp/raft_log_0 \
-  --linearizable_reads=true
-$BIN --node_id=1 --client_port=8081 --raft_port=9081 \
-  --db_path=/tmp/kv_db_1 --raft_log_path=/tmp/raft_log_1 \
-  --linearizable_reads=true
-$BIN --node_id=2 --client_port=8082 --raft_port=9082 \
-  --db_path=/tmp/kv_db_2 --raft_log_path=/tmp/raft_log_2 \
+NODE_ID=0  # Use 1 and 2 in the other terminals.
+BIN="$PWD/build-linux-repro/server/raft_kv_server"
+mkdir -p "/tmp/raft-kv-demo-$NODE_ID"
+"$BIN" --node_id="$NODE_ID" \
+  --client_port="$((8080 + NODE_ID))" --raft_port="$((9080 + NODE_ID))" \
+  --db_path="/tmp/raft-kv-demo-$NODE_ID/kv" \
+  --raft_log_path="/tmp/raft-kv-demo-$NODE_ID/raft" \
   --linearizable_reads=true
 ```
 
-Run the three commands in three terminals. After startup, `redis-cli -p 8080 INFO` shows the role and the leader.
+Use `redis-cli -p 8080 INFO` (also ports 8081 and 8082) to find `state:leader` and `leader_id`. Node 0 is not guaranteed to be leader. For multiple machines, configure `--peers=id:IPv4:raft_port,...` consistently on every node.
 
 The same machine can also run three containers. Each container has its own volume, and both the KV data and the Raft log live under `/data` on that volume. `GET /health` means this process is serving. It does not mean the process is the leader, and it does not mean a majority is still available.
 
@@ -127,19 +149,35 @@ docker compose -f docker/compose.yaml up --build
 curl -fsS localhost:9090/health
 ```
 
-**Optional flags**:
-- `--linearizable_reads=true`: ReadIndex linearizable reads (default false)
-- `--lease_reads=true`: with linearizable reads, a leader whose lease is valid confirms a GET locally (default false)
-  Lease freshness uses the original send time of a correlated successful AppendEntries RPC, not ACK arrival or retry time. Uncorrelated replies cannot renew it. This optimization assumes monotonic election clocks progressing at comparable rates; keep it disabled where that assumption is not justified.
-- `--leader_only_reads=true`: only the leader answers reads (default false)
-- `--metrics_port=9090`: serve `GET /metrics` (Prometheus text) and `GET /health` on that port. The default is 0, which does not listen. The port must differ from `client_port` and `raft_port`
+**Read modes** (all three flags default to `false`):
+
+| Configuration | GET behavior |
+| --- | --- |
+| Default | Any node reads local applied state; may return stale data |
+| `--leader_only_reads=true` | Follower redirects; leader still reads locally without a quorum barrier |
+| `--linearizable_reads=true` | Follower redirects; leader confirms a ReadIndex barrier and waits for apply |
+| Also `--lease_reads=true` | Leader may skip probes while its lease is valid; otherwise falls back to ReadIndex |
+
+Lease freshness uses the original send time of a correlated successful AppendEntries RPC, not ACK arrival or retry time. It assumes monotonic election clocks progressing at comparable rates; leave it disabled if that assumption is not justified.
+
+| Other option | Default | Effect |
+| --- | --- | --- |
+| `--group_commit_ms` | `1` | Partial write-batch collection window, 0–10 ms |
+| `--async_apply` | `true` | Serial worker for committed KV apply; Raft log writes remain synchronous |
+| `--max_clients` | `1024` | Maximum concurrent client connections |
+| `--snapshot_threshold` | `1024` | Applied-entry interval between automatic snapshot attempts; `0` disables them |
+| `--metrics_port` | `0` | Enables `/metrics` and `/health` when nonzero; must differ from client and Raft ports |
 
 ### 4. Read and write
 
+Set the port to the **current leader** found through `INFO`; install `redis-cli` separately if needed:
+
 ```bash
-redis-cli -p 8080 SET user:1 alice
-redis-cli -p 8080 GET user:1
-redis-cli -p 8080 DEL user:1
+LEADER_PORT=8080  # Replace with the actual leader's client port.
+redis-cli -p "$LEADER_PORT" SET user:1 alice
+redis-cli -p "$LEADER_PORT" GET user:1
+redis-cli -p "$LEADER_PORT" DEL user:1
+redis-cli -p "$LEADER_PORT" IDEMP demo-client 1 SET user:2 bob
 ```
 
 A write to a follower returns this project's `-ERR MOVED <leader_id>`. That is not the Redis Cluster redirect protocol.
@@ -150,18 +188,21 @@ A write to a follower returns this project's `-ERR MOVED <leader_id>`. That is n
 | --- | --- |
 | `PING` | Returns `PONG` |
 | `SET key value` | Returns `OK` after the Raft commit and the state-machine apply |
-| `GET key` | By default, reads the local state machine. With `--linearizable_reads=true`, the leader uses ReadIndex. Adding `--lease_reads=true` confirms locally while the lease holds. A follower returns `MOVED` |
+| `GET key` | Default: local read on any node. With `--linearizable_reads=true`: ReadIndex on the leader, or a valid lease if also enabled; followers return `MOVED` |
 | `DEL key` | Deletes through Raft and returns `0` or `1` |
+| `IDEMP client-id request-id SET key value` / `IDEMP client-id request-id DEL key` | Retains the latest request/reply per client; replaying that id returns the saved reply, and an older id is stale |
 | `SELECT namespace` | Selects a logical namespace for this TCP connection |
 | `INFO` | Role, term, leader, commit and apply indexes, and overload counters. When `--metrics_port` is not 0, the same numbers are also on `GET /metrics` |
 
 `SELECT` applies only to the current connection. Separate `redis-cli` processes do not share namespace state.
 
+Use a stable client id (1–128 bytes) and increasing decimal request ids starting at 1, without leading zeros. Retry an uncertain `IDEMP` write with the same identity and command; plain `SET` / `DEL` retries are not deduplicated.
+
 ## How the checks are layered
 
-- **Portable C++ regression**: protocol, Raft edges, storage batches, the async executor, batching, and reconnect policy.
+- **Portable C++ regression (18 targets)**: production protocol and queue logic, Raft edges, snapshots, storage batches, the async executor, batching, and reconnect policy; storage/transport doubles do not prove real-disk durability.
 - **Python checks**: the build flow, client behavior, performance comparisons, and the testable parts of fault orchestration.
-- **Linux server**: Muduo TCP, Protobuf, RocksDB, a three-process smoke test, and fault injection.
+- **Linux server (20 CTest targets)**: the portable targets plus real peer transport and TCP ordering / fragmented-input tests. Smoke and fault-injection scripts run separately.
 - **Evidence checks**: `docs/benchmarks/verify_*.py` cross-checks archives, hashes, reports, and node logs.
 
 Commands, and what each layer can and cannot show, are in [tests/README.md](tests/README.md).
@@ -169,9 +210,10 @@ Commands, and what each layer can and cannot show, are in [tests/README.md](test
 ## Current limits
 
 - The cluster is one Raft group with a fixed membership. There is no dynamic membership and no sharding.
-- A snapshot replaces the applied prefix (`--snapshot_threshold`, default 1024, `0` disables it). Applied entries still kept in the log stay below that threshold. Entries written after the snapshot accumulate until the next threshold. On restart the saved tail marks the end, and every entry after the snapshot is read. A damaged entry in the middle fails the open.
-- Plain `SET` / `DEL` are not deduplicated. `IDEMP <client-id> <request-id> SET|DEL ...` keeps only the latest request for that client: the same id returns the first reply, and a smaller id returns stale.
-- A write that was accepted but not committed within 1000 ms gets `-ERR proposal timeout; outcome unknown`. The log entry stays and may still commit later.
+- Automatic snapshots have a **32 MiB payload cap**. Oversized state skips compaction, increments `snapshot_oversize_skips`, and retains the log so service can continue. The threshold is an attempt interval, not a hard bound on retained log size; logs can keep growing. See [oversized snapshots](docs/dev/oversized-automatic-snapshots.md).
+- Snapshot installation spans separate KV and Raft databases. A durable intent allows replay after interruption; it is not a cross-database atomic transaction or a physical power-loss guarantee. See [installation recovery](docs/dev/snapshot-install-recovery.md).
+- Plain `SET` / `DEL` are not deduplicated. `IDEMP <client-id> <request-id> SET|DEL ...` keeps only the latest request for that client: the same id returns the first reply, and a smaller id returns stale. These records survive snapshots and do not expire.
+- An accepted write still awaiting commit after 1000 ms gets `-ERR proposal timeout; outcome unknown`. Its log entry remains and may commit later. This deadline does not fail an already committed write just because apply is slow.
 - The checks here do not cover whole-machine power loss, damaged storage media, long soaks, or a full Raft correctness proof.
 
 Scope and check limits are in the [project status](docs/review-status.md).
@@ -183,22 +225,15 @@ src/server/        RESP access, sessions, batching, and overload protection
 src/raft/          RaftNode, PeerManager, the KV state machine, and the serial applier
 src/raftcore/      Raft log and hard-state persistence
 src/storage/       RocksDB wrapper and storage error boundary
-src/common/        RESP, batching, metrics, and reconnect policy
+src/common/        RESP, input/command queues, batching, metrics, and reconnect policy
 src/namespace/     Per-connection logical namespaces
 proto/             Raft RPC messages
 tests/             Portable regression, real cluster fault tests, and load tools
 docs/benchmarks/   Raw evidence, verification scripts, and result limits
-scripts/           Linux build and the pinned Muduo prepare step
+scripts/           Linux build, pinned Muduo preparation, demo, and test entry points
 ```
 
 Further reading: [tests](tests/README.md) · [build](docs/linux-build.md) · [benchmark method](docs/benchmark.md) · [read consistency](docs/read-consistency.md) · [changelog](CHANGELOG.md)
-
-## Roadmap
-
-1. ✅ ~~ReadIndex linearizable reads~~: a majority confirms the read barrier, then the read waits until the local apply index catches up. Off by default. The election deadline and the probe lease share one `steady_clock`. An isolated old leader steps down when CheckQuorum expires, so a linearizable GET fails instead of returning a stale value.
-2. ✅ ~~Pre-Vote~~: an election timeout enters pre-candidate first. It does not raise the term and does not record `votedFor`. A real election starts only after a majority of pre-votes. A lost election returns to pre-vote instead of raising the term again.
-3. ✅ ~~Snapshots and log reclamation~~: the applied prefix becomes a KV snapshot, and a lagging replica catches up with chunked `InstallSnapshot`. A replica whose log is longer and whose term conflicts sends `nextIndex` to the start of that conflicting term in one step. If that index is inside the snapshot, the next round installs the snapshot. Applied entries still kept in the log stay below `--snapshot_threshold`.
-4. `IDEMP` deduplicates writes that carry a client id and a request id. A retry of plain `SET` / `DEL` can still run twice. Each client id keeps only its latest record. The record stays with the snapshot and does not expire.
 
 ## Dependencies and sources
 
