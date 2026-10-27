@@ -15,11 +15,13 @@ public:
             offset_ = 0;
         }
         bytes_.append(chunk.data(), chunk.size());
+        needs_more_ = false;
         return true;
     }
 
     RespParser::Result Next() {
         auto result = RespParser::TryParseOne(std::string_view(bytes_).substr(offset_));
+        needs_more_ = result.state == RespParser::State::NeedMore;
         if (result.state == RespParser::State::Complete) {
             offset_ += result.consumed;
             if (offset_ == bytes_.size()) {
@@ -38,8 +40,12 @@ public:
     }
 
     size_t UnreadBytes() const { return bytes_.size() - offset_; }
+    // NeedMore leaves unread bytes, but parsing them again cannot make progress
+    // until Append accepts a nonempty chunk. Used by the server drain scheduler.
+    bool CanParse() const { return UnreadBytes() != 0 && !needs_more_; }
 
 private:
     std::string bytes_;
     size_t offset_ = 0;
+    bool needs_more_ = false;
 };

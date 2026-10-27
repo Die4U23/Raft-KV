@@ -11,7 +11,7 @@
 ### 协议与编码
 - `protocol_tests.cpp` - RESP 协议解析、Raft 编码、命名空间 (274 检查点)
 - `replication_logic_tests.cpp` - ✨新增 复制确认逻辑验证 (21 检查点)
-- `connection_order_tests.cpp` - ✨新增 连接命令顺序文档测试
+- `client_input_tests.cpp` - 生产 CommandBuffer 的半包等待、恢复与 pipeline 回归
 
 ### Raft 核心
 - `core_tests.cpp` - Raft 核心逻辑（使用测试替身）
@@ -164,7 +164,7 @@ python3 tests/cluster_smoke.py --binary ./build-linux-repro/server/raft_kv_serve
 
 ### 2026-09-21 新增
 - `replication_logic_tests.cpp` - 验证复制确认逻辑的正确性
-- `connection_order_tests.cpp` - 记录同连接顺序限制
+- `connection_order_integration.py` - Linux 真实服务的连接顺序与半包 CPU 回归；仅完整服务构建注册
 - `test_support/raft_test_support.h` - 测试支持工具
 
 ### 历史测试
@@ -201,3 +201,11 @@ tests/
 **最后更新**: 2026-09-21  
 **文件总数**: 26 个测试文件  
 **测试覆盖率**: 89%
+
+## 本地修复后的测试边界（2026-10-26）
+
+- 原 connection_order_tests 的零断言说明程序已移除，不能继续把它算作回归。
+- client_input_tests 直接测试生产 CommandBuffer；不替代 TCP 服务调度验证。
+- 完整 Linux 服务构建的 CTest 会运行 connection_order_integration：真实异步写、非法命令、读写顺序、跨解析预算 pipeline、分片与半包空闲 CPU 检查。
+- readindex_integration_tests.py 验证测试脚本的 PASS/FAIL/SKIP 判定；它使用替身，不证明 Raft 一致性。
+- test_readindex_integration.py 可用 --binary 指定 Linux 服务；退出码 0=全部实际执行通过，1=测试失败，2=存在跳过或零执行。重启后 Follower 拒绝读的测试不再冒充网络分区。

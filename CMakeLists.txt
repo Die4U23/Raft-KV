@@ -74,6 +74,12 @@ target_link_libraries(raft_kv_server
 )
 
 if(BUILD_TESTING)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_test(NAME connection_order_integration
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/connection_order_integration.py
+            --binary $<TARGET_FILE:raft_kv_server>
+            --artifacts ${CMAKE_BINARY_DIR}/connection-order)
+    set_tests_properties(connection_order_integration PROPERTIES TIMEOUT 110)
     add_executable(peer_manager_transport_tests tests/peer_manager_transport_tests.cpp src/raft/peer_manager.cc)
     target_include_directories(peer_manager_transport_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/src ${MUDUO_INCLUDE_DIR} ${GLOG_INCLUDE_DIR} ${GFLAGS_INCLUDE_DIR})

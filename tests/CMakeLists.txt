@@ -81,13 +81,14 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 add_test(NAME replication_logic_tests COMMAND replication_logic_tests)
 
-# Connection command order documentation tests
-add_executable(connection_order_tests connection_order_tests.cpp)
-target_include_directories(connection_order_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
+# Production parser drain eligibility; real connection ordering is tested with
+# the Linux server in connection_order_integration.py (top-level CMakeLists).
+add_executable(client_input_tests client_input_tests.cpp)
+target_include_directories(client_input_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(connection_order_tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(client_input_tests PRIVATE -Wall -Wextra -Wpedantic)
 endif()
-add_test(NAME connection_order_tests COMMAND connection_order_tests)
+add_test(NAME client_input_tests COMMAND client_input_tests)
 
 # Extended replication partition tests
 add_executable(replication_partition_tests replication_partition_tests.cpp)

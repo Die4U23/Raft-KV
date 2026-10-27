@@ -179,11 +179,12 @@ static void OnRaftMessage(int from, RaftMsgType type, const std::string& payload
 }
 static void DrainClient(const muduo::net::TcpConnectionPtr& conn,
                         const std::shared_ptr<ClientSession>& session);
+static bool CommandQueueBlocked(const ClientSession& session);
 
 static void ScheduleDrain(const muduo::net::TcpConnectionPtr& conn,
                           const std::shared_ptr<ClientSession>& session) {
     if (session->drain_scheduled || session->closing || session->waiting ||
-        session->input.UnreadBytes() == 0) return;
+        !session->input.CanParse() || CommandQueueBlocked(*session)) return;
     session->drain_scheduled = true;
     std::weak_ptr<muduo::net::TcpConnection> weak_conn = conn;
     std::weak_ptr<ClientSession> weak_session = session;
@@ -221,6 +222,9 @@ static void ResumeCommandReaders() {
         if (!conn || !conn->connected()) continue;
         session->reads_paused = false;
         conn->startRead();
+        // Capacity release may be the only event: bytes already copied into
+        // ClientSession will not trigger another socket readability callback.
+        ScheduleDrain(conn, session);
     }
 }
 
@@ -492,6 +496,7 @@ static void DrainClient(const muduo::net::TcpConnectionPtr& conn,
             break;
         }
 
+        if (!session->input.CanParse()) break;
         auto parsed = session->input.Next();
         if (parsed.state == RespParser::State::NeedMore) break;
         if (parsed.state == RespParser::State::Invalid) {
